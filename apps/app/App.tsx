@@ -1,6 +1,14 @@
 import { StatusBar } from "expo-status-bar";
+import { Stack, router, usePathname } from "expo-router";
 import { getLocales } from "expo-localization";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import {
   Alert,
   AppState,
@@ -59,7 +67,6 @@ type EditorKind =
   | "monthly"
   | "yearly"
   | "advanced";
-type Screen = "reminders" | "history" | "settings";
 
 const service = new ReminderService(
   localRepository,
@@ -67,7 +74,33 @@ const service = new ReminderService(
   () => `reminder-${Date.now()}-${Math.random().toString(36).slice(2)}`,
 );
 
+interface AppContextValue {
+  ownerId: string;
+  locale: Locale;
+  setLocale: (locale: Locale) => void;
+  theme: ThemePreference;
+  setTheme: (theme: ThemePreference) => void;
+  colors: Colors;
+}
+
+const AppContext = createContext<AppContextValue | null>(null);
+const navigationItems = [
+  { key: "reminders", path: "/" },
+  { key: "history", path: "/history" },
+  { key: "settings", path: "/settings" },
+] as const;
+
+function useAppContext() {
+  const context = useContext(AppContext);
+  if (!context) throw new Error("App context is unavailable.");
+  return context;
+}
+
 export default function App() {
+  return <RootNavigator />;
+}
+
+export function RootNavigator() {
   const systemTheme = useColorScheme() ?? "light";
   const { width } = useWindowDimensions();
   const [theme, setTheme] = useState<ThemePreference>("system");
@@ -76,7 +109,7 @@ export default function App() {
   );
   const [ownerId, setOwnerId] = useState<string | null>(null);
   const [loadingSession, setLoadingSession] = useState(true);
-  const [screen, setScreen] = useState<Screen>("reminders");
+  const pathname = usePathname();
   const isDark = (theme === "system" ? systemTheme : theme) === "dark";
   const colors = isDark ? darkColors : lightColors;
   const t = createTranslator(locale);
@@ -180,46 +213,72 @@ export default function App() {
     );
   }
 
+  const appContext = useMemo<AppContextValue>(
+    () => ({
+      ownerId,
+      locale,
+      setLocale,
+      theme,
+      setTheme,
+      colors,
+    }),
+    [colors, locale, ownerId, theme],
+  );
+
   return (
-    <SafeAreaView style={[styles.safe, { backgroundColor: colors.background }]}>
-      <StatusBar style={isDark ? "light" : "dark"} />
-      <View style={[styles.shell, width > 900 && styles.wideShell]}>
-        <View style={[styles.navigation, { borderColor: colors.border }]}>
-          <Text style={[styles.brand, { color: colors.text }]}>
-            ⏱ Cron Reminder
-          </Text>
-          <View style={styles.navItems}>
-            {(["reminders", "history", "settings"] as const).map((item) => (
-              <Button
-                key={item}
-                label={t(item)}
-                onPress={() => setScreen(item)}
-                active={screen === item}
-                colors={colors}
-              />
-            ))}
+    <AppContext.Provider value={appContext}>
+      <SafeAreaView
+        style={[styles.safe, { backgroundColor: colors.background }]}
+      >
+        <StatusBar style={isDark ? "light" : "dark"} />
+        <View style={[styles.shell, width > 900 && styles.wideShell]}>
+          <View style={[styles.navigation, { borderColor: colors.border }]}>
+            <Text style={[styles.brand, { color: colors.text }]}>
+              ⏱ Cron Reminder
+            </Text>
+            <View style={styles.navItems}>
+              {navigationItems.map((item) => (
+                <Button
+                  key={item.key}
+                  label={t(item.key)}
+                  onPress={() => router.navigate(item.path)}
+                  active={pathname === item.path}
+                  colors={colors}
+                />
+              ))}
+            </View>
+          </View>
+          <View style={styles.content}>
+            <Stack screenOptions={{ headerShown: false }} />
           </View>
         </View>
-        <View style={styles.content}>
-          {screen === "reminders" && (
-            <ReminderList ownerId={ownerId} locale={locale} colors={colors} />
-          )}
-          {screen === "history" && (
-            <HistoryScreen ownerId={ownerId} locale={locale} colors={colors} />
-          )}
-          {screen === "settings" && (
-            <Settings
-              ownerId={ownerId}
-              locale={locale}
-              setLocale={setLocale}
-              theme={theme}
-              setTheme={setTheme}
-              colors={colors}
-            />
-          )}
-        </View>
-      </View>
-    </SafeAreaView>
+      </SafeAreaView>
+    </AppContext.Provider>
+  );
+}
+
+export function RemindersRoute() {
+  const { ownerId, locale, colors } = useAppContext();
+  return <ReminderList ownerId={ownerId} locale={locale} colors={colors} />;
+}
+
+export function HistoryRoute() {
+  const { ownerId, locale, colors } = useAppContext();
+  return <HistoryScreen ownerId={ownerId} locale={locale} colors={colors} />;
+}
+
+export function SettingsRoute() {
+  const { ownerId, locale, setLocale, theme, setTheme, colors } =
+    useAppContext();
+  return (
+    <Settings
+      ownerId={ownerId}
+      locale={locale}
+      setLocale={setLocale}
+      theme={theme}
+      setTheme={setTheme}
+      colors={colors}
+    />
   );
 }
 
@@ -651,7 +710,9 @@ function ReminderEditor({
     reminder?.sound ?? { mode: "default" },
   );
   const [error, setError] = useState("");
-  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  const deviceTimezone =
+    Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  const timezone = reminder?.timezone ?? deviceTimezone;
 
   function chooseKind(next: EditorKind) {
     setKind(next);
@@ -807,13 +868,11 @@ function ReminderEditor({
       )}
       <Text style={[styles.label, { color: colors.text }]}>{t("sound")}</Text>
       <View style={styles.chips}>
-        {(["default", "silent", "vibrate", "bundled"] as const).map((mode) => (
+        {(["default", "silent", "vibrate"] as const).map((mode) => (
           <Button
             key={mode}
-            label={mode === "bundled" ? "Chime" : mode}
-            onPress={() =>
-              setSound(mode === "bundled" ? { mode, key: "chime" } : { mode })
-            }
+            label={mode}
+            onPress={() => setSound({ mode })}
             active={sound.mode === mode}
             colors={colors}
             compact
@@ -861,7 +920,7 @@ async function previewSound(sound: ReminderSound) {
     const AudioContextType = globalThis.AudioContext;
     const context = new AudioContextType();
     const oscillator = context.createOscillator();
-    oscillator.frequency.value = sound.mode === "bundled" ? 880 : 660;
+    oscillator.frequency.value = 660;
     oscillator.connect(context.destination);
     oscillator.start();
     oscillator.stop(context.currentTime + 0.2);
@@ -938,7 +997,11 @@ function Settings({
 
   function updateTheme(value: ThemePreference) {
     setTheme(value);
-    if (value !== "system") Appearance.setColorScheme(value);
+    (
+      Appearance as typeof Appearance & {
+        setColorScheme: (scheme: "light" | "dark" | null) => void;
+      }
+    ).setColorScheme(value === "system" ? null : value);
     void supabase
       ?.from("profiles")
       .update({ theme: value, updated_at: new Date().toISOString() })

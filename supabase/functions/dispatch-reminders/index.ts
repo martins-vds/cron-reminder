@@ -9,15 +9,23 @@ interface ReminderRow {
   notes: string;
   schedule:
     | { kind: 'once'; at: string }
-    | { kind: 'cron'; expression: string; startAt?: string; endAt?: string };
+    | {
+        kind: 'cron';
+        expression: string;
+        startAt?: string;
+        endAt?: string;
+        occurrenceLimit?: number;
+      };
   timezone: string;
-  sound:
-    | { mode: 'default' | 'silent' | 'vibrate' }
-    | { mode: 'bundled'; key: string };
+  sound: { mode: 'default' | 'silent' | 'vibrate' };
 }
 
+const DISPATCH_STATE_ID = true;
+const MAX_OCCURRENCES_PER_RUN = 500;
+
 Deno.serve(async (request) => {
-  if (request.headers.get('x-cron-secret') !== Deno.env.get('CRON_SECRET')) {
+  const cronSecret = Deno.env.get('CRON_SECRET');
+  if (!cronSecret || request.headers.get('x-cron-secret') !== cronSecret) {
     return json({ error: 'Unauthorized' }, 401);
   }
   const client = createClient(
@@ -27,7 +35,18 @@ Deno.serve(async (request) => {
   const now = new Date();
   const minuteStart = new Date(now);
   minuteStart.setUTCSeconds(0, 0);
+  const windowEnd = new Date(minuteStart.getTime() + 60_000);
   let delivered = await dispatchPostponed(client, now);
+
+  const { data: state } = await client
+    .from('dispatch_state')
+    .select('last_dispatched_at')
+    .eq('id', DISPATCH_STATE_ID)
+    .maybeSingle();
+  const windowStart = state?.last_dispatched_at
+    ? new Date(state.last_dispatched_at)
+    : new Date(minuteStart.getTime() - 60_000);
+
   const { data, error } = await client
     .from('reminders')
     .select('id,owner_id,title,notes,schedule,timezone,sound')
@@ -35,29 +54,59 @@ Deno.serve(async (request) => {
   if (error) return json({ error: 'Unable to load reminders' }, 500);
 
   for (const reminder of (data ?? []) as ReminderRow[]) {
-    let due: Date | null = null;
+    let occurrences: Date[];
     try {
-      due = dueAt(reminder, minuteStart);
+      occurrences = dueOccurrences(reminder, windowStart, windowEnd);
     } catch {
       continue;
     }
-    if (!due) continue;
-    const occurrenceId = `${reminder.id}:${due.toISOString()}`;
-    const { error: occurrenceError } = await client
-      .from('occurrences')
-      .insert({
-        id: occurrenceId,
-        reminder_id: reminder.id,
-        owner_id: reminder.owner_id,
-        scheduled_at: due.toISOString(),
-        status: 'triggered',
-      });
-    if (occurrenceError?.code === '23505') continue;
-    if (occurrenceError) continue;
+    if (!occurrences.length) continue;
 
-    delivered += await deliverToDevices(client, reminder, occurrenceId);
-    await recordHistory(client, reminder, occurrenceId);
+    if (
+      reminder.schedule.kind === 'cron' &&
+      reminder.schedule.occurrenceLimit !== undefined
+    ) {
+      const { count } = await client
+        .from('occurrences')
+        .select('id', { count: 'exact', head: true })
+        .eq('reminder_id', reminder.id);
+      const remaining = reminder.schedule.occurrenceLimit - (count ?? 0);
+      if (remaining <= 0) continue;
+      occurrences = occurrences.slice(0, remaining);
+    }
+
+    for (const due of occurrences) {
+      const occurrenceId = `${reminder.id}:${due.toISOString()}`;
+      const missed = due < minuteStart;
+      const { error: occurrenceError } = await client
+        .from('occurrences')
+        .insert({
+          id: occurrenceId,
+          reminder_id: reminder.id,
+          owner_id: reminder.owner_id,
+          scheduled_at: due.toISOString(),
+          status: missed ? 'missed' : 'triggered',
+        });
+      if (occurrenceError) continue;
+
+      if (missed) {
+        await client.from('history').insert({
+          reminder_id: reminder.id,
+          occurrence_id: occurrenceId,
+          owner_id: reminder.owner_id,
+          event_type: 'missed',
+        });
+        continue;
+      }
+
+      delivered += await deliverOccurrence(client, reminder, occurrenceId);
+    }
   }
+
+  await client.from('dispatch_state').upsert({
+    id: DISPATCH_STATE_ID,
+    last_dispatched_at: windowEnd.toISOString(),
+  });
   await client.rpc('delete_expired_history');
   return json({ delivered });
 });
@@ -88,14 +137,37 @@ async function dispatchPostponed(
       .select('id')
       .maybeSingle();
     if (!claimed) continue;
-    delivered += await deliverToDevices(
+    delivered += await deliverOccurrence(
       client,
       reminder as ReminderRow,
       occurrence.id,
     );
-    await recordHistory(client, reminder as ReminderRow, occurrence.id);
   }
   return delivered;
+}
+
+async function deliverOccurrence(
+  client: ReturnType<typeof createClient>,
+  reminder: ReminderRow,
+  occurrenceId: string,
+): Promise<number> {
+  try {
+    const delivered = await deliverToDevices(client, reminder, occurrenceId);
+    await recordHistory(client, reminder, occurrenceId);
+    return delivered;
+  } catch {
+    await client
+      .from('occurrences')
+      .update({ status: 'delivery-failed' })
+      .eq('id', occurrenceId);
+    await client.from('history').insert({
+      reminder_id: reminder.id,
+      occurrence_id: occurrenceId,
+      owner_id: reminder.owner_id,
+      event_type: 'delivery-failed',
+    });
+    return 0;
+  }
 }
 
 async function deliverToDevices(
@@ -103,11 +175,12 @@ async function deliverToDevices(
   reminder: ReminderRow,
   occurrenceId: string,
 ): Promise<number> {
-  const { data: devices } = await client
+  const { data: devices, error } = await client
     .from('devices')
     .select('platform,token')
     .eq('owner_id', reminder.owner_id)
     .eq('enabled', true);
+  if (error) throw error;
   let delivered = 0;
   for (const device of devices ?? []) {
     const payload = {
@@ -147,25 +220,34 @@ async function recordHistory(
   });
 }
 
-function dueAt(reminder: ReminderRow, minute: Date): Date | null {
+function dueOccurrences(
+  reminder: ReminderRow,
+  windowStart: Date,
+  windowEnd: Date,
+): Date[] {
   if (reminder.schedule.kind === 'once') {
     const date = new Date(reminder.schedule.at);
-    return date >= minute && date < new Date(minute.getTime() + 60_000)
-      ? date
-      : null;
+    return date > windowStart && date < windowEnd ? [date] : [];
   }
-  const previousMinute = new Date(minute.getTime() - 60_000);
-  const next = CronExpressionParser.parse(reminder.schedule.expression, {
-    currentDate: previousMinute,
+  const results: Date[] = [];
+  const interval = CronExpressionParser.parse(reminder.schedule.expression, {
+    currentDate: windowStart,
     startDate: reminder.schedule.startAt,
     endDate: reminder.schedule.endAt,
     tz: reminder.timezone,
-  })
-    .next()
-    .toDate();
-  return next >= minute && next < new Date(minute.getTime() + 60_000)
-    ? next
-    : null;
+  });
+  for (let i = 0; i < MAX_OCCURRENCES_PER_RUN; i++) {
+    let date: Date;
+    try {
+      date = interval.next().toDate();
+    } catch {
+      break;
+    }
+    if (date <= windowStart) continue;
+    if (date >= windowEnd) break;
+    results.push(date);
+  }
+  return results;
 }
 
 async function sendExpoPush(
@@ -174,11 +256,7 @@ async function sendExpoPush(
   sound: ReminderRow['sound'],
 ) {
   const nativeSound =
-    sound.mode === 'silent' || sound.mode === 'vibrate'
-      ? undefined
-      : sound.mode === 'bundled'
-        ? 'default'
-        : 'default';
+    sound.mode === 'silent' || sound.mode === 'vibrate' ? undefined : 'default';
   const response = await fetch('https://exp.host/--/api/v2/push/send', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

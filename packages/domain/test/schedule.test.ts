@@ -4,6 +4,7 @@ import {
   nextOccurrences,
   parseCronSchedule,
   validateCronExpression,
+  validateSchedule,
 } from "../src/index";
 
 describe("cron schedule", () => {
@@ -57,5 +58,22 @@ describe("cron schedule", () => {
       "2026-11-01T05:30:00.000Z",
       "2026-11-02T06:30:00.000Z",
     ]);
+  });
+
+  it("rejects invalid start and end bounds instead of silently passing", () => {
+    expect(() =>
+      validateSchedule({
+        kind: "cron",
+        expression: "0 9 * * *",
+        startAt: "not-a-date",
+      }),
+    ).toThrow("Schedule start must be a valid date.");
+    expect(() =>
+      validateSchedule({
+        kind: "cron",
+        expression: "0 9 * * *",
+        endAt: "not-a-date",
+      }),
+    ).toThrow("Schedule end must be a valid date.");
   });
 });

@@ -5,7 +5,8 @@ import type {
   SynchronizationPort,
 } from "@cron-reminder/application";
 import { detectConflict } from "@cron-reminder/application";
-import type { Reminder } from "@cron-reminder/domain";
+import type { Reminder, Schedule } from "@cron-reminder/domain";
+import { validateSchedule } from "@cron-reminder/domain";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 type SupabaseClientLike = Pick<SupabaseClient, "auth" | "from" | "functions">;
@@ -17,6 +18,8 @@ export interface KeyValueStore {
 }
 
 export class JsonReminderRepository implements ReminderRepository {
+  private queue: Promise<unknown> = Promise.resolve();
+
   constructor(
     private readonly store: KeyValueStore,
     private readonly key = "cron-reminder:reminders",
@@ -33,17 +36,27 @@ export class JsonReminderRepository implements ReminderRepository {
   }
 
   async save(reminder: Reminder): Promise<void> {
-    const reminders = await this.read();
-    const index = reminders.findIndex(({ id }) => id === reminder.id);
-    if (index < 0) reminders.push(reminder);
-    else reminders[index] = reminder;
-    await this.write(reminders);
+    await this.serialize(async () => {
+      const reminders = await this.read();
+      const index = reminders.findIndex(({ id }) => id === reminder.id);
+      if (index < 0) reminders.push(reminder);
+      else reminders[index] = reminder;
+      await this.write(reminders);
+    });
   }
 
   async delete(id: string): Promise<void> {
-    await this.write(
-      (await this.read()).filter((reminder) => reminder.id !== id),
-    );
+    await this.serialize(async () => {
+      await this.write(
+        (await this.read()).filter((reminder) => reminder.id !== id),
+      );
+    });
+  }
+
+  private serialize(operation: () => Promise<void>): Promise<void> {
+    const result = this.queue.then(operation, operation);
+    this.queue = result.catch(() => undefined);
+    return result;
   }
 
   private async read(): Promise<Reminder[]> {
@@ -141,17 +154,59 @@ function isBackup(value: unknown): value is Backup {
   );
 }
 
-function isReminder(value: unknown): value is Reminder {
+function isReminderSound(value: unknown): value is Reminder["sound"] {
   if (!isRecord(value)) return false;
   return (
-    typeof value.id === "string" &&
-    typeof value.ownerId === "string" &&
-    typeof value.title === "string" &&
-    typeof value.timezone === "string" &&
-    typeof value.revision === "number" &&
-    isRecord(value.schedule) &&
-    (value.schedule.kind === "once" || value.schedule.kind === "cron")
+    value.mode === "default" ||
+    value.mode === "silent" ||
+    value.mode === "vibrate"
   );
+}
+
+function isSchedule(value: unknown): value is Schedule {
+  if (!isRecord(value)) return false;
+  if (value.kind === "once") return typeof value.at === "string";
+  if (value.kind !== "cron") return false;
+  if (typeof value.expression !== "string") return false;
+  if (value.startAt !== undefined && typeof value.startAt !== "string")
+    return false;
+  if (value.endAt !== undefined && typeof value.endAt !== "string")
+    return false;
+  if (
+    value.occurrenceLimit !== undefined &&
+    typeof value.occurrenceLimit !== "number"
+  )
+    return false;
+  return true;
+}
+
+function isReminder(value: unknown): value is Reminder {
+  if (!isRecord(value)) return false;
+  if (
+    typeof value.id !== "string" ||
+    typeof value.ownerId !== "string" ||
+    typeof value.title !== "string" ||
+    typeof value.notes !== "string" ||
+    !Array.isArray(value.tags) ||
+    !value.tags.every((tag) => typeof tag === "string") ||
+    typeof value.timezone !== "string" ||
+    typeof value.revision !== "number" ||
+    typeof value.createdAt !== "string" ||
+    typeof value.updatedAt !== "string" ||
+    (value.status !== "active" &&
+      value.status !== "disabled" &&
+      value.status !== "archived") ||
+    !isReminderSound(value.sound) ||
+    !isSchedule(value.schedule)
+  ) {
+    return false;
+  }
+  try {
+    validateSchedule(value.schedule);
+  } catch {
+    return false;
+  }
+  return true;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -181,15 +236,48 @@ export class SupabaseReminderRepository implements ReminderRepository {
   }
 
   async save(reminder: Reminder): Promise<void> {
-    const { error } = await this.client
+    const existing = await this.get(reminder.id);
+    if (!existing) {
+      const { error } = await this.client
+        .from("reminders")
+        .insert(toDatabase(reminder));
+      if (error) throw error;
+      return;
+    }
+    if (reminder.revision <= existing.revision) return;
+    const { data, error } = await this.client
       .from("reminders")
-      .upsert(toDatabase(reminder));
+      .update(toDatabase(reminder))
+      .eq("id", reminder.id)
+      .eq("revision", existing.revision)
+      .select("id");
     if (error) throw error;
+    if (!data || data.length === 0) {
+      throw new Error(
+        `Reminder ${reminder.id} was updated concurrently; refresh and retry.`,
+      );
+    }
   }
 
   async delete(id: string): Promise<void> {
+    const existing = await this.get(id);
     const { error } = await this.client.from("reminders").delete().eq("id", id);
     if (error) throw error;
+    if (existing) {
+      const { error: tombstoneError } = await this.client
+        .from("reminder_tombstones")
+        .upsert({ id, owner_id: existing.ownerId });
+      if (tombstoneError) throw tombstoneError;
+    }
+  }
+
+  async listDeletedIds(ownerId: string): Promise<string[]> {
+    const { data, error } = await this.client
+      .from("reminder_tombstones")
+      .select("id")
+      .eq("owner_id", ownerId);
+    if (error) throw error;
+    return (data ?? []).map((row) => String(row.id));
   }
 }
 
@@ -262,15 +350,26 @@ export class OfflineSynchronizationAdapter implements SynchronizationPort {
   ) {}
 
   async synchronize(ownerId: string): Promise<readonly SyncConflict[]> {
-    const [local, remote] = await Promise.all([
+    const [local, remote, deletedIds] = await Promise.all([
       this.local.list(ownerId),
       this.remote.list(ownerId),
+      this.remote.listDeletedIds?.(ownerId) ?? Promise.resolve([]),
     ]);
-    const { merged, conflicts } = mergeForSynchronization(local, remote);
+    const deleted = new Set(deletedIds);
+    const survivingLocal = local.filter(({ id }) => !deleted.has(id));
+    await Promise.all(
+      local
+        .filter(({ id }) => deleted.has(id))
+        .map(({ id }) => this.local.delete(id)),
+    );
+    const { merged, conflicts } = mergeForSynchronization(
+      survivingLocal,
+      remote,
+    );
     const conflictedIds = new Set(conflicts.map(({ id }) => id));
     await Promise.all(
       merged
-        .filter(({ id }) => !conflictedIds.has(id))
+        .filter(({ id }) => !conflictedIds.has(id) && !deleted.has(id))
         .flatMap((reminder) => [
           this.local.save(reminder),
           this.remote.save(reminder),

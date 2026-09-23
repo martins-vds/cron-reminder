@@ -87,8 +87,18 @@ export const authentication: AuthenticationPort | null = supabase
         if (error) throw error;
       },
       async deleteAccount() {
+        const { data: userData } = await supabase.auth.getUser();
+        const ownerId = userData.user?.id;
         const { error } = await supabase.functions.invoke("delete-account");
         if (error) throw error;
+        if (ownerId) {
+          const reminders = await localRepository.list(ownerId);
+          for (const reminder of reminders) {
+            await localRepository.delete(reminder.id);
+          }
+        }
+        await AsyncStorage.removeItem(deletedKey);
+        await AsyncStorage.removeItem(deviceKey);
         await supabase.auth.signOut();
       },
     }

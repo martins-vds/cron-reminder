@@ -1,7 +1,7 @@
 {
   "name": "@cron-reminder/app",
   "version": "0.1.0",
-  "main": "index.ts",
+  "main": "expo-router/entry",
   "dependencies": {
     "@cron-reminder/application": "0.1.0",
     "@cron-reminder/domain": "0.1.0",
@@ -13,8 +13,10 @@
     "expo": "~57.0.24",
     "expo-audio": "~57.0.5",
     "expo-auth-session": "~57.0.12",
+    "expo-constants": "~57.0.19",
     "expo-localization": "~57.0.2",
     "expo-notifications": "~57.0.20",
+    "expo-router": "~57.0.22",
     "expo-secure-store": "~57.0.4",
     "expo-status-bar": "~57.0.1",
     "expo-web-browser": "~57.0.3",
@@ -32,6 +34,7 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
+    "typecheck": "tsc --noEmit",
     "export:web": "expo export --platform web && node -e \"require('node:fs').copyFileSync('public/sw.js', 'dist/sw.js')\""
   },
   "private": true

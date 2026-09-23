@@ -6,8 +6,7 @@ export type OccurrenceStatus =
 export type HistoryEventType =
   "triggered" | "dismissed" | "postponed" | "missed" | "delivery-failed";
 
-export type ReminderSound =
-  { mode: "default" | "silent" | "vibrate" } | { mode: "bundled"; key: string };
+export type ReminderSound = { mode: "default" | "silent" | "vibrate" };
 
 export type Schedule =
   | { kind: "once"; at: string }
@@ -105,6 +104,18 @@ export function validateSchedule(schedule: Schedule): void {
   if (!result.valid) throw new Error(result.error);
   if (schedule.occurrenceLimit !== undefined && schedule.occurrenceLimit < 1) {
     throw new Error("Occurrence limit must be positive.");
+  }
+  if (
+    schedule.startAt !== undefined &&
+    !Number.isFinite(Date.parse(schedule.startAt))
+  ) {
+    throw new Error("Schedule start must be a valid date.");
+  }
+  if (
+    schedule.endAt !== undefined &&
+    !Number.isFinite(Date.parse(schedule.endAt))
+  ) {
+    throw new Error("Schedule end must be a valid date.");
   }
   if (
     schedule.startAt &&

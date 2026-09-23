@@ -1,3 +1,4 @@
+import Constants from "expo-constants";
 import * as Notifications from "expo-notifications";
 import type {
   NotificationPort,
@@ -15,6 +16,9 @@ Notifications.setNotificationHandler({
   }),
 });
 
+const projectId =
+  Constants.expoConfig?.extra?.eas?.projectId ?? Constants.easConfig?.projectId;
+
 export class DeviceNotificationAdapter implements NotificationPort {
   async requestPermission(): Promise<"granted" | "denied"> {
     const result = await Notifications.requestPermissionsAsync();
@@ -27,7 +31,9 @@ export class DeviceNotificationAdapter implements NotificationPort {
       { identifier: "dismiss", buttonTitle: "Dismiss" },
       { identifier: "snooze", buttonTitle: "Snooze" },
     ]);
-    const token = await Notifications.getExpoPushTokenAsync();
+    const token = await Notifications.getExpoPushTokenAsync(
+      projectId ? { projectId } : undefined,
+    );
     return {
       id: token.data,
       ownerId,

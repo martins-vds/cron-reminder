@@ -16,6 +16,7 @@ export interface ReminderRepository {
   get(id: string): Promise<Reminder | null>;
   save(reminder: Reminder): Promise<void>;
   delete(id: string): Promise<void>;
+  listDeletedIds?(ownerId: string): Promise<string[]>;
 }
 
 export interface HistoryRepository {

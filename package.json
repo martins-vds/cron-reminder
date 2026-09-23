@@ -15,7 +15,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --build"
+    "typecheck": "tsc --build && npm run typecheck --workspace @cron-reminder/app"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

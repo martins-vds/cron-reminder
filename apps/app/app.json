@@ -28,7 +28,13 @@
       "expo-localization",
       "expo-audio",
       "expo-web-browser",
-      ["expo-notifications", { "sounds": [] }]
+      [
+        "expo-notifications",
+        {
+          "sounds": []
+        }
+      ],
+      "expo-router"
     ]
   }
 }
