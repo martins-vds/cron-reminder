@@ -1,0 +1,86 @@
+export type Locale = "en" | "pt-BR";
+
+const messages = {
+  en: {
+    active: "Active",
+    addReminder: "Add reminder",
+    advanced: "Advanced cron",
+    archive: "Archive",
+    archived: "Archived",
+    cancel: "Cancel",
+    confirmDelete: "Delete this reminder permanently?",
+    create: "Create",
+    daily: "Daily",
+    delete: "Delete",
+    disabled: "Disabled",
+    duplicate: "Duplicate",
+    edit: "Edit",
+    empty: "No reminders yet",
+    enabled: "Enabled",
+    history: "History",
+    interval: "Interval",
+    language: "Language",
+    notes: "Notes",
+    once: "Once",
+    reminders: "Reminders",
+    restore: "Restore",
+    save: "Save",
+    schedule: "Schedule",
+    search: "Search reminders",
+    settings: "Settings",
+    signIn: "Sign in to continue",
+    snooze: "Snooze",
+    sound: "Sound",
+    tags: "Tags",
+    theme: "Theme",
+    title: "Title",
+    upcoming: "Next occurrences",
+    weekdays: "Weekdays",
+  },
+  "pt-BR": {
+    active: "Ativo",
+    addReminder: "Adicionar lembrete",
+    advanced: "Cron avançado",
+    archive: "Arquivar",
+    archived: "Arquivados",
+    cancel: "Cancelar",
+    confirmDelete: "Excluir este lembrete permanentemente?",
+    create: "Criar",
+    daily: "Diariamente",
+    delete: "Excluir",
+    disabled: "Desativados",
+    duplicate: "Duplicar",
+    edit: "Editar",
+    empty: "Nenhum lembrete",
+    enabled: "Ativado",
+    history: "Histórico",
+    interval: "Intervalo",
+    language: "Idioma",
+    notes: "Notas",
+    once: "Uma vez",
+    reminders: "Lembretes",
+    restore: "Restaurar",
+    save: "Salvar",
+    schedule: "Agenda",
+    search: "Buscar lembretes",
+    settings: "Configurações",
+    signIn: "Entre para continuar",
+    snooze: "Adiar",
+    sound: "Som",
+    tags: "Etiquetas",
+    theme: "Tema",
+    title: "Título",
+    upcoming: "Próximas ocorrências",
+    weekdays: "Dias úteis",
+  },
+} as const;
+
+export type MessageKey = keyof (typeof messages)["en"];
+
+export function normalizeLocale(locale: string | undefined): Locale {
+  return locale?.toLowerCase().startsWith("pt") ? "pt-BR" : "en";
+}
+
+export function createTranslator(locale: Locale): (key: MessageKey) => string {
+  return (key) => messages[locale][key];
+}

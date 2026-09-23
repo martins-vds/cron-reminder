@@ -1,0 +1,14 @@
+project_id = "cron-reminder"
+
+[auth]
+site_url = "http://localhost:8081"
+additional_redirect_urls = ["cron-reminder://**", "http://localhost:8081/**"]
+
+[functions.dispatch-reminders]
+verify_jwt = false
+
+[functions.delete-account]
+verify_jwt = true
+
+[functions.occurrence-action]
+verify_jwt = true

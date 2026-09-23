@@ -1,20 +1,1236 @@
-import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View } from 'react-native';
+import { StatusBar } from "expo-status-bar";
+import { getLocales } from "expo-localization";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  Alert,
+  Appearance,
+  Platform,
+  Pressable,
+  SafeAreaView,
+  ScrollView,
+  Share,
+  StyleSheet,
+  Switch,
+  Text,
+  TextInput,
+  useColorScheme,
+  useWindowDimensions,
+  Vibration,
+  View,
+} from "react-native";
+import {
+  ReminderService,
+  filterReminders,
+  type SyncConflict,
+} from "@cron-reminder/application";
+import { exportBackup, importBackup } from "@cron-reminder/infrastructure";
+import {
+  describeSchedule,
+  nextOccurrences,
+  validateCronExpression,
+  type Reminder,
+  type ReminderSound,
+  type Schedule,
+} from "@cron-reminder/domain";
+import {
+  createTranslator,
+  normalizeLocale,
+  type Locale,
+} from "@cron-reminder/localization";
+import {
+  authentication,
+  localRepository,
+  supabase,
+  synchronization,
+} from "./src/services";
+import { DeviceNotificationAdapter } from "./src/notificationAdapter";
+
+type ThemePreference = "system" | "light" | "dark";
+type EditorKind =
+  | "once"
+  | "interval"
+  | "daily"
+  | "weekdays"
+  | "monthly"
+  | "yearly"
+  | "advanced";
+type Screen = "reminders" | "history" | "settings";
+
+const service = new ReminderService(
+  localRepository,
+  { now: () => new Date() },
+  () => `reminder-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+);
 
 export default function App() {
+  const systemTheme = useColorScheme() ?? "light";
+  const { width } = useWindowDimensions();
+  const [theme, setTheme] = useState<ThemePreference>("system");
+  const [locale, setLocale] = useState<Locale>(
+    normalizeLocale(getLocales()[0]?.languageTag),
+  );
+  const [ownerId, setOwnerId] = useState<string | null>(null);
+  const [loadingSession, setLoadingSession] = useState(true);
+  const [screen, setScreen] = useState<Screen>("reminders");
+  const isDark = (theme === "system" ? systemTheme : theme) === "dark";
+  const colors = isDark ? darkColors : lightColors;
+  const t = createTranslator(locale);
+
+  useEffect(() => {
+    if (!supabase) {
+      setLoadingSession(false);
+      return;
+    }
+    void supabase.auth.getSession().then(({ data }) => {
+      setOwnerId(data.session?.user.id ?? null);
+      setLoadingSession(false);
+    });
+    return supabase.auth.onAuthStateChange((_event, session) =>
+      setOwnerId(session?.user.id ?? null),
+    ).data.subscription.unsubscribe;
+  }, []);
+
+  useEffect(() => {
+    if (!supabase || !ownerId) return;
+    void supabase
+      .from("profiles")
+      .select("locale,theme")
+      .eq("id", ownerId)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (data?.locale === "en" || data?.locale === "pt-BR")
+          setLocale(data.locale);
+        if (
+          data?.theme === "system" ||
+          data?.theme === "light" ||
+          data?.theme === "dark"
+        )
+          setTheme(data.theme);
+      });
+  }, [ownerId]);
+
+  if (loadingSession) {
+    return <CenteredMessage text="Loading…" colors={colors} />;
+  }
+  if (!ownerId) {
+    return (
+      <SignIn
+        locale={locale}
+        colors={colors}
+        configured={Boolean(authentication)}
+      />
+    );
+  }
+
   return (
-    <View style={styles.container}>
-      <Text>Open up App.tsx to start working on your app!</Text>
-      <StatusBar style="auto" />
+    <SafeAreaView style={[styles.safe, { backgroundColor: colors.background }]}>
+      <StatusBar style={isDark ? "light" : "dark"} />
+      <View style={[styles.shell, width > 900 && styles.wideShell]}>
+        <View style={[styles.navigation, { borderColor: colors.border }]}>
+          <Text style={[styles.brand, { color: colors.text }]}>
+            ⏱ Cron Reminder
+          </Text>
+          <View style={styles.navItems}>
+            {(["reminders", "history", "settings"] as const).map((item) => (
+              <Button
+                key={item}
+                label={t(item)}
+                onPress={() => setScreen(item)}
+                active={screen === item}
+                colors={colors}
+              />
+            ))}
+          </View>
+        </View>
+        <View style={styles.content}>
+          {screen === "reminders" && (
+            <ReminderList ownerId={ownerId} locale={locale} colors={colors} />
+          )}
+          {screen === "history" && (
+            <HistoryScreen ownerId={ownerId} locale={locale} colors={colors} />
+          )}
+          {screen === "settings" && (
+            <Settings
+              ownerId={ownerId}
+              locale={locale}
+              setLocale={setLocale}
+              theme={theme}
+              setTheme={setTheme}
+              colors={colors}
+            />
+          )}
+        </View>
+      </View>
+    </SafeAreaView>
+  );
+}
+
+interface HistoryRow {
+  id: string;
+  reminder_id: string;
+  event_type: string;
+  occurred_at: string;
+}
+
+function HistoryScreen({
+  ownerId,
+  locale,
+  colors,
+}: {
+  ownerId: string;
+  locale: Locale;
+  colors: Colors;
+}) {
+  const t = createTranslator(locale);
+  const [events, setEvents] = useState<HistoryRow[]>([]);
+  const [query, setQuery] = useState("");
+  useEffect(() => {
+    if (!supabase) return;
+    const cutoff = new Date(Date.now() - 30 * 86_400_000).toISOString();
+    void supabase
+      .from("history")
+      .select("id,reminder_id,event_type,occurred_at")
+      .eq("owner_id", ownerId)
+      .gte("occurred_at", cutoff)
+      .order("occurred_at", { ascending: false })
+      .then(({ data }) => setEvents((data ?? []) as HistoryRow[]));
+  }, [ownerId]);
+  const visible = events.filter((event) =>
+    `${event.reminder_id} ${event.event_type}`
+      .toLowerCase()
+      .includes(query.toLowerCase()),
+  );
+  return (
+    <ScrollView contentContainerStyle={styles.page}>
+      <Text
+        accessibilityRole="header"
+        style={[styles.heading, { color: colors.text }]}
+      >
+        {t("history")}
+      </Text>
+      <Text style={[styles.body, { color: colors.muted }]}>
+        Triggered, dismissed, postponed, missed, and delivery failures are
+        retained for 30 days.
+      </Text>
+      <Field
+        label={t("search")}
+        value={query}
+        onChangeText={setQuery}
+        colors={colors}
+      />
+      {visible.length === 0 && (
+        <EmptyState title={t("history")} message={t("empty")} colors={colors} />
+      )}
+      {visible.map((event) => (
+        <View
+          key={event.id}
+          style={[
+            styles.card,
+            { backgroundColor: colors.surface, borderColor: colors.border },
+          ]}
+        >
+          <Text style={[styles.cardTitle, { color: colors.text }]}>
+            {event.event_type}
+          </Text>
+          <Text style={[styles.body, { color: colors.muted }]}>
+            {event.reminder_id}
+          </Text>
+          <Text style={[styles.caption, { color: colors.muted }]}>
+            {new Date(event.occurred_at).toLocaleString(locale)}
+          </Text>
+        </View>
+      ))}
+    </ScrollView>
+  );
+}
+
+function SignIn({
+  locale,
+  colors,
+  configured,
+}: {
+  locale: Locale;
+  colors: Colors;
+  configured: boolean;
+}) {
+  const t = createTranslator(locale);
+  const providers = [
+    ["google", "Google"],
+    ["apple", "Apple"],
+    ["azure", "Microsoft"],
+    ["github", "GitHub"],
+  ] as const;
+  return (
+    <SafeAreaView
+      style={[
+        styles.safe,
+        styles.center,
+        { backgroundColor: colors.background },
+      ]}
+    >
+      <View
+        style={[
+          styles.card,
+          styles.signInCard,
+          { backgroundColor: colors.surface, borderColor: colors.border },
+        ]}
+      >
+        <Text
+          accessibilityRole="header"
+          style={[styles.heading, { color: colors.text }]}
+        >
+          Cron Reminder
+        </Text>
+        <Text style={[styles.body, { color: colors.muted }]}>
+          {t("signIn")}
+        </Text>
+        {!configured && (
+          <Text
+            accessibilityRole="alert"
+            style={[styles.notice, { color: colors.warning }]}
+          >
+            Set EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY to
+            enable sign-in.
+          </Text>
+        )}
+        {providers.map(([provider, label]) => (
+          <Button
+            key={provider}
+            label={label}
+            disabled={!configured}
+            onPress={() => void authentication?.signIn(provider)}
+            colors={colors}
+          />
+        ))}
+      </View>
+    </SafeAreaView>
+  );
+}
+
+function ReminderList({
+  ownerId,
+  locale,
+  colors,
+}: {
+  ownerId: string;
+  locale: Locale;
+  colors: Colors;
+}) {
+  const t = createTranslator(locale);
+  const [reminders, setReminders] = useState<Reminder[]>([]);
+  const [query, setQuery] = useState("");
+  const [status, setStatus] = useState<Reminder["status"] | "all">("all");
+  const [editing, setEditing] = useState<Reminder | "new" | null>(null);
+  const [syncMessage, setSyncMessage] = useState("");
+  const [syncConflicts, setSyncConflicts] = useState<readonly SyncConflict[]>(
+    [],
+  );
+  const refresh = useCallback(
+    () => void localRepository.list(ownerId).then(setReminders),
+    [ownerId],
+  );
+  useEffect(refresh, [refresh]);
+  useEffect(() => {
+    if (!synchronization) return;
+    void synchronization
+      .synchronize(ownerId)
+      .then((conflicts) => {
+        setSyncConflicts(conflicts);
+        setSyncMessage(
+          conflicts.length
+            ? `${conflicts.length} concurrent edit(s) need manual resolution. Local versions are preserved.`
+            : "",
+        );
+        refresh();
+      })
+      .catch(() =>
+        setSyncMessage(
+          "Offline changes will synchronize when connectivity returns.",
+        ),
+      );
+  }, [ownerId, refresh]);
+  const visible = useMemo(
+    () => filterReminders(reminders, { query, status, sort: "updated" }),
+    [query, reminders, status],
+  );
+
+  if (editing) {
+    return (
+      <ReminderEditor
+        ownerId={ownerId}
+        reminder={editing === "new" ? undefined : editing}
+        locale={locale}
+        colors={colors}
+        onCancel={() => setEditing(null)}
+        onSaved={() => {
+          setEditing(null);
+          refresh();
+        }}
+      />
+    );
+  }
+
+  async function mutate(action: () => Promise<unknown>) {
+    await action();
+    refresh();
+  }
+
+  function remove(reminder: Reminder) {
+    Alert.alert(t("delete"), t("confirmDelete"), [
+      { text: t("cancel"), style: "cancel" },
+      {
+        text: t("delete"),
+        style: "destructive",
+        onPress: () => void mutate(() => service.delete(reminder.id)),
+      },
+    ]);
+  }
+
+  return (
+    <ScrollView contentContainerStyle={styles.page}>
+      <View style={styles.titleRow}>
+        <Text
+          accessibilityRole="header"
+          style={[styles.heading, { color: colors.text }]}
+        >
+          {t("reminders")}
+        </Text>
+        <Button
+          label={`＋ ${t("addReminder")}`}
+          onPress={() => setEditing("new")}
+          colors={colors}
+        />
+      </View>
+      {syncMessage && (
+        <Text
+          accessibilityRole="alert"
+          style={[styles.notice, { color: colors.warning }]}
+        >
+          {syncMessage}
+        </Text>
+      )}
+      {syncConflicts.map((conflict) => (
+        <View
+          key={conflict.id}
+          style={[
+            styles.card,
+            { backgroundColor: colors.surface, borderColor: colors.warning },
+          ]}
+        >
+          <Text style={[styles.cardTitle, { color: colors.text }]}>
+            Resolve concurrent edit: {conflict.local.title}
+          </Text>
+          <Text style={[styles.body, { color: colors.muted }]}>
+            Local: {conflict.local.title} · Remote: {conflict.remote.title}
+          </Text>
+          <View style={styles.actions}>
+            {(["local", "remote"] as const).map((choice) => (
+              <Button
+                key={choice}
+                label={`Keep ${choice}`}
+                colors={colors}
+                onPress={() =>
+                  void synchronization
+                    ?.resolve(conflict, conflict[choice])
+                    .then(() => {
+                      setSyncConflicts((items) =>
+                        items.filter(({ id }) => id !== conflict.id),
+                      );
+                      refresh();
+                    })
+                }
+              />
+            ))}
+          </View>
+        </View>
+      ))}
+      <TextInput
+        accessibilityLabel={t("search")}
+        placeholder={t("search")}
+        placeholderTextColor={colors.muted}
+        value={query}
+        onChangeText={setQuery}
+        style={[
+          styles.input,
+          {
+            color: colors.text,
+            borderColor: colors.border,
+            backgroundColor: colors.surface,
+          },
+        ]}
+      />
+      <View style={styles.chips}>
+        {(["all", "active", "disabled", "archived"] as const).map((item) => (
+          <Button
+            key={item}
+            label={item === "all" ? "All" : t(item)}
+            onPress={() => setStatus(item)}
+            active={status === item}
+            colors={colors}
+            compact
+          />
+        ))}
+      </View>
+      {visible.length === 0 && (
+        <EmptyState
+          title={t("empty")}
+          message={t("addReminder")}
+          colors={colors}
+        />
+      )}
+      {visible.map((reminder) => (
+        <View
+          key={reminder.id}
+          style={[
+            styles.card,
+            { backgroundColor: colors.surface, borderColor: colors.border },
+          ]}
+        >
+          <View style={styles.titleRow}>
+            <View style={styles.flex}>
+              <Text style={[styles.cardTitle, { color: colors.text }]}>
+                {reminder.title}
+              </Text>
+              <Text style={[styles.body, { color: colors.muted }]}>
+                {describeSchedule(reminder.schedule, locale)}
+              </Text>
+              {reminder.tags.length > 0 && (
+                <Text style={[styles.caption, { color: colors.accent }]}>
+                  #{reminder.tags.join(" #")}
+                </Text>
+              )}
+            </View>
+            {reminder.status !== "archived" && (
+              <Switch
+                accessibilityLabel={t("enabled")}
+                value={reminder.status === "active"}
+                onValueChange={(value) =>
+                  void mutate(() => service.setEnabled(reminder.id, value))
+                }
+              />
+            )}
+          </View>
+          <View style={styles.actions}>
+            <Button
+              label={t("edit")}
+              onPress={() => setEditing(reminder)}
+              colors={colors}
+              compact
+            />
+            <Button
+              label={t("duplicate")}
+              onPress={() => void mutate(() => service.duplicate(reminder.id))}
+              colors={colors}
+              compact
+            />
+            <Button
+              label={
+                reminder.status === "archived" ? t("restore") : t("archive")
+              }
+              onPress={() =>
+                void mutate(() =>
+                  reminder.status === "archived"
+                    ? service.restore(reminder.id)
+                    : service.archive(reminder.id),
+                )
+              }
+              colors={colors}
+              compact
+            />
+            <Button
+              label={t("delete")}
+              onPress={() => remove(reminder)}
+              colors={colors}
+              danger
+              compact
+            />
+          </View>
+        </View>
+      ))}
+    </ScrollView>
+  );
+}
+
+function ReminderEditor({
+  ownerId,
+  reminder,
+  locale,
+  colors,
+  onCancel,
+  onSaved,
+}: {
+  ownerId: string;
+  reminder?: Reminder;
+  locale: Locale;
+  colors: Colors;
+  onCancel: () => void;
+  onSaved: () => void;
+}) {
+  const t = createTranslator(locale);
+  const [title, setTitle] = useState(reminder?.title ?? "");
+  const [notes, setNotes] = useState(reminder?.notes ?? "");
+  const [tags, setTags] = useState(reminder?.tags.join(", ") ?? "");
+  const [kind, setKind] = useState<EditorKind>(
+    reminder?.schedule.kind === "once" ? "once" : "daily",
+  );
+  const [cron, setCron] = useState(
+    reminder?.schedule.kind === "cron"
+      ? reminder.schedule.expression
+      : "0 9 * * *",
+  );
+  const [onceAt, setOnceAt] = useState(
+    reminder?.schedule.kind === "once"
+      ? reminder.schedule.at
+      : new Date(Date.now() + 3_600_000).toISOString(),
+  );
+  const [sound, setSound] = useState<ReminderSound>(
+    reminder?.sound ?? { mode: "default" },
+  );
+  const [error, setError] = useState("");
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+
+  function chooseKind(next: EditorKind) {
+    setKind(next);
+    const expressions: Partial<Record<EditorKind, string>> = {
+      interval: "*/5 * * * *",
+      daily: "0 9 * * *",
+      weekdays: "0 9 * * 1-5",
+      monthly: "0 9 1 * *",
+      yearly: "0 9 1 1 *",
+    };
+    if (expressions[next]) setCron(expressions[next] ?? cron);
+  }
+
+  const schedule: Schedule =
+    kind === "once"
+      ? { kind: "once", at: onceAt }
+      : { kind: "cron", expression: cron };
+  const validation =
+    schedule.kind === "cron"
+      ? validateCronExpression(schedule.expression)
+      : { valid: Number.isFinite(Date.parse(onceAt)) };
+  let preview: Date[] = [];
+  if (validation.valid) {
+    try {
+      preview = nextOccurrences(schedule, timezone, new Date(), 5);
+    } catch {
+      preview = [];
+    }
+  }
+
+  async function save() {
+    setError("");
+    try {
+      const changes = {
+        title,
+        notes,
+        tags: tags
+          .split(",")
+          .map((tag) => tag.trim())
+          .filter(Boolean),
+        schedule,
+        timezone,
+        sound,
+      };
+      if (reminder) await service.update(reminder.id, changes);
+      else await service.create({ ...changes, ownerId });
+      onSaved();
+    } catch (reason) {
+      setError(
+        reason instanceof Error ? reason.message : "Unable to save reminder.",
+      );
+    }
+  }
+
+  return (
+    <ScrollView
+      contentContainerStyle={styles.page}
+      keyboardShouldPersistTaps="handled"
+    >
+      <Text
+        accessibilityRole="header"
+        style={[styles.heading, { color: colors.text }]}
+      >
+        {reminder ? t("edit") : t("addReminder")}
+      </Text>
+      <Field
+        label={t("title")}
+        value={title}
+        onChangeText={setTitle}
+        colors={colors}
+      />
+      <Field
+        label={t("notes")}
+        value={notes}
+        onChangeText={setNotes}
+        colors={colors}
+        multiline
+      />
+      <Field
+        label={`${t("tags")} (comma separated)`}
+        value={tags}
+        onChangeText={setTags}
+        colors={colors}
+      />
+      <Text style={[styles.label, { color: colors.text }]}>
+        {t("schedule")}
+      </Text>
+      <View style={styles.chips}>
+        {(
+          [
+            "once",
+            "interval",
+            "daily",
+            "weekdays",
+            "monthly",
+            "yearly",
+            "advanced",
+          ] as const
+        ).map((value) => (
+          <Button
+            key={value}
+            label={t(
+              value === "monthly" || value === "yearly" ? "schedule" : value,
+            )}
+            onPress={() => chooseKind(value)}
+            active={kind === value}
+            colors={colors}
+            compact
+          />
+        ))}
+      </View>
+      {kind === "once" ? (
+        <Field
+          label="ISO date and time"
+          value={onceAt}
+          onChangeText={setOnceAt}
+          colors={colors}
+        />
+      ) : (
+        <Field
+          label={kind === "advanced" ? t("advanced") : "Cron"}
+          value={cron}
+          onChangeText={setCron}
+          colors={colors}
+        />
+      )}
+      {!validation.valid && (
+        <Text
+          accessibilityRole="alert"
+          style={[styles.notice, { color: colors.danger }]}
+        >
+          Enter a valid five-field schedule.
+        </Text>
+      )}
+      {validation.valid && (
+        <View style={[styles.preview, { borderColor: colors.border }]}>
+          <Text style={[styles.cardTitle, { color: colors.text }]}>
+            {describeSchedule(schedule, locale)}
+          </Text>
+          <Text style={[styles.label, { color: colors.text }]}>
+            {t("upcoming")}
+          </Text>
+          {preview.map((date) => (
+            <Text
+              key={date.toISOString()}
+              style={[styles.caption, { color: colors.muted }]}
+            >
+              {date.toLocaleString(locale)}
+            </Text>
+          ))}
+        </View>
+      )}
+      <Text style={[styles.label, { color: colors.text }]}>{t("sound")}</Text>
+      <View style={styles.chips}>
+        {(["default", "silent", "vibrate", "bundled"] as const).map((mode) => (
+          <Button
+            key={mode}
+            label={mode === "bundled" ? "Chime" : mode}
+            onPress={() =>
+              setSound(mode === "bundled" ? { mode, key: "chime" } : { mode })
+            }
+            active={sound.mode === mode}
+            colors={colors}
+            compact
+          />
+        ))}
+        <Button
+          label="▶ Preview"
+          onPress={() => void previewSound(sound)}
+          colors={colors}
+          compact
+        />
+      </View>
+      {error && (
+        <Text
+          accessibilityRole="alert"
+          style={[styles.notice, { color: colors.danger }]}
+        >
+          {error}
+        </Text>
+      )}
+      <View style={styles.actions}>
+        <Button label={t("cancel")} onPress={onCancel} colors={colors} />
+        <Button
+          label={t("save")}
+          onPress={() => void save()}
+          colors={colors}
+          active
+          disabled={!validation.valid || !title.trim()}
+        />
+      </View>
+    </ScrollView>
+  );
+}
+
+async function previewSound(sound: ReminderSound) {
+  if (sound.mode === "silent") {
+    Alert.alert("Sound", "This reminder will be silent.");
+    return;
+  }
+  if (sound.mode === "vibrate") {
+    Vibration.vibrate(300);
+    return;
+  }
+  if (Platform.OS === "web") {
+    const AudioContextType = globalThis.AudioContext;
+    const context = new AudioContextType();
+    const oscillator = context.createOscillator();
+    oscillator.frequency.value = sound.mode === "bundled" ? 880 : 660;
+    oscillator.connect(context.destination);
+    oscillator.start();
+    oscillator.stop(context.currentTime + 0.2);
+    return;
+  }
+  const Notifications = await import("expo-notifications");
+  await Notifications.scheduleNotificationAsync({
+    content: { title: "Sound preview", sound: "default" },
+    trigger: null,
+  });
+}
+
+function Settings({
+  ownerId,
+  locale,
+  setLocale,
+  theme,
+  setTheme,
+  colors,
+}: {
+  ownerId: string;
+  locale: Locale;
+  setLocale: (locale: Locale) => void;
+  theme: ThemePreference;
+  setTheme: (theme: ThemePreference) => void;
+  colors: Colors;
+}) {
+  const t = createTranslator(locale);
+  const [backupText, setBackupText] = useState("");
+  const [backupMessage, setBackupMessage] = useState("");
+  const [importConflicts, setImportConflicts] = useState<
+    readonly SyncConflict[]
+  >([]);
+
+  async function exportJson() {
+    const json = exportBackup(await localRepository.list(ownerId), new Date());
+    if (Platform.OS === "web") {
+      const url = URL.createObjectURL(
+        new Blob([json], { type: "application/json" }),
+      );
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "cron-reminder-backup.json";
+      link.click();
+      URL.revokeObjectURL(url);
+    } else {
+      await Share.share({ message: json, title: "Cron Reminder backup" });
+    }
+  }
+
+  async function importJson() {
+    try {
+      const current = await localRepository.list(ownerId);
+      const result = importBackup(backupText, current, ownerId);
+      await Promise.all(
+        result.merged.map((item) => localRepository.save(item)),
+      );
+      setImportConflicts(result.conflicts);
+      setBackupMessage(
+        `${result.imported} imported, ${result.skipped} skipped, ${result.conflicts.length} conflict(s) require manual resolution.`,
+      );
+    } catch {
+      setBackupMessage("The backup is invalid or unsupported.");
+    }
+  }
+
+  function updateLocale(value: Locale) {
+    setLocale(value);
+    void supabase
+      ?.from("profiles")
+      .update({ locale: value, updated_at: new Date().toISOString() })
+      .eq("id", ownerId);
+  }
+
+  function updateTheme(value: ThemePreference) {
+    setTheme(value);
+    if (value !== "system") Appearance.setColorScheme(value);
+    void supabase
+      ?.from("profiles")
+      .update({ theme: value, updated_at: new Date().toISOString() })
+      .eq("id", ownerId);
+  }
+
+  async function enableNotifications() {
+    const registration = await new DeviceNotificationAdapter().register(
+      ownerId,
+    );
+    if (!registration) {
+      Alert.alert(
+        "Notifications",
+        "Permission was denied or Web Push is unavailable.",
+      );
+      return;
+    }
+
+    if (supabase) {
+      const { error } = await supabase.from("devices").upsert({
+        id: registration.id,
+        owner_id: registration.ownerId,
+        platform: registration.platform,
+        token: registration.token,
+        enabled: true,
+        updated_at: new Date().toISOString(),
+      });
+      if (error) throw error;
+    }
+    Alert.alert("Notifications", "This device is registered.");
+  }
+  return (
+    <ScrollView contentContainerStyle={styles.page}>
+      <Text
+        accessibilityRole="header"
+        style={[styles.heading, { color: colors.text }]}
+      >
+        {t("settings")}
+      </Text>
+      <Text style={[styles.label, { color: colors.text }]}>
+        {t("language")}
+      </Text>
+      <View style={styles.chips}>
+        <Button
+          label="English"
+          onPress={() => updateLocale("en")}
+          active={locale === "en"}
+          colors={colors}
+        />
+        <Button
+          label="Português (Brasil)"
+          onPress={() => updateLocale("pt-BR")}
+          active={locale === "pt-BR"}
+          colors={colors}
+        />
+      </View>
+      <Text style={[styles.label, { color: colors.text }]}>{t("theme")}</Text>
+      <View style={styles.chips}>
+        {(["system", "light", "dark"] as const).map((value) => (
+          <Button
+            key={value}
+            label={value}
+            onPress={() => updateTheme(value)}
+            active={theme === value}
+            colors={colors}
+          />
+        ))}
+      </View>
+      <Button
+        label="Export JSON"
+        onPress={() => void exportJson()}
+        colors={colors}
+      />
+      <Field
+        label="Paste JSON backup to merge"
+        value={backupText}
+        onChangeText={setBackupText}
+        colors={colors}
+        multiline
+      />
+      <Button
+        label="Import JSON"
+        onPress={() => void importJson()}
+        colors={colors}
+        disabled={!backupText.trim()}
+      />
+      {backupMessage && (
+        <Text accessibilityRole="alert" style={{ color: colors.muted }}>
+          {backupMessage}
+        </Text>
+      )}
+      {importConflicts.map((conflict) => (
+        <View
+          key={conflict.id}
+          style={[styles.card, { borderColor: colors.warning }]}
+        >
+          <Text style={[styles.cardTitle, { color: colors.text }]}>
+            {conflict.local.title}
+          </Text>
+          <View style={styles.actions}>
+            {(["local", "remote"] as const).map((choice) => (
+              <Button
+                key={choice}
+                label={`Keep ${choice === "local" ? "existing" : "imported"}`}
+                colors={colors}
+                onPress={() =>
+                  void localRepository
+                    .save({
+                      ...conflict[choice],
+                      revision: conflict[choice].revision + 1,
+                      updatedAt: new Date().toISOString(),
+                    })
+                    .then(() =>
+                      setImportConflicts((items) =>
+                        items.filter(({ id }) => id !== conflict.id),
+                      ),
+                    )
+                }
+              />
+            ))}
+          </View>
+        </View>
+      ))}
+      <Button
+        label="Enable notifications on this device"
+        onPress={() =>
+          void enableNotifications().catch(() =>
+            Alert.alert("Notifications", "Device registration failed."),
+          )
+        }
+        colors={colors}
+      />
+      <Button
+        label="Sign out"
+        onPress={() => void authentication?.signOut()}
+        colors={colors}
+      />
+      <Button
+        label="Delete account and data"
+        onPress={() =>
+          Alert.alert(
+            "Delete account",
+            "This permanently deletes all synchronized data.",
+            [
+              { text: t("cancel") },
+              {
+                text: t("delete"),
+                style: "destructive",
+                onPress: () => void authentication?.deleteAccount(),
+              },
+            ],
+          )
+        }
+        colors={colors}
+        danger
+      />
+    </ScrollView>
+  );
+}
+
+function Field({
+  label,
+  colors,
+  ...props
+}: {
+  label: string;
+  colors: Colors;
+  value: string;
+  onChangeText: (value: string) => void;
+  multiline?: boolean;
+}) {
+  return (
+    <View>
+      <Text style={[styles.label, { color: colors.text }]}>{label}</Text>
+      <TextInput
+        accessibilityLabel={label}
+        placeholderTextColor={colors.muted}
+        style={[
+          styles.input,
+          props.multiline && styles.multiline,
+          {
+            color: colors.text,
+            borderColor: colors.border,
+            backgroundColor: colors.surface,
+          },
+        ]}
+        {...props}
+      />
     </View>
   );
 }
 
+function Button({
+  label,
+  onPress,
+  colors,
+  active,
+  danger,
+  compact,
+  disabled,
+}: {
+  label: string;
+  onPress: () => void;
+  colors: Colors;
+  active?: boolean;
+  danger?: boolean;
+  compact?: boolean;
+  disabled?: boolean;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityState={{ disabled, selected: active }}
+      disabled={disabled}
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.button,
+        compact && styles.compactButton,
+        {
+          backgroundColor: active ? colors.accent : colors.surface,
+          borderColor: colors.border,
+          opacity: disabled ? 0.45 : pressed ? 0.75 : 1,
+        },
+      ]}
+    >
+      <Text
+        style={[
+          styles.buttonText,
+          { color: danger ? colors.danger : active ? "#fff" : colors.text },
+        ]}
+      >
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
+function EmptyState({
+  title,
+  message,
+  colors,
+}: {
+  title: string;
+  message: string;
+  colors: Colors;
+}) {
+  return (
+    <View style={[styles.empty, { borderColor: colors.border }]}>
+      <Text style={[styles.cardTitle, { color: colors.text }]}>{title}</Text>
+      <Text style={[styles.body, { color: colors.muted }]}>{message}</Text>
+    </View>
+  );
+}
+
+function CenteredMessage({ text, colors }: { text: string; colors: Colors }) {
+  return (
+    <SafeAreaView
+      style={[
+        styles.safe,
+        styles.center,
+        { backgroundColor: colors.background },
+      ]}
+    >
+      <Text style={{ color: colors.text }}>{text}</Text>
+    </SafeAreaView>
+  );
+}
+
+interface Colors {
+  background: string;
+  surface: string;
+  text: string;
+  muted: string;
+  border: string;
+  accent: string;
+  danger: string;
+  warning: string;
+}
+const lightColors: Colors = {
+  background: "#f7f7fb",
+  surface: "#ffffff",
+  text: "#161622",
+  muted: "#616173",
+  border: "#d9d9e3",
+  accent: "#5b47d6",
+  danger: "#b42318",
+  warning: "#9a6700",
+};
+const darkColors: Colors = {
+  background: "#111118",
+  surface: "#1c1c26",
+  text: "#f6f6fa",
+  muted: "#a5a5b5",
+  border: "#393947",
+  accent: "#8878f2",
+  danger: "#ff8a80",
+  warning: "#f2cc60",
+};
+
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#fff',
-    alignItems: 'center',
-    justifyContent: 'center',
+  safe: { flex: 1 },
+  shell: { flex: 1 },
+  wideShell: { flexDirection: "row" },
+  navigation: { padding: 16, borderBottomWidth: 1, gap: 14 },
+  brand: { fontSize: 20, fontWeight: "800" },
+  navItems: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  content: { flex: 1 },
+  page: {
+    width: "100%",
+    maxWidth: 850,
+    alignSelf: "center",
+    padding: 20,
+    gap: 16,
   },
+  center: { alignItems: "center", justifyContent: "center", padding: 20 },
+  signInCard: { width: "100%", maxWidth: 420 },
+  heading: { fontSize: 30, fontWeight: "800" },
+  cardTitle: { fontSize: 18, fontWeight: "700" },
+  body: { fontSize: 15, lineHeight: 22 },
+  caption: { fontSize: 13, lineHeight: 20 },
+  label: { fontSize: 14, fontWeight: "700", marginBottom: 6 },
+  card: { borderWidth: 1, borderRadius: 16, padding: 16, gap: 12 },
+  titleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  flex: { flex: 1 },
+  input: {
+    minHeight: 48,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    fontSize: 16,
+  },
+  multiline: { minHeight: 90, paddingTop: 12, textAlignVertical: "top" },
+  button: {
+    minHeight: 44,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 16,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  compactButton: { minHeight: 36, paddingHorizontal: 11 },
+  buttonText: { fontWeight: "700" },
+  chips: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  actions: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  empty: {
+    borderWidth: 1,
+    borderStyle: "dashed",
+    borderRadius: 16,
+    padding: 30,
+    alignItems: "center",
+    gap: 8,
+  },
+  preview: { borderWidth: 1, borderRadius: 12, padding: 14, gap: 5 },
+  notice: { fontWeight: "600", lineHeight: 20 },
 });

@@ -1,12 +1,25 @@
 {
-  "name": "app",
-  "version": "1.0.0",
+  "name": "@cron-reminder/app",
+  "version": "0.1.0",
   "main": "index.ts",
   "dependencies": {
+    "@cron-reminder/application": "0.1.0",
+    "@cron-reminder/domain": "0.1.0",
+    "@cron-reminder/infrastructure": "0.1.0",
+    "@cron-reminder/localization": "0.1.0",
+    "@expo/metro-runtime": "~57.0.16",
+    "@react-native-async-storage/async-storage": "2.2.0",
+    "@supabase/supabase-js": "^2.117.1",
     "expo": "~57.0.24",
+    "expo-audio": "~57.0.5",
+    "expo-localization": "~57.0.2",
+    "expo-notifications": "~57.0.20",
+    "expo-secure-store": "~57.0.4",
     "expo-status-bar": "~57.0.1",
     "react": "19.2.3",
-    "react-native": "0.86.3"
+    "react-dom": "19.2.3",
+    "react-native": "0.86.3",
+    "react-native-web": "~0.21.0"
   },
   "devDependencies": {
     "@types/react": "~19.2.2",
@@ -16,7 +29,8 @@
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "export:web": "expo export --platform web && node -e \"require('node:fs').copyFileSync('public/sw.js', 'dist/sw.js')\""
   },
   "private": true
 }
