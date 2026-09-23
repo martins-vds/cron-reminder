@@ -261,14 +261,14 @@ export class SupabaseReminderRepository implements ReminderRepository {
 
   async delete(id: string): Promise<void> {
     const existing = await this.get(id);
-    const { error } = await this.client.from("reminders").delete().eq("id", id);
-    if (error) throw error;
     if (existing) {
       const { error: tombstoneError } = await this.client
         .from("reminder_tombstones")
         .upsert({ id, owner_id: existing.ownerId });
       if (tombstoneError) throw tombstoneError;
     }
+    const { error } = await this.client.from("reminders").delete().eq("id", id);
+    if (error) throw error;
   }
 
   async listDeletedIds(ownerId: string): Promise<string[]> {

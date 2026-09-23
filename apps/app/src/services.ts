@@ -124,13 +124,13 @@ export async function deleteReminder(
   ownerId: string,
 ): Promise<void> {
   await withSynchronization(async () => {
-    await localRepository.delete(id);
     await withTombstones(async () => {
       const deleted = await readDeleted();
       if (!deleted.some((item) => item.id === id))
         deleted.push({ id, ownerId });
       await AsyncStorage.setItem(deletedKey, JSON.stringify(deleted));
     });
+    await localRepository.delete(id);
     await flushDeletedReminders(ownerId);
   });
 }
@@ -142,6 +142,10 @@ export async function flushDeletedReminders(ownerId: string): Promise<void> {
     const mine = deleted.filter((item) => item.ownerId === ownerId);
     if (!mine.length) return;
     const ids = mine.map(({ id }) => id);
+    const { error: tombstoneError } = await supabase
+      .from("reminder_tombstones")
+      .upsert(mine.map(({ id }) => ({ id, owner_id: ownerId })));
+    if (tombstoneError) throw tombstoneError;
     const { error } = await supabase.from("reminders").delete().in("id", ids);
     if (error) throw error;
     const latest = await readDeleted();

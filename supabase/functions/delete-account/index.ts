@@ -3,6 +3,7 @@ import { corsHeaders } from '../_shared/cors.ts';
 
 Deno.serve(async (request) => {
   if (request.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
+  if (request.method !== 'POST') return response({ error: 'Method not allowed' }, 405);
   const authorization = request.headers.get('Authorization');
   if (!authorization) return response({ error: 'Unauthorized' }, 401);
 

@@ -213,17 +213,14 @@ export function RootNavigator() {
     );
   }
 
-  const appContext = useMemo<AppContextValue>(
-    () => ({
-      ownerId,
-      locale,
-      setLocale,
-      theme,
-      setTheme,
-      colors,
-    }),
-    [colors, locale, ownerId, theme],
-  );
+  const appContext: AppContextValue = {
+    ownerId,
+    locale,
+    setLocale,
+    theme,
+    setTheme,
+    colors,
+  };
 
   return (
     <AppContext.Provider value={appContext}>

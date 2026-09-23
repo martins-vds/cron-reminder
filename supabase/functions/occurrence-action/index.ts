@@ -26,6 +26,7 @@ Deno.serve(async (request) => {
     .from('occurrences')
     .update(patch)
     .eq('id', input.occurrenceId)
+    .eq('status', 'triggered')
     .select('id,reminder_id,owner_id')
     .single();
   if (error || !data) return response({ error: 'Occurrence not found' }, 404);

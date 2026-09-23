@@ -132,6 +132,7 @@ describe("versioned JSON backup", () => {
 class FakeSupabaseClient {
   reminders = new Map<string, Record<string, unknown>>();
   tombstones: Array<{ id: string; owner_id: string }> = [];
+  operations: string[] = [];
 
   from(table: string) {
     if (table === "reminders") return this.remindersTable();
@@ -182,6 +183,7 @@ class FakeSupabaseClient {
       }),
       delete: () => ({
         eq: (_column: string, id: string) => {
+          this.operations.push("delete");
           this.reminders.delete(id);
           return Promise.resolve({ error: null });
         },
@@ -199,6 +201,7 @@ class FakeSupabaseClient {
           }),
       }),
       upsert: async (row: { id: string; owner_id: string }) => {
+        this.operations.push("tombstone");
         this.tombstones = this.tombstones.filter((item) => item.id !== row.id);
         this.tombstones.push(row);
         return { error: null };
@@ -265,6 +268,7 @@ describe("Supabase reminder repository", () => {
 
     expect(fake.reminders.has(original.id)).toBe(false);
     expect(await repository.listDeletedIds("u1")).toEqual([original.id]);
+    expect(fake.operations).toEqual(["tombstone", "delete"]);
   });
 });
 

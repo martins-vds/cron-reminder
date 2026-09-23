@@ -18,10 +18,12 @@ interface ReminderRow {
       };
   timezone: string;
   sound: { mode: 'default' | 'silent' | 'vibrate' };
+  created_at: string;
 }
 
 const DISPATCH_STATE_ID = true;
 const MAX_OCCURRENCES_PER_RUN = 500;
+const REMINDER_PAGE_SIZE = 1_000;
 
 Deno.serve(async (request) => {
   const cronSecret = Deno.env.get('CRON_SECRET');
@@ -36,43 +38,54 @@ Deno.serve(async (request) => {
   const minuteStart = new Date(now);
   minuteStart.setUTCSeconds(0, 0);
   const windowEnd = new Date(minuteStart.getTime() + 60_000);
-  let delivered = await dispatchPostponed(client, now);
-
-  const { data: state } = await client
+  const { data: state, error: stateError } = await client
     .from('dispatch_state')
     .select('last_dispatched_at')
     .eq('id', DISPATCH_STATE_ID)
     .maybeSingle();
+  if (stateError) return json({ error: 'Unable to load dispatch state' }, 500);
   const windowStart = state?.last_dispatched_at
     ? new Date(state.last_dispatched_at)
     : new Date(minuteStart.getTime() - 60_000);
+  let nextWindowStart = windowEnd;
+  let delivered = await dispatchPostponed(client, now);
 
-  const { data, error } = await client
-    .from('reminders')
-    .select('id,owner_id,title,notes,schedule,timezone,sound')
-    .eq('status', 'active');
-  if (error) return json({ error: 'Unable to load reminders' }, 500);
+  let reminders: ReminderRow[];
+  try {
+    reminders = await loadReminders(client);
+  } catch {
+    return json({ error: 'Unable to load reminders' }, 500);
+  }
 
-  for (const reminder of (data ?? []) as ReminderRow[]) {
-    let occurrences: Date[];
+  for (const reminder of reminders) {
+    let dueResult: ReturnType<typeof dueOccurrences>;
     try {
-      occurrences = dueOccurrences(reminder, windowStart, windowEnd);
+      dueResult = dueOccurrences(reminder, windowStart, windowEnd);
     } catch {
       continue;
     }
+    let occurrences = dueResult.occurrences;
     if (!occurrences.length) continue;
 
     if (
       reminder.schedule.kind === 'cron' &&
       reminder.schedule.occurrenceLimit !== undefined
     ) {
-      const { count } = await client
+      const { count, error: countError } = await client
         .from('occurrences')
         .select('id', { count: 'exact', head: true })
         .eq('reminder_id', reminder.id);
+      if (countError) return json({ error: 'Unable to count occurrences' }, 500);
       const remaining = reminder.schedule.occurrenceLimit - (count ?? 0);
       if (remaining <= 0) continue;
+      if (remaining < occurrences.length) dueResult.resumeAt = undefined;
       occurrences = occurrences.slice(0, remaining);
+    }
+    if (
+      dueResult.resumeAt &&
+      dueResult.resumeAt.getTime() < nextWindowStart.getTime()
+    ) {
+      nextWindowStart = dueResult.resumeAt;
     }
 
     for (const due of occurrences) {
@@ -87,7 +100,9 @@ Deno.serve(async (request) => {
           scheduled_at: due.toISOString(),
           status: missed ? 'missed' : 'triggered',
         });
-      if (occurrenceError) continue;
+      if (occurrenceError?.code === '23505') continue;
+      if (occurrenceError)
+        return json({ error: 'Unable to create occurrence' }, 500);
 
       if (missed) {
         await client.from('history').insert({
@@ -103,13 +118,34 @@ Deno.serve(async (request) => {
     }
   }
 
-  await client.from('dispatch_state').upsert({
+  const { error: updateStateError } = await client.from('dispatch_state').upsert({
     id: DISPATCH_STATE_ID,
-    last_dispatched_at: windowEnd.toISOString(),
+    last_dispatched_at: nextWindowStart.toISOString(),
   });
+  if (updateStateError)
+    return json({ error: 'Unable to update dispatch state' }, 500);
   await client.rpc('delete_expired_history');
   return json({ delivered });
 });
+
+async function loadReminders(
+  client: ReturnType<typeof createClient>,
+): Promise<ReminderRow[]> {
+  const reminders: ReminderRow[] = [];
+  for (let from = 0; ; from += REMINDER_PAGE_SIZE) {
+    const { data, error } = await client
+      .from('reminders')
+      .select(
+        'id,owner_id,title,notes,schedule,timezone,sound,created_at',
+      )
+      .eq('status', 'active')
+      .order('id')
+      .range(from, from + REMINDER_PAGE_SIZE - 1);
+    if (error) throw error;
+    reminders.push(...((data ?? []) as ReminderRow[]));
+    if (!data || data.length < REMINDER_PAGE_SIZE) return reminders;
+  }
+}
 
 async function dispatchPostponed(
   client: ReturnType<typeof createClient>,
@@ -124,7 +160,7 @@ async function dispatchPostponed(
   for (const occurrence of data ?? []) {
     const { data: reminder } = await client
       .from('reminders')
-      .select('id,owner_id,title,notes,schedule,timezone,sound')
+      .select('id,owner_id,title,notes,schedule,timezone,sound,created_at')
       .eq('id', occurrence.reminder_id)
       .eq('status', 'active')
       .maybeSingle();
@@ -224,30 +260,43 @@ function dueOccurrences(
   reminder: ReminderRow,
   windowStart: Date,
   windowEnd: Date,
-): Date[] {
+): { occurrences: Date[]; resumeAt?: Date } {
+  const reminderCreatedAt = new Date(reminder.created_at);
+  const lowerBound =
+    reminderCreatedAt > windowStart ? reminderCreatedAt : windowStart;
   if (reminder.schedule.kind === 'once') {
     const date = new Date(reminder.schedule.at);
-    return date > windowStart && date < windowEnd ? [date] : [];
+    return {
+      occurrences:
+        date >= lowerBound && date < windowEnd ? [date] : [],
+    };
   }
   const results: Date[] = [];
   const interval = CronExpressionParser.parse(reminder.schedule.expression, {
-    currentDate: windowStart,
+    currentDate: new Date(lowerBound.getTime() - 1),
     startDate: reminder.schedule.startAt,
     endDate: reminder.schedule.endAt,
     tz: reminder.timezone,
   });
-  for (let i = 0; i < MAX_OCCURRENCES_PER_RUN; i++) {
+  for (let i = 0; i <= MAX_OCCURRENCES_PER_RUN; i++) {
     let date: Date;
     try {
       date = interval.next().toDate();
     } catch {
       break;
     }
-    if (date <= windowStart) continue;
+    if (date < lowerBound) continue;
     if (date >= windowEnd) break;
     results.push(date);
   }
-  return results;
+  if (results.length > MAX_OCCURRENCES_PER_RUN) {
+    const occurrences = results.slice(0, MAX_OCCURRENCES_PER_RUN);
+    return {
+      occurrences,
+      resumeAt: occurrences[occurrences.length - 1],
+    };
+  }
+  return { occurrences: results };
 }
 
 async function sendExpoPush(
