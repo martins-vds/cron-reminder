@@ -3,6 +3,7 @@ import { getLocales } from "expo-localization";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Alert,
+  AppState,
   Appearance,
   Platform,
   Pressable,
@@ -39,9 +40,13 @@ import {
 } from "@cron-reminder/localization";
 import {
   authentication,
+  deleteReminder,
   localRepository,
+  rememberDevice,
+  resolveSynchronizationConflict,
+  submitNotificationAction,
   supabase,
-  synchronization,
+  synchronizeReminders,
 } from "./src/services";
 import { DeviceNotificationAdapter } from "./src/notificationAdapter";
 
@@ -107,6 +112,59 @@ export default function App() {
         )
           setTheme(data.theme);
       });
+  }, [ownerId]);
+
+  useEffect(() => {
+    if (!ownerId) return;
+    const retry = () => void synchronizeReminders(ownerId).catch(() => {});
+    if (Platform.OS === "web") {
+      globalThis.addEventListener("online", retry);
+      return () => globalThis.removeEventListener("online", retry);
+    }
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state === "active") retry();
+    });
+    return () => subscription.remove();
+  }, [ownerId]);
+
+  useEffect(() => {
+    if (!ownerId) return;
+    if (Platform.OS === "web") {
+      const parameters = new URLSearchParams(globalThis.location.search);
+      const action = parameters.get("action");
+      const occurrenceId = parameters.get("occurrenceId");
+      if (occurrenceId && (action === "dismiss" || action === "snooze")) {
+        void submitNotificationAction(occurrenceId, action);
+        globalThis.history.replaceState({}, "", globalThis.location.pathname);
+      }
+      return;
+    }
+    let remove: (() => void) | undefined;
+    void import("expo-notifications").then((Notifications) => {
+      const handleResponse = (
+        response: Awaited<
+          ReturnType<typeof Notifications.getLastNotificationResponseAsync>
+        >,
+      ) => {
+        if (!response) return;
+        const occurrenceId =
+          response.notification.request.content.data?.occurrenceId;
+        const action = response.actionIdentifier;
+        if (
+          typeof occurrenceId === "string" &&
+          (action === "dismiss" || action === "snooze")
+        )
+          void submitNotificationAction(occurrenceId, action);
+      };
+      void Notifications.getLastNotificationResponseAsync().then((response) => {
+        handleResponse(response);
+        if (response) void Notifications.clearLastNotificationResponseAsync();
+      });
+      const subscription =
+        Notifications.addNotificationResponseReceivedListener(handleResponse);
+      remove = () => subscription.remove();
+    });
+    return () => remove?.();
   }, [ownerId]);
 
   if (loadingSession) {
@@ -331,9 +389,7 @@ function ReminderList({
   );
   useEffect(refresh, [refresh]);
   useEffect(() => {
-    if (!synchronization) return;
-    void synchronization
-      .synchronize(ownerId)
+    void synchronizeReminders(ownerId)
       .then((conflicts) => {
         setSyncConflicts(conflicts);
         setSyncMessage(
@@ -372,6 +428,13 @@ function ReminderList({
 
   async function mutate(action: () => Promise<unknown>) {
     await action();
+    try {
+      setSyncConflicts(await synchronizeReminders(ownerId));
+    } catch {
+      setSyncMessage(
+        "Offline changes will synchronize when connectivity returns.",
+      );
+    }
     refresh();
   }
 
@@ -381,7 +444,7 @@ function ReminderList({
       {
         text: t("delete"),
         style: "destructive",
-        onPress: () => void mutate(() => service.delete(reminder.id)),
+        onPress: () => void mutate(() => deleteReminder(reminder.id, ownerId)),
       },
     ]);
   }
@@ -430,14 +493,15 @@ function ReminderList({
                 label={`Keep ${choice}`}
                 colors={colors}
                 onPress={() =>
-                  void synchronization
-                    ?.resolve(conflict, conflict[choice])
-                    .then(() => {
-                      setSyncConflicts((items) =>
-                        items.filter(({ id }) => id !== conflict.id),
-                      );
-                      refresh();
-                    })
+                  void resolveSynchronizationConflict(
+                    conflict,
+                    conflict[choice],
+                  ).then(() => {
+                    setSyncConflicts((items) =>
+                      items.filter(({ id }) => id !== conflict.id),
+                    );
+                    refresh();
+                  })
                 }
               />
             ))}
@@ -634,6 +698,7 @@ function ReminderEditor({
       };
       if (reminder) await service.update(reminder.id, changes);
       else await service.create({ ...changes, ownerId });
+      await synchronizeReminders(ownerId).catch(() => []);
       onSaved();
     } catch (reason) {
       setError(
@@ -903,6 +968,7 @@ function Settings({
       });
       if (error) throw error;
     }
+    await rememberDevice(registration.id);
     Alert.alert("Notifications", "This device is registered.");
   }
   return (

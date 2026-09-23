@@ -24,11 +24,11 @@
       "bundler": "metro"
     },
     "plugins": [
-      "expo-localization",
       "expo-secure-store",
+      "expo-localization",
       "expo-audio",
+      "expo-web-browser",
       ["expo-notifications", { "sounds": [] }]
-    ],
-    "plugins": ["expo-secure-store", "expo-localization", "expo-audio"]
+    ]
   }
 }

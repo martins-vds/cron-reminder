@@ -26,9 +26,16 @@ Deno.serve(async (request) => {
     .from('occurrences')
     .update(patch)
     .eq('id', input.occurrenceId)
-    .select('id')
+    .select('id,reminder_id,owner_id')
     .single();
-  return error || !data ? response({ error: 'Occurrence not found' }, 404) : response({ updated: true });
+  if (error || !data) return response({ error: 'Occurrence not found' }, 404);
+  await client.from('history').insert({
+    reminder_id: data.reminder_id,
+    occurrence_id: data.id,
+    owner_id: data.owner_id,
+    event_type: input.action === 'dismiss' ? 'dismissed' : 'postponed',
+  });
+  return response({ updated: true });
 });
 
 function isAction(value: unknown): value is { occurrenceId: string; action: 'dismiss' } | { occurrenceId: string; action: 'snooze'; minutes: number } {

@@ -1,11 +1,18 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { createClient } from "@supabase/supabase-js";
+import { makeRedirectUri } from "expo-auth-session";
+import * as WebBrowser from "expo-web-browser";
 import {
   JsonReminderRepository,
   OfflineSynchronizationAdapter,
   SupabaseReminderRepository,
 } from "@cron-reminder/infrastructure";
-import type { AuthenticationPort } from "@cron-reminder/application";
+import type {
+  AuthenticationPort,
+  SyncConflict,
+} from "@cron-reminder/application";
+import type { Reminder } from "@cron-reminder/domain";
+import { Platform } from "react-native";
 
 export const localRepository = new JsonReminderRepository({
   get: (key) => AsyncStorage.getItem(key),
@@ -23,15 +30,22 @@ export const supabase =
           storage: AsyncStorage,
           autoRefreshToken: true,
           detectSessionInUrl: true,
+          flowType: "pkce",
           persistSession: true,
         },
       })
     : null;
 
-const redirectTo =
-  typeof globalThis.location === "object"
-    ? `${globalThis.location.origin}/auth/callback`
-    : "cron-reminder://auth/callback";
+WebBrowser.maybeCompleteAuthSession();
+
+const redirectTo = makeRedirectUri({
+  scheme: "cron-reminder",
+  path: "auth/callback",
+});
+const deviceKey = "cron-reminder:device-id";
+const deletedKey = "cron-reminder:deleted";
+let tombstoneQueue = Promise.resolve();
+let synchronizationQueue = Promise.resolve();
 
 export const authentication: AuthenticationPort | null = supabase
   ? {
@@ -40,13 +54,35 @@ export const authentication: AuthenticationPort | null = supabase
         return data.user ? { id: data.user.id } : null;
       },
       async signIn(provider) {
-        const { error } = await supabase.auth.signInWithOAuth({
+        const { data, error } = await supabase.auth.signInWithOAuth({
           provider,
-          options: { redirectTo },
+          options: {
+            redirectTo,
+            skipBrowserRedirect: Platform.OS !== "web",
+          },
         });
         if (error) throw error;
+        if (Platform.OS !== "web" && data.url) {
+          const result = await WebBrowser.openAuthSessionAsync(
+            data.url,
+            redirectTo,
+          );
+          if (result.type !== "success") return;
+          const code = new URL(result.url).searchParams.get("code");
+          if (!code) throw new Error("OAuth callback did not include a code.");
+          const exchange = await supabase.auth.exchangeCodeForSession(code);
+          if (exchange.error) throw exchange.error;
+        }
       },
       async signOut() {
+        const deviceId = await AsyncStorage.getItem(deviceKey);
+        if (deviceId) {
+          const { error: deviceError } = await supabase
+            .from("devices")
+            .delete()
+            .eq("id", deviceId);
+          if (!deviceError) await AsyncStorage.removeItem(deviceKey);
+        }
         const { error } = await supabase.auth.signOut();
         if (error) throw error;
       },
@@ -68,3 +104,111 @@ export const synchronization = supabase
       ),
     )
   : null;
+
+export async function rememberDevice(id: string): Promise<void> {
+  await AsyncStorage.setItem(deviceKey, id);
+}
+
+export async function deleteReminder(
+  id: string,
+  ownerId: string,
+): Promise<void> {
+  await withSynchronization(async () => {
+    await localRepository.delete(id);
+    await withTombstones(async () => {
+      const deleted = await readDeleted();
+      if (!deleted.some((item) => item.id === id))
+        deleted.push({ id, ownerId });
+      await AsyncStorage.setItem(deletedKey, JSON.stringify(deleted));
+    });
+    await flushDeletedReminders(ownerId);
+  });
+}
+
+export async function flushDeletedReminders(ownerId: string): Promise<void> {
+  if (!supabase) return;
+  await withTombstones(async () => {
+    const deleted = await readDeleted();
+    const mine = deleted.filter((item) => item.ownerId === ownerId);
+    if (!mine.length) return;
+    const ids = mine.map(({ id }) => id);
+    const { error } = await supabase.from("reminders").delete().in("id", ids);
+    if (error) throw error;
+    const latest = await readDeleted();
+    await AsyncStorage.setItem(
+      deletedKey,
+      JSON.stringify(
+        latest.filter(
+          (item) => item.ownerId !== ownerId || !ids.includes(item.id),
+        ),
+      ),
+    );
+  });
+}
+
+export async function submitNotificationAction(
+  occurrenceId: string,
+  action: "dismiss" | "snooze",
+): Promise<void> {
+  if (!supabase) return;
+  const body =
+    action === "snooze"
+      ? { occurrenceId, action, minutes: 10 }
+      : { occurrenceId, action };
+  const { error } = await supabase.functions.invoke("occurrence-action", {
+    body,
+  });
+  if (error) throw error;
+}
+
+export async function synchronizeReminders(
+  ownerId: string,
+): Promise<readonly SyncConflict[]> {
+  if (!synchronization) return [];
+  return withSynchronization(async () => {
+    await flushDeletedReminders(ownerId);
+    return synchronization.synchronize(ownerId);
+  });
+}
+
+export async function resolveSynchronizationConflict(
+  conflict: SyncConflict,
+  resolution: Reminder,
+): Promise<void> {
+  if (!synchronization) return;
+  await withSynchronization(() =>
+    synchronization.resolve(conflict, resolution),
+  );
+}
+
+async function readDeleted(): Promise<Array<{ id: string; ownerId: string }>> {
+  const value = await AsyncStorage.getItem(deletedKey);
+  if (!value) return [];
+  const parsed: unknown = JSON.parse(value);
+  if (!Array.isArray(parsed)) return [];
+  return parsed.filter(
+    (item): item is { id: string; ownerId: string } =>
+      typeof item === "object" &&
+      item !== null &&
+      typeof (item as Record<string, unknown>).id === "string" &&
+      typeof (item as Record<string, unknown>).ownerId === "string",
+  );
+}
+
+function withTombstones<T>(operation: () => Promise<T>): Promise<T> {
+  const result = tombstoneQueue.then(operation, operation);
+  tombstoneQueue = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
+
+function withSynchronization<T>(operation: () => Promise<T>): Promise<T> {
+  const result = synchronizationQueue.then(operation, operation);
+  synchronizationQueue = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}

@@ -17,8 +17,19 @@ create table public.reminders (
   title text not null check (length(trim(title)) > 0),
   notes text not null default '',
   tags text[] not null default '{}',
-  schedule jsonb not null,
-  timezone text not null,
+  schedule jsonb not null check (
+    jsonb_typeof(schedule) = 'object'
+    and schedule->>'kind' in ('once', 'cron')
+    and (
+      (schedule->>'kind' = 'once' and schedule ? 'at')
+      or
+      (
+        schedule->>'kind' = 'cron'
+        and schedule->>'expression' ~ '^\S+\s+\S+\s+\S+\s+\S+\s+\S+$'
+      )
+    )
+  ),
+  timezone text not null check (length(trim(timezone)) > 0),
   sound jsonb not null default '{"mode":"default"}',
   status public.reminder_status not null default 'active',
   revision integer not null default 1 check (revision > 0),
@@ -83,6 +94,7 @@ create policy "owners manage profile" on public.profiles for all using (id = aut
 create policy "owners manage reminders" on public.reminders for all using (owner_id = auth.uid()) with check (owner_id = auth.uid());
 create policy "owners manage occurrences" on public.occurrences for all using (owner_id = auth.uid()) with check (owner_id = auth.uid());
 create policy "owners read history" on public.history for select using (owner_id = auth.uid());
+create policy "owners append history" on public.history for insert with check (owner_id = auth.uid());
 create policy "owners register devices" on public.devices for all using (owner_id = auth.uid()) with check (owner_id = auth.uid());
 create policy "owners manage conflicts" on public.sync_conflicts for all using (owner_id = auth.uid()) with check (owner_id = auth.uid());
 
