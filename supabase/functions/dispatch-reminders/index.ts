@@ -229,7 +229,7 @@ async function dispatchPostponed(
     .eq('status', 'postponed')
     .lte('snoozed_until', now.toISOString());
   if (error) throw error;
-  let delivered = alreadyDelivered.size;
+  let delivered = 0;
   for (const occurrence of data ?? []) {
     const reminder = await loadActiveReminder(client, occurrence.reminder_id);
     if (!reminder) continue;
@@ -337,7 +337,7 @@ async function deliverToDevices(
   const alreadyDelivered = new Set(
     (deliveredDevices ?? []).map(({ device_id }) => String(device_id)),
   );
-  let delivered = 0;
+  let delivered = alreadyDelivered.size;
   let retryableFailures = 0;
   for (const device of devices ?? []) {
     if (alreadyDelivered.has(device.id)) continue;
