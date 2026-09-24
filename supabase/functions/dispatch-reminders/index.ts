@@ -186,8 +186,7 @@ async function claimUndelivered(
     .eq('id', occurrenceId)
     .is('delivered_at', null)
     .lt('delivery_attempts', MAX_DELIVERY_ATTEMPTS)
-    .or(deliveryAttemptDueFilter(now))
-    .or(deliverableStatusFilter(now))
+    .or(deliverableFilter(now))
     .select('id')
     .maybeSingle();
   if (error) throw error;
@@ -203,8 +202,7 @@ async function dispatchPendingDeliveries(
     .select('id,reminder_id')
     .is('delivered_at', null)
     .lt('delivery_attempts', MAX_DELIVERY_ATTEMPTS)
-    .or(deliveryAttemptDueFilter(now))
-    .or(deliverableStatusFilter(now));
+    .or(deliverableFilter(now));
   if (error) throw error;
   let delivered = 0;
   for (const occurrence of data ?? []) {
@@ -362,6 +360,10 @@ function deliverableStatusFilter(now: Date): string {
     `and(status.eq.delivering,acted_at.lt.${staleBefore})`,
     'and(status.eq.delivering,acted_at.is.null)',
   ].join(',');
+}
+
+function deliverableFilter(now: Date): string {
+  return `and(or(${deliveryAttemptDueFilter(now)}),or(${deliverableStatusFilter(now)}))`;
 }
 
 function retryDelayMs(attempts: number): number {

@@ -114,7 +114,6 @@ create policy "owners manage profile" on public.profiles for all using (id = aut
 create policy "owners manage reminders" on public.reminders for all using (owner_id = auth.uid()) with check (owner_id = auth.uid());
 create policy "owners read occurrences" on public.occurrences for select using (owner_id = auth.uid());
 create policy "owners read history" on public.history for select using (owner_id = auth.uid());
-create policy "owners append history" on public.history for insert with check (owner_id = auth.uid());
 create policy "owners register devices" on public.devices for all using (owner_id = auth.uid()) with check (owner_id = auth.uid());
 create policy "owners manage conflicts" on public.sync_conflicts for all using (owner_id = auth.uid()) with check (owner_id = auth.uid());
 create policy "owners manage tombstones" on public.reminder_tombstones for all using (owner_id = auth.uid()) with check (owner_id = auth.uid());

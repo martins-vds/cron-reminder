@@ -1,4 +1,5 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as SecureStore from "expo-secure-store";
 import { createClient } from "@supabase/supabase-js";
 import { makeRedirectUri } from "expo-auth-session";
 import * as WebBrowser from "expo-web-browser";
@@ -23,11 +24,19 @@ export const localRepository = new JsonReminderRepository({
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
 const supabaseKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
 
+const secureStoreAdapter = {
+  getItem: (key: string) => SecureStore.getItemAsync(key),
+  setItem: (key: string, value: string) => SecureStore.setItemAsync(key, value),
+  removeItem: (key: string) => SecureStore.deleteItemAsync(key),
+};
+
+const authStorage = Platform.OS === "web" ? AsyncStorage : secureStoreAdapter;
+
 export const supabase =
   supabaseUrl && supabaseKey
     ? createClient(supabaseUrl, supabaseKey, {
         auth: {
-          storage: AsyncStorage,
+          storage: authStorage,
           autoRefreshToken: true,
           detectSessionInUrl: true,
           flowType: "pkce",
