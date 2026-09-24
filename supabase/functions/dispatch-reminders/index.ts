@@ -269,7 +269,7 @@ async function deliverOccurrence(
   try {
     const result = await deliverToDevices(client, reminder, occurrenceId);
     if (result.retryableFailures > 0) {
-      throw new Error('Retryable device deliveries failed');
+      throw new RetryableDeliveryError(result.delivered);
     }
     await recordHistory(client, reminder, occurrenceId);
     const { error } = await client
@@ -279,9 +279,9 @@ async function deliverOccurrence(
       .eq('status', 'delivering');
     if (error) throw error;
     return result.delivered;
-  } catch {
+  } catch (error) {
     await markDeliveryFailed(client, reminder, occurrenceId);
-    return 0;
+    return error instanceof RetryableDeliveryError ? error.delivered : 0;
   }
 }
 
@@ -437,6 +437,12 @@ function isPermanentDeliveryFailure(error: unknown): boolean {
 
 class PermanentDeliveryError extends Error {
   permanent = true;
+}
+
+class RetryableDeliveryError extends Error {
+  constructor(readonly delivered: number) {
+    super('Retryable device deliveries failed');
+  }
 }
 
 async function recordHistory(
