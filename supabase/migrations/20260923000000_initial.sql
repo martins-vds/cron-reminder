@@ -147,7 +147,8 @@ create table public.profiles (
 );
 
 create table public.reminders (
-  id text not null,
+  id text collate "C" not null
+    check (id ~ '^[a-z0-9_-]+$'),
   owner_id uuid not null references auth.users(id) on delete cascade,
   title text not null check (length(trim(title)) > 0),
   notes text not null default '',
@@ -171,8 +172,8 @@ create index reminders_due_idx on public.reminders(next_due_at, id)
   where status = 'active' and next_due_at is not null;
 
 create table public.occurrences (
-  id text not null,
-  reminder_id text not null,
+  id text collate "C" not null,
+  reminder_id text collate "C" not null,
   owner_id uuid not null references auth.users(id) on delete cascade,
   reminder_revision integer not null check (reminder_revision > 0),
   scheduled_at timestamptz not null,
@@ -232,13 +233,10 @@ begin
   end if;
   delete from public.devices
   where (
-      id = p_device_id
-      or (
-        platform = p_platform
-        and token_hash = digest(p_token, 'sha256')
-      )
-    )
-    and not (id = p_device_id and owner_id = requesting_user);
+    platform = p_platform
+    and token_hash = digest(p_token, 'sha256')
+  )
+  or (id = p_device_id and owner_id = requesting_user);
   insert into public.devices(
     id,
     owner_id,
@@ -279,7 +277,7 @@ create table public.sync_conflicts (
 );
 
 create table public.reminder_tombstones (
-  id text not null,
+  id text collate "C" not null,
   owner_id uuid not null references auth.users(id) on delete cascade,
   deleted_at timestamptz not null default now(),
   primary key (id, owner_id)
@@ -320,7 +318,7 @@ create table public.dispatch_state (
   id boolean primary key default true check (id),
   last_dispatched_at timestamptz not null default now(),
   last_dispatched_owner_id uuid,
-  last_dispatched_reminder_id text
+  last_dispatched_reminder_id text collate "C"
 );
 insert into public.dispatch_state (id, last_dispatched_at) values (true, now());
 
@@ -345,8 +343,8 @@ returns void language sql security definer set search_path = '' as $$
           or (
             coalesce(last_dispatched_owner_id::text, '') =
               coalesce(p_last_dispatched_owner_id::text, '')
-            and coalesce(last_dispatched_reminder_id, '') <
-              coalesce(p_last_dispatched_reminder_id, '')
+            and (coalesce(last_dispatched_reminder_id, '') collate "C") <
+              (coalesce(p_last_dispatched_reminder_id, '') collate "C")
           )
         )
       )

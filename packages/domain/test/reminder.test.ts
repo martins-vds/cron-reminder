@@ -24,6 +24,10 @@ describe("reminder lifecycle", () => {
     expect(() => createReminder({ ...base, title: " " })).toThrow("title");
   });
 
+  it("restricts reminder IDs to stable lowercase ASCII", () => {
+    expect(() => createReminder({ ...base, id: "Invalid ID" })).toThrow("ID");
+  });
+
   it("rejects invalid IANA timezones when creating or updating", () => {
     expect(() =>
       createReminder({ ...base, timezone: "Not/A_Timezone" }),

@@ -324,6 +324,7 @@ export function RootNavigator() {
                   label={t(item.key)}
                   onPress={() => router.navigate(item.path)}
                   active={pathname === item.path}
+                  selected={pathname === item.path}
                   colors={colors}
                 />
               ))}
@@ -757,6 +758,7 @@ function ReminderList({
             label={item === "all" ? "All" : t(item)}
             onPress={() => setStatus(item)}
             active={status === item}
+            selected={status === item}
             colors={colors}
             compact
           />
@@ -1004,6 +1006,7 @@ function ReminderEditor({
             label={t(value)}
             onPress={() => chooseKind(value)}
             active={kind === value}
+            selected={kind === value}
             colors={colors}
             compact
           />
@@ -1058,6 +1061,7 @@ function ReminderEditor({
             label={mode}
             onPress={() => setSound({ mode })}
             active={sound.mode === mode}
+            selected={sound.mode === mode}
             colors={colors}
             compact
           />
@@ -1185,11 +1189,13 @@ function Settings({
 
   function updateTheme(value: ThemePreference) {
     setTheme(value);
-    (
-      Appearance as typeof Appearance & {
-        setColorScheme: (scheme: "light" | "dark" | null) => void;
-      }
-    ).setColorScheme(value === "system" ? null : value);
+    if (Platform.OS !== "web") {
+      (
+        Appearance as typeof Appearance & {
+          setColorScheme: (scheme: "light" | "dark" | null) => void;
+        }
+      ).setColorScheme(value === "system" ? null : value);
+    }
     void supabase
       ?.from("profiles")
       .update({ theme: value, updated_at: new Date().toISOString() })
@@ -1241,12 +1247,14 @@ function Settings({
           label="English"
           onPress={() => updateLocale("en")}
           active={locale === "en"}
+          selected={locale === "en"}
           colors={colors}
         />
         <Button
           label="Português (Brasil)"
           onPress={() => updateLocale("pt-BR")}
           active={locale === "pt-BR"}
+          selected={locale === "pt-BR"}
           colors={colors}
         />
       </View>
@@ -1258,6 +1266,7 @@ function Settings({
             label={value}
             onPress={() => updateTheme(value)}
             active={theme === value}
+            selected={theme === value}
             colors={colors}
           />
         ))}
@@ -1429,6 +1438,7 @@ function Button({
   onPress,
   colors,
   active,
+  selected = false,
   danger,
   compact,
   disabled,
@@ -1437,6 +1447,7 @@ function Button({
   onPress: () => void;
   colors: Colors;
   active?: boolean;
+  selected?: boolean;
   danger?: boolean;
   compact?: boolean;
   disabled?: boolean;
@@ -1444,7 +1455,7 @@ function Button({
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityState={{ disabled, selected: active }}
+      accessibilityState={{ disabled, selected }}
       disabled={disabled}
       onPress={onPress}
       style={({ pressed }) => [

@@ -70,6 +70,7 @@ export interface CreateReminderInput {
 
 export const SNOOZE_MINUTES = [5, 10, 15, 30, 60] as const;
 export const HISTORY_RETENTION_DAYS = 30;
+const REMINDER_ID_PATTERN = /^[a-z0-9_-]+$/;
 
 const MONTH_NAMES = [
   "JAN",
@@ -236,6 +237,8 @@ export function validateTimezone(timezone: string): void {
 }
 
 export function createReminder(input: CreateReminderInput): Reminder {
+  if (!isValidReminderId(input.id))
+    throw new Error("Reminder ID contains unsupported characters.");
   const title = input.title.trim();
   if (!title) throw new Error("Reminder title is required.");
   validateSchedule(input.schedule);
@@ -256,6 +259,10 @@ export function createReminder(input: CreateReminderInput): Reminder {
     createdAt: input.now,
     updatedAt: input.now,
   };
+}
+
+export function isValidReminderId(id: string): boolean {
+  return REMINDER_ID_PATTERN.test(id);
 }
 
 export function updateReminder(

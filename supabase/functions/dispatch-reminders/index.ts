@@ -474,7 +474,10 @@ function compareReminderIdentity(
   rightOwnerId: string,
   rightId: string,
 ): number {
-  return leftOwnerId.localeCompare(rightOwnerId) || leftId.localeCompare(rightId);
+  if (leftOwnerId !== rightOwnerId)
+    return leftOwnerId < rightOwnerId ? -1 : 1;
+  if (leftId === rightId) return 0;
+  return leftId < rightId ? -1 : 1;
 }
 
 async function loadReminders(

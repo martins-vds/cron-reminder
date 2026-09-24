@@ -12,6 +12,7 @@ import {
 import type { Reminder, Schedule } from "@cron-reminder/domain";
 import {
   nextOccurrences,
+  isValidReminderId,
   validateSchedule,
   validateTimezone,
 } from "@cron-reminder/domain";
@@ -255,7 +256,7 @@ function isReminder(value: unknown): value is Reminder {
   if (!isRecord(value)) return false;
   if (
     typeof value.id !== "string" ||
-    !value.id.trim() ||
+    !isValidReminderId(value.id) ||
     typeof value.ownerId !== "string" ||
     typeof value.title !== "string" ||
     !value.title.trim() ||
