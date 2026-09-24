@@ -20,6 +20,7 @@ interface ReminderRow {
   sound: { mode: 'default' | 'silent' | 'vibrate' };
   revision: number;
   schedule_revision: number;
+  occurrence_count: number;
   created_at: string;
   next_due_at: string | null;
 }
@@ -74,7 +75,7 @@ const ALLOWED_PUSH_HOSTS = [
   'push.apple.com',
 ];
 const REMINDER_SELECT =
-  'id,owner_id,title,notes,schedule,timezone,sound,revision,schedule_revision,created_at,next_due_at';
+  'id,owner_id,title,notes,schedule,timezone,sound,revision,schedule_revision,occurrence_count,created_at,next_due_at';
 
 Deno.serve(async (request) => {
   const cronSecret = Deno.env.get('CRON_SECRET');
@@ -215,25 +216,17 @@ Deno.serve(async (request) => {
       offset,
       offset + DATABASE_QUERY_CONCURRENCY,
     );
-    let states: Array<{ recordedIds: Set<string>; count: number }>;
+    let states: Array<{ recordedIds: Set<string> }>;
     try {
       states = await Promise.all(
         chunk.map(async ({ reminder, occurrences }) => {
-          const [recordedIds, countResult] = await Promise.all([
-            loadRecordedOccurrenceIds(
-              client,
-              reminder.id,
-              reminder.owner_id,
-              occurrences,
-            ),
-            client
-              .from('occurrences')
-              .select('id', { count: 'exact', head: true })
-              .eq('reminder_id', reminder.id)
-              .eq('owner_id', reminder.owner_id),
-          ]);
-          if (countResult.error) throw countResult.error;
-          return { recordedIds, count: countResult.count ?? 0 };
+          const recordedIds = await loadRecordedOccurrenceIds(
+            client,
+            reminder.id,
+            reminder.owner_id,
+            occurrences,
+          );
+          return { recordedIds };
         }),
       );
     } catch {
@@ -250,7 +243,7 @@ Deno.serve(async (request) => {
           ? reminder.schedule.occurrenceLimit
           : undefined;
       if (occurrenceLimit === undefined) continue;
-      const remaining = occurrenceLimit - state.count;
+      const remaining = occurrenceLimit - reminder.occurrence_count;
       if (remaining <= 0) {
         exhaustedReminderIds.add(reminderStateKey(reminder));
         dueResult.truncated = false;

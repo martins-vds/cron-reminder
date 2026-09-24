@@ -162,6 +162,8 @@ create table public.reminders (
   revision integer not null default 1 check (revision > 0),
   schedule_revision integer not null default 1
     check (schedule_revision > 0),
+  occurrence_count bigint not null default 0
+    check (occurrence_count >= 0),
   next_due_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
@@ -187,6 +189,19 @@ create table public.occurrences (
   foreign key (reminder_id, owner_id) references public.reminders(id, owner_id) on delete cascade
 );
 create index occurrences_owner_scheduled_idx on public.occurrences(owner_id, scheduled_at desc);
+
+create or replace function public.increment_reminder_occurrence_count()
+returns trigger language plpgsql security definer set search_path = '' as $$
+begin
+  update public.reminders
+  set occurrence_count = occurrence_count + 1
+  where id = new.reminder_id and owner_id = new.owner_id;
+  return new;
+end;
+$$;
+create trigger occurrences_increment_reminder_count
+after insert on public.occurrences
+for each row execute procedure public.increment_reminder_occurrence_count();
 
 create table public.history (
   id uuid primary key default gen_random_uuid(),

@@ -23,6 +23,27 @@ create table if not exists public.occurrence_device_deliveries (
 create index if not exists occurrence_device_deliveries_owner_idx on public.occurrence_device_deliveries(owner_id, delivered_at desc);
 alter table public.occurrence_device_deliveries enable row level security;
 
+create or replace function public.delete_expired_history()
+returns integer language plpgsql security definer set search_path = '' as $$
+declare
+  deleted_history integer;
+  deleted_occurrences integer;
+begin
+  delete from public.history
+  where occurred_at < now() - interval '30 days';
+  get diagnostics deleted_history = row_count;
+  delete from public.occurrences
+  where created_at < now() - interval '30 days'
+    and (
+      status in ('dismissed', 'missed')
+      or delivered_at is not null
+      or (status = 'delivery-failed' and delivery_attempts >= 5)
+    );
+  get diagnostics deleted_occurrences = row_count;
+  return deleted_history + deleted_occurrences;
+end;
+$$;
+
 create table if not exists public.expo_push_tickets (
   ticket_id text primary key,
   occurrence_id text not null,
@@ -78,13 +99,19 @@ create or replace function public.record_missed_occurrence(
 )
 returns boolean language plpgsql security definer set search_path = '' as $$
 begin
-  if not exists (
-    select 1 from public.reminders
+  perform 1
+    from public.reminders
     where id = p_reminder_id
       and owner_id = p_owner_id
       and status = 'active'
       and schedule_revision = p_reminder_revision
-  ) then
+      and (
+        not (schedule ? 'occurrenceLimit')
+        or occurrence_count <
+          (schedule->>'occurrenceLimit')::bigint
+      )
+    for update;
+  if not found then
     return false;
   end if;
   insert into public.occurrences(
@@ -270,7 +297,12 @@ begin
     and owner_id = p_owner_id
     and status = 'active'
     and schedule_revision = p_reminder_revision
-  for share;
+    and (
+      not (schedule ? 'occurrenceLimit')
+      or occurrence_count <
+        (schedule->>'occurrenceLimit')::bigint
+    )
+  for update;
   if not found then
     return false;
   end if;

@@ -19,6 +19,7 @@ import {
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 type SupabaseClientLike = Pick<SupabaseClient, "auth" | "from" | "functions">;
+const REMOTE_PAGE_SIZE = 1_000;
 
 export interface KeyValueStore {
   get(key: string): Promise<string | null>;
@@ -296,12 +297,24 @@ export class SupabaseReminderRepository implements ReminderRepository {
   constructor(private readonly client: SupabaseClientLike) {}
 
   async list(ownerId: string): Promise<Reminder[]> {
-    const { data, error } = await this.client
-      .from("reminders")
-      .select("*")
-      .eq("owner_id", ownerId);
-    if (error) throw error;
-    return (data ?? []).map(fromDatabase);
+    const reminders: Reminder[] = [];
+    let lastId: string | null = null;
+    for (;;) {
+      let query = this.client
+        .from("reminders")
+        .select("*")
+        .eq("owner_id", ownerId)
+        .order("id")
+        .limit(REMOTE_PAGE_SIZE);
+      if (lastId !== null) query = query.gt("id", lastId);
+      const { data, error } = await query;
+      if (error) throw error;
+      const page = (data ?? []).map(fromDatabase);
+      reminders.push(...page);
+      if (page.length < REMOTE_PAGE_SIZE) return reminders;
+      lastId = page[page.length - 1]?.id ?? null;
+      if (lastId === null) return reminders;
+    }
   }
 
   async get(ownerId: string, id: string): Promise<Reminder | null> {
@@ -386,12 +399,24 @@ export class SupabaseReminderRepository implements ReminderRepository {
   }
 
   async listDeletedIds(ownerId: string): Promise<string[]> {
-    const { data, error } = await this.client
-      .from("reminder_tombstones")
-      .select("id")
-      .eq("owner_id", ownerId);
-    if (error) throw error;
-    return (data ?? []).map((row) => String(row.id));
+    const ids: string[] = [];
+    let lastId: string | null = null;
+    for (;;) {
+      let query = this.client
+        .from("reminder_tombstones")
+        .select("id")
+        .eq("owner_id", ownerId)
+        .order("id")
+        .limit(REMOTE_PAGE_SIZE);
+      if (lastId !== null) query = query.gt("id", lastId);
+      const { data, error } = await query;
+      if (error) throw error;
+      const page = (data ?? []).map((row) => String(row.id));
+      ids.push(...page);
+      if (page.length < REMOTE_PAGE_SIZE) return ids;
+      lastId = page[page.length - 1] ?? null;
+      if (lastId === null) return ids;
+    }
   }
 }
 

@@ -210,9 +210,28 @@ class FakeSupabaseClient {
     return {
       select: () => {
         const criteria: Record<string, unknown> = {};
+        let minimumId: string | null = null;
+        let limit: number | null = null;
+        const rows = () => {
+          const matched = matchingRows(criteria)
+            .filter((row) => minimumId === null || String(row.id) > minimumId)
+            .sort((left, right) =>
+              String(left.id).localeCompare(String(right.id)),
+            );
+          return limit === null ? matched : matched.slice(0, limit);
+        };
         const query = {
           eq: (column: string, value: unknown) => {
             criteria[column] = value;
+            return query;
+          },
+          gt: (_column: string, value: string) => {
+            minimumId = value;
+            return query;
+          },
+          order: () => query,
+          limit: (value: number) => {
+            limit = value;
             return query;
           },
           then(
@@ -221,10 +240,10 @@ class FakeSupabaseClient {
               error: null;
             }) => void,
           ) {
-            resolve({ data: matchingRows(criteria), error: null });
+            resolve({ data: rows(), error: null });
           },
           maybeSingle: async () => ({
-            data: matchingRows(criteria)[0] ?? null,
+            data: rows()[0] ?? null,
             error: null,
           }),
         };
@@ -275,19 +294,45 @@ class FakeSupabaseClient {
 
   private tombstonesTable() {
     return {
-      select: () => ({
-        eq: (_column: string, ownerId: string) => {
-          const data = this.tombstones.filter(
-            (item) => item.owner_id === ownerId,
-          );
-          this.tombstoneListReads++;
-          if (this.tombstoneListReads === 1) this.afterFirstTombstoneList?.();
-          return Promise.resolve({
-            data,
-            error: null,
-          });
-        },
-      }),
+      select: () => {
+        let ownerId = "";
+        let minimumId: string | null = null;
+        let limit: number | null = null;
+        const query = {
+          eq: (_column: string, value: string) => {
+            ownerId = value;
+            return query;
+          },
+          gt: (_column: string, value: string) => {
+            minimumId = value;
+            return query;
+          },
+          order: () => query,
+          limit: (value: number) => {
+            limit = value;
+            return query;
+          },
+          then: (
+            resolve: (result: {
+              data: Array<{ id: string; owner_id: string }>;
+              error: null;
+            }) => void,
+          ) => {
+            let data = this.tombstones
+              .filter(
+                (item) =>
+                  item.owner_id === ownerId &&
+                  (minimumId === null || item.id > minimumId),
+              )
+              .sort((left, right) => left.id.localeCompare(right.id));
+            if (limit !== null) data = data.slice(0, limit);
+            this.tombstoneListReads++;
+            if (this.tombstoneListReads === 1) this.afterFirstTombstoneList?.();
+            resolve({ data, error: null });
+          },
+        };
+        return query;
+      },
       upsert: async (row: { id: string; owner_id: string }) => {
         this.operations.push("tombstone");
         this.tombstones = this.tombstones.filter(
