@@ -1210,33 +1210,15 @@ function Settings({
 
     if (supabase) {
       const deregistrationToken = Crypto.randomUUID();
-      const rememberedDeviceId = await getRememberedDeviceId();
-      const { data: matchingDevice, error: matchingDeviceError } =
-        rememberedDeviceId
-          ? { data: null, error: null }
-          : await supabase
-              .from("devices")
-              .select("id")
-              .eq("owner_id", ownerId)
-              .eq("platform", registration.platform)
-              .eq("token", registration.token)
-              .maybeSingle();
-      if (matchingDeviceError) throw matchingDeviceError;
-      const deviceId =
-        rememberedDeviceId ??
-        (typeof matchingDevice?.id === "string"
-          ? matchingDevice.id
-          : Crypto.randomUUID());
-      const { error } = await supabase.from("devices").upsert({
-        id: deviceId,
-        owner_id: registration.ownerId,
-        platform: registration.platform,
-        token: registration.token,
-        deregistration_token: deregistrationToken,
-        enabled: true,
-        updated_at: new Date().toISOString(),
+      const deviceId = (await getRememberedDeviceId()) ?? Crypto.randomUUID();
+      const { data, error } = await supabase.rpc("claim_device_token", {
+        p_device_id: deviceId,
+        p_platform: registration.platform,
+        p_token: registration.token,
+        p_deregistration_token: deregistrationToken,
       });
       if (error) throw error;
+      if (!data) throw new Error("Unable to claim push token.");
       await rememberDevice(deviceId, deregistrationToken);
     } else {
       return;

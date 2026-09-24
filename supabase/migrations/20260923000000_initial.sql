@@ -215,6 +215,59 @@ create index devices_owner_idx on public.devices(owner_id) where enabled;
 create unique index devices_platform_token_idx
   on public.devices(platform, token_hash);
 
+create or replace function public.claim_device_token(
+  p_device_id text,
+  p_platform text,
+  p_token text,
+  p_deregistration_token uuid
+)
+returns boolean language plpgsql security definer set search_path = '' as $$
+declare requesting_user uuid := auth.uid();
+begin
+  if requesting_user is null then
+    return false;
+  end if;
+  if p_platform not in ('android', 'ios', 'web') then
+    raise exception 'Unsupported device platform %', p_platform;
+  end if;
+  delete from public.devices
+  where (
+      id = p_device_id
+      or (
+        platform = p_platform
+        and token_hash = digest(p_token, 'sha256')
+      )
+    )
+    and not (id = p_device_id and owner_id = requesting_user);
+  insert into public.devices(
+    id,
+    owner_id,
+    platform,
+    token,
+    deregistration_token,
+    enabled,
+    updated_at
+  )
+  values (
+    p_device_id,
+    requesting_user,
+    p_platform,
+    p_token,
+    p_deregistration_token,
+    true,
+    now()
+  )
+  on conflict (id) do update
+    set owner_id = excluded.owner_id,
+        platform = excluded.platform,
+        token = excluded.token,
+        deregistration_token = excluded.deregistration_token,
+        enabled = true,
+        updated_at = now();
+  return true;
+end;
+$$;
+
 create table public.sync_conflicts (
   id uuid primary key default gen_random_uuid(),
   owner_id uuid not null references auth.users(id) on delete cascade,
@@ -357,3 +410,5 @@ revoke all on function public.advance_dispatch_state(timestamptz, uuid, text) fr
 grant execute on function public.advance_dispatch_state(timestamptz, uuid, text) to service_role;
 revoke all on function public.update_reminder_next_due(jsonb) from public, anon, authenticated;
 grant execute on function public.update_reminder_next_due(jsonb) to service_role;
+revoke all on function public.claim_device_token(text, text, text, uuid) from public, anon;
+grant execute on function public.claim_device_token(text, text, text, uuid) to authenticated, service_role;

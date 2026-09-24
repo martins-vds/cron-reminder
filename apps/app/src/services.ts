@@ -228,17 +228,19 @@ export async function flushPendingPushTokenUpdate(): Promise<void> {
   await withPushToken(async () => {
     const pending = await readPendingPushToken();
     const device = await readDeviceRegistration();
-    if (!pending || !device) return;
-    const { error } = await supabase
-      .from("devices")
-      .update({
-        token: pending.token,
-        enabled: true,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", device.id)
-      .eq("owner_id", pending.ownerId);
-    if (error) return;
+    if (!pending || !device?.token) return;
+    const { data, error } = await supabase.rpc("claim_device_token", {
+      p_device_id: device.id,
+      p_platform:
+        Platform.OS === "web"
+          ? "web"
+          : Platform.OS === "ios"
+            ? "ios"
+            : "android",
+      p_token: pending.token,
+      p_deregistration_token: device.token,
+    });
+    if (error || !data) return;
     await AsyncStorage.removeItem(pendingPushTokenKey);
   });
 }
