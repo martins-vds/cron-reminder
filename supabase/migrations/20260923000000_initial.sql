@@ -75,7 +75,9 @@ declare
 begin
   if jsonb_typeof(value) <> 'object' then return false; end if;
   if value->>'kind' = 'once' then
-    if jsonb_typeof(value->'at') <> 'string' then return false; end if;
+    if coalesce(jsonb_typeof(value->'at') = 'string', false) = false then
+      return false;
+    end if;
     perform (value->>'at')::timestamptz;
     return true;
   end if;
@@ -204,6 +206,34 @@ create table public.reminder_tombstones (
   deleted_at timestamptz not null default now()
 );
 create index reminder_tombstones_owner_idx on public.reminder_tombstones(owner_id);
+
+create or replace function public.protect_reminder_tombstones()
+returns trigger language plpgsql security definer set search_path = '' as $$
+begin
+  if tg_op = 'DELETE' then
+    insert into public.reminder_tombstones(id, owner_id)
+    values (old.id, old.owner_id)
+    on conflict (id) do update
+      set owner_id = excluded.owner_id, deleted_at = now();
+    return old;
+  end if;
+  if exists (
+    select 1 from public.reminder_tombstones
+    where id = new.id
+  ) then
+    raise exception 'Reminder % has been deleted', new.id using errcode = '23514';
+  end if;
+  return new;
+end;
+$$;
+
+create trigger reminders_reject_tombstoned_writes
+before insert or update on public.reminders
+for each row execute procedure public.protect_reminder_tombstones();
+
+create trigger reminders_record_tombstone
+before delete on public.reminders
+for each row execute procedure public.protect_reminder_tombstones();
 
 create table public.dispatch_state (
   id boolean primary key default true check (id),

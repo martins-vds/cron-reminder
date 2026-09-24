@@ -26,13 +26,13 @@ interface DeviceDeliveryResult {
   retryableFailures: number;
 }
 
+type ServiceClient = ReturnType<typeof createClient<any>>;
+
 const DISPATCH_STATE_ID = true;
 const MAX_OCCURRENCES_PER_RUN = 500;
 const REMINDER_PAGE_SIZE = 1_000;
 const DELIVERY_LEASE_MS = 5 * 60_000;
 const MAX_DELIVERY_ATTEMPTS = 5;
-const BASE_RETRY_DELAY_MS = 60_000;
-const MAX_RETRY_DELAY_MS = 60 * 60_000;
 const ALLOWED_PUSH_HOSTS = [
   'fcm.googleapis.com',
   'android.googleapis.com',
@@ -133,21 +133,32 @@ Deno.serve(async (request) => {
           status: 'triggered',
         });
       if (occurrenceError?.code === '23505') {
-        let claimed: boolean;
+        let leaseId: string | null;
         try {
-          claimed = await claimUndelivered(client, occurrenceId);
+          leaseId = await claimUndelivered(client, occurrenceId);
         } catch {
           return json({ error: 'Unable to claim occurrence' }, 500);
         }
-        if (claimed)
-          delivered += await deliverOccurrence(client, reminder, occurrenceId);
+        if (leaseId)
+          delivered += await deliverOccurrence(
+            client,
+            reminder,
+            occurrenceId,
+            leaseId,
+          );
         continue;
       }
       if (occurrenceError)
         return json({ error: 'Unable to create occurrence' }, 500);
 
-      if (await claimUndelivered(client, occurrenceId))
-        delivered += await deliverOccurrence(client, reminder, occurrenceId);
+      const leaseId = await claimUndelivered(client, occurrenceId);
+      if (leaseId)
+        delivered += await deliverOccurrence(
+          client,
+          reminder,
+          occurrenceId,
+          leaseId,
+        );
     }
   }
 
@@ -161,44 +172,50 @@ Deno.serve(async (request) => {
 });
 
 async function loadReminders(
-  client: ReturnType<typeof createClient>,
+  client: ServiceClient,
 ): Promise<ReminderRow[]> {
   const reminders: ReminderRow[] = [];
-  for (let from = 0; ; from += REMINDER_PAGE_SIZE) {
-    const { data, error } = await client
+  let lastId: string | null = null;
+  for (;;) {
+    let query = client
       .from('reminders')
       .select(
         'id,owner_id,title,notes,schedule,timezone,sound,created_at',
       )
       .eq('status', 'active')
       .order('id')
-      .range(from, from + REMINDER_PAGE_SIZE - 1);
+      .limit(REMINDER_PAGE_SIZE);
+    if (lastId !== null) query = query.gt('id', lastId);
+    const { data, error } = await query;
     if (error) throw error;
-    reminders.push(...((data ?? []) as ReminderRow[]));
-    if (!data || data.length < REMINDER_PAGE_SIZE) return reminders;
+    const page = (data ?? []) as ReminderRow[];
+    reminders.push(...page);
+    if (page.length < REMINDER_PAGE_SIZE) return reminders;
+    lastId = page[page.length - 1]?.id ?? null;
+    if (lastId === null) return reminders;
   }
 }
 
 async function claimUndelivered(
-  client: ReturnType<typeof createClient>,
+  client: ServiceClient,
   occurrenceId: string,
-): Promise<boolean> {
+): Promise<string | null> {
   const now = new Date();
-  const { data, error } = await client
-    .from('occurrences')
-    .update({ status: 'delivering', acted_at: now.toISOString() })
-    .eq('id', occurrenceId)
-    .is('delivered_at', null)
-    .lt('delivery_attempts', MAX_DELIVERY_ATTEMPTS)
-    .or(deliverableFilter(now))
-    .select('id')
-    .maybeSingle();
+  const leaseId = crypto.randomUUID();
+  const { data, error } = await client.rpc('claim_occurrence_delivery', {
+    p_occurrence_id: occurrenceId,
+    p_lease_id: leaseId,
+    p_now: now.toISOString(),
+    p_stale_before: new Date(
+      now.getTime() - DELIVERY_LEASE_MS,
+    ).toISOString(),
+  });
   if (error) throw error;
-  return Boolean(data);
+  return data ? leaseId : null;
 }
 
 async function dispatchPendingDeliveries(
-  client: ReturnType<typeof createClient>,
+  client: ServiceClient,
 ): Promise<number> {
   const now = new Date();
   const { data, error } = await client
@@ -212,14 +229,20 @@ async function dispatchPendingDeliveries(
   for (const occurrence of data ?? []) {
     const reminder = await loadActiveReminder(client, occurrence.reminder_id);
     if (!reminder) continue;
-    if (!(await claimUndelivered(client, occurrence.id))) continue;
-    delivered += await deliverOccurrence(client, reminder, occurrence.id);
+    const leaseId = await claimUndelivered(client, occurrence.id);
+    if (!leaseId) continue;
+    delivered += await deliverOccurrence(
+      client,
+      reminder,
+      occurrence.id,
+      leaseId,
+    );
   }
   return delivered;
 }
 
 async function dispatchPostponed(
-  client: ReturnType<typeof createClient>,
+  client: ServiceClient,
   now: Date,
 ): Promise<number> {
   const { data, error } = await client
@@ -232,22 +255,20 @@ async function dispatchPostponed(
   for (const occurrence of data ?? []) {
     const reminder = await loadActiveReminder(client, occurrence.reminder_id);
     if (!reminder) continue;
-    const { data: claimed, error: claimError } = await client
-      .from('occurrences')
-      .update({ status: 'delivering', acted_at: now.toISOString() })
-      .eq('id', occurrence.id)
-      .eq('status', 'postponed')
-      .select('id')
-      .maybeSingle();
-    if (claimError) throw claimError;
-    if (!claimed) continue;
-    delivered += await deliverOccurrence(client, reminder, occurrence.id);
+    const leaseId = await claimUndelivered(client, occurrence.id);
+    if (!leaseId) continue;
+    delivered += await deliverOccurrence(
+      client,
+      reminder,
+      occurrence.id,
+      leaseId,
+    );
   }
   return delivered;
 }
 
 async function loadActiveReminder(
-  client: ReturnType<typeof createClient>,
+  client: ServiceClient,
   reminderId: string,
 ): Promise<ReminderRow | null> {
   const { data, error } = await client
@@ -261,65 +282,50 @@ async function loadActiveReminder(
 }
 
 async function deliverOccurrence(
-  client: ReturnType<typeof createClient>,
+  client: ServiceClient,
   reminder: ReminderRow,
   occurrenceId: string,
+  leaseId: string,
 ): Promise<number> {
   try {
-    const result = await deliverToDevices(client, reminder, occurrenceId);
+    const result = await deliverToDevices(
+      client,
+      reminder,
+      occurrenceId,
+      leaseId,
+    );
     if (result.retryableFailures > 0) {
       throw new RetryableDeliveryError(result.delivered);
     }
-    await recordHistory(client, reminder, occurrenceId);
-    const { error } = await client
-      .from('occurrences')
-      .update({ status: 'triggered', delivered_at: new Date().toISOString() })
-      .eq('id', occurrenceId)
-      .eq('status', 'delivering');
+    const { data, error } = await client.rpc('complete_occurrence_delivery', {
+      p_occurrence_id: occurrenceId,
+      p_lease_id: leaseId,
+      p_delivered_at: new Date().toISOString(),
+    });
     if (error) throw error;
+    if (!data) return result.delivered;
     return result.delivered;
   } catch (error) {
-    await markDeliveryFailed(client, reminder, occurrenceId);
+    if (error instanceof LeaseLostError) return 0;
+    const { data, error: failureError } = await client.rpc(
+      'fail_occurrence_delivery',
+      {
+        p_occurrence_id: occurrenceId,
+        p_lease_id: leaseId,
+        p_now: new Date().toISOString(),
+      },
+    );
+    if (failureError) throw failureError;
+    if (!data) return 0;
     return error instanceof RetryableDeliveryError ? error.delivered : 0;
   }
 }
 
-async function markDeliveryFailed(
-  client: ReturnType<typeof createClient>,
-  reminder: ReminderRow,
-  occurrenceId: string,
-) {
-  const { data: occurrence, error: loadError } = await client
-    .from('occurrences')
-    .select('delivery_attempts')
-    .eq('id', occurrenceId)
-    .maybeSingle();
-  if (loadError) throw loadError;
-  const attempts =
-    typeof occurrence?.delivery_attempts === 'number'
-      ? occurrence.delivery_attempts + 1
-      : 1;
-  const retryAt =
-    attempts >= MAX_DELIVERY_ATTEMPTS
-      ? null
-      : new Date(Date.now() + retryDelayMs(attempts)).toISOString();
-  const { error: updateError } = await client
-    .from('occurrences')
-    .update({
-      status: 'delivery-failed',
-      delivery_attempts: attempts,
-      next_delivery_attempt_at: retryAt,
-    })
-    .eq('id', occurrenceId)
-    .eq('status', 'delivering');
-  if (updateError) throw updateError;
-  await recordHistory(client, reminder, occurrenceId, 'delivery-failed');
-}
-
 async function deliverToDevices(
-  client: ReturnType<typeof createClient>,
+  client: ServiceClient,
   reminder: ReminderRow,
   occurrenceId: string,
+  leaseId: string,
 ): Promise<DeviceDeliveryResult> {
   const { data: devices, error } = await client
     .from('devices')
@@ -340,6 +346,9 @@ async function deliverToDevices(
   let retryableFailures = 0;
   for (const device of devices ?? []) {
     if (alreadyDelivered.has(device.id)) continue;
+    if (!(await hasActiveLease(client, occurrenceId, leaseId))) {
+      throw new LeaseLostError();
+    }
     const payload = {
       title: reminder.title,
       body: reminder.notes,
@@ -355,9 +364,17 @@ async function deliverToDevices(
       } else {
         await sendExpoPush(device.token, payload, reminder.sound);
       }
-      await recordDeviceDelivery(client, occurrenceId, reminder.owner_id, device.id);
+      const recorded = await recordDeviceDelivery(
+        client,
+        occurrenceId,
+        reminder.owner_id,
+        device.id,
+        leaseId,
+      );
+      if (!recorded) throw new LeaseLostError();
       delivered++;
     } catch (error) {
+      if (error instanceof LeaseLostError) throw error;
       if (isPermanentDeliveryFailure(error)) {
         await disableDevice(client, device.id);
       } else {
@@ -369,23 +386,39 @@ async function deliverToDevices(
 }
 
 async function recordDeviceDelivery(
-  client: ReturnType<typeof createClient>,
+  client: ServiceClient,
   occurrenceId: string,
   ownerId: string,
   deviceId: string,
-) {
-  const { error } = await client
-    .from('occurrence_device_deliveries')
-    .upsert(
-      {
-        occurrence_id: occurrenceId,
-        owner_id: ownerId,
-        device_id: deviceId,
-        delivered_at: new Date().toISOString(),
-      },
-      { onConflict: 'occurrence_id,device_id' },
-    );
+  leaseId: string,
+): Promise<boolean> {
+  const { data, error } = await client.rpc(
+    'record_occurrence_device_delivery',
+    {
+      p_occurrence_id: occurrenceId,
+      p_owner_id: ownerId,
+      p_device_id: deviceId,
+      p_lease_id: leaseId,
+    },
+  );
   if (error) throw error;
+  return Boolean(data);
+}
+
+async function hasActiveLease(
+  client: ServiceClient,
+  occurrenceId: string,
+  leaseId: string,
+): Promise<boolean> {
+  const { data, error } = await client
+    .from('occurrences')
+    .select('id')
+    .eq('id', occurrenceId)
+    .eq('status', 'delivering')
+    .eq('delivery_lease_id', leaseId)
+    .maybeSingle();
+  if (error) throw error;
+  return Boolean(data);
 }
 
 function deliveryAttemptDueFilter(now: Date): string {
@@ -406,15 +439,8 @@ function deliverableFilter(now: Date): string {
   return `and(or(${deliveryAttemptDueFilter(now)}),or(${deliverableStatusFilter(now)}))`;
 }
 
-function retryDelayMs(attempts: number): number {
-  return Math.min(
-    BASE_RETRY_DELAY_MS * 2 ** Math.max(0, attempts - 1),
-    MAX_RETRY_DELAY_MS,
-  );
-}
-
 async function disableDevice(
-  client: ReturnType<typeof createClient>,
+  client: ServiceClient,
   deviceId: string,
 ) {
   const { error } = await client
@@ -453,20 +479,7 @@ class RetryableDeliveryError extends Error {
   }
 }
 
-async function recordHistory(
-  client: ReturnType<typeof createClient>,
-  reminder: ReminderRow,
-  occurrenceId: string,
-  eventType: 'triggered' | 'delivery-failed' = 'triggered',
-) {
-  const { error } = await client.from('history').insert({
-    reminder_id: reminder.id,
-    occurrence_id: occurrenceId,
-    owner_id: reminder.owner_id,
-    event_type: eventType,
-  });
-  if (error) throw error;
-}
+class LeaseLostError extends Error {}
 
 function dueOccurrences(
   reminder: ReminderRow,

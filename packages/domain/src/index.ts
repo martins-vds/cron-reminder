@@ -71,14 +71,51 @@ export interface CreateReminderInput {
 export const SNOOZE_MINUTES = [5, 10, 15, 30, 60] as const;
 export const HISTORY_RETENTION_DAYS = 30;
 
+const MONTH_NAMES = [
+  "JAN",
+  "FEB",
+  "MAR",
+  "APR",
+  "MAY",
+  "JUN",
+  "JUL",
+  "AUG",
+  "SEP",
+  "OCT",
+  "NOV",
+  "DEC",
+] as const;
+const WEEKDAY_NAMES = [
+  "SUN",
+  "MON",
+  "TUE",
+  "WED",
+  "THU",
+  "FRI",
+  "SAT",
+] as const;
+
 export function validateCronExpression(expression: string): {
   valid: boolean;
   error?: string;
 } {
-  if (expression.trim().split(/\s+/).length !== 5) {
+  const fields = expression.trim().split(/\s+/);
+  if (fields.length !== 5) {
     return {
       valid: false,
       error: "Use five fields: minute, hour, day, month, weekday.",
+    };
+  }
+  const supported =
+    isSupportedCronField(fields[0] ?? "", 0, 59) &&
+    isSupportedCronField(fields[1] ?? "", 0, 23) &&
+    isSupportedCronField(fields[2] ?? "", 1, 31) &&
+    isSupportedCronField(fields[3] ?? "", 1, 12, MONTH_NAMES) &&
+    isSupportedCronField(fields[4] ?? "", 0, 7, WEEKDAY_NAMES);
+  if (!supported) {
+    return {
+      valid: false,
+      error: "The schedule uses an unsupported cron field.",
     };
   }
   try {
@@ -90,6 +127,46 @@ export function validateCronExpression(expression: string): {
       error: "The schedule is not a valid five-field cron expression.",
     };
   }
+}
+
+function isSupportedCronField(
+  field: string,
+  minimum: number,
+  maximum: number,
+  names: readonly string[] = [],
+): boolean {
+  if (!field) return false;
+  return field.split(",").every((part) => {
+    const segments = part.split("/");
+    if (segments.length > 2) return false;
+    const [base, step] = segments;
+    if (!base) return false;
+    if (step !== undefined && (!/^\d+$/.test(step) || Number(step) < 1)) {
+      return false;
+    }
+    if (base === "*") return true;
+    const value = cronFieldValue(base, minimum, maximum, names);
+    if (value !== null) return true;
+    const bounds = base.split("-");
+    if (bounds.length !== 2) return false;
+    const lower = cronFieldValue(bounds[0] ?? "", minimum, maximum, names);
+    const upper = cronFieldValue(bounds[1] ?? "", minimum, maximum, names);
+    return lower !== null && upper !== null && lower <= upper;
+  });
+}
+
+function cronFieldValue(
+  value: string,
+  minimum: number,
+  maximum: number,
+  names: readonly string[],
+): number | null {
+  const numeric = /^\d+$/.test(value) ? Number(value) : null;
+  const nameIndex = names.indexOf(value.toUpperCase());
+  const parsed = numeric ?? (nameIndex >= 0 ? minimum + nameIndex : null);
+  return parsed !== null && parsed >= minimum && parsed <= maximum
+    ? parsed
+    : null;
 }
 
 export function parseCronSchedule(
@@ -108,8 +185,12 @@ export function validateSchedule(schedule: Schedule): void {
   }
   const result = validateCronExpression(schedule.expression);
   if (!result.valid) throw new Error(result.error);
-  if (schedule.occurrenceLimit !== undefined && schedule.occurrenceLimit < 1) {
-    throw new Error("Occurrence limit must be positive.");
+  if (
+    schedule.occurrenceLimit !== undefined &&
+    (!Number.isInteger(schedule.occurrenceLimit) ||
+      schedule.occurrenceLimit < 1)
+  ) {
+    throw new Error("Occurrence limit must be a positive integer.");
   }
   if (
     schedule.startAt !== undefined &&

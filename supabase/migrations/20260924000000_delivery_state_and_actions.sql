@@ -1,6 +1,7 @@
 alter table public.occurrences add column delivered_at timestamptz;
 alter table public.occurrences add column delivery_attempts integer not null default 0 check (delivery_attempts >= 0);
 alter table public.occurrences add column next_delivery_attempt_at timestamptz;
+alter table public.occurrences add column delivery_lease_id uuid;
 alter type public.occurrence_status add value if not exists 'delivering' after 'triggered';
 
 create table if not exists public.occurrence_device_deliveries (
@@ -52,6 +53,122 @@ $$;
 revoke all on function public.record_missed_occurrence(text, text, uuid, timestamptz) from public, anon, authenticated;
 grant execute on function public.record_missed_occurrence(text, text, uuid, timestamptz) to service_role;
 
+create or replace function public.claim_occurrence_delivery(
+  p_occurrence_id text,
+  p_lease_id uuid,
+  p_now timestamptz,
+  p_stale_before timestamptz
+)
+returns boolean language plpgsql security definer set search_path = '' as $$
+declare claimed boolean;
+begin
+  update public.occurrences
+  set status = 'delivering',
+      acted_at = p_now,
+      delivery_lease_id = p_lease_id
+  where id = p_occurrence_id
+    and delivered_at is null
+    and delivery_attempts < 5
+    and (next_delivery_attempt_at is null or next_delivery_attempt_at <= p_now)
+    and (
+      status in ('triggered', 'delivery-failed')
+      or (
+        status = 'delivering'
+        and (acted_at is null or acted_at < p_stale_before)
+      )
+      or (status = 'postponed' and snoozed_until <= p_now)
+    )
+  returning true into claimed;
+  return coalesce(claimed, false);
+end;
+$$;
+
+create or replace function public.complete_occurrence_delivery(
+  p_occurrence_id text,
+  p_lease_id uuid,
+  p_delivered_at timestamptz
+)
+returns boolean language plpgsql security definer set search_path = '' as $$
+declare completed public.occurrences%rowtype;
+begin
+  update public.occurrences
+  set status = 'triggered',
+      delivered_at = p_delivered_at,
+      next_delivery_attempt_at = null,
+      delivery_lease_id = null
+  where id = p_occurrence_id
+    and status = 'delivering'
+    and delivery_lease_id = p_lease_id
+  returning * into completed;
+  if not found then
+    return false;
+  end if;
+  insert into public.history(reminder_id, occurrence_id, owner_id, event_type)
+  values (completed.reminder_id, completed.id, completed.owner_id, 'triggered');
+  return true;
+end;
+$$;
+
+create or replace function public.fail_occurrence_delivery(
+  p_occurrence_id text,
+  p_lease_id uuid,
+  p_now timestamptz
+)
+returns boolean language plpgsql security definer set search_path = '' as $$
+declare failed public.occurrences%rowtype;
+begin
+  update public.occurrences
+  set status = 'delivery-failed',
+      delivery_attempts = delivery_attempts + 1,
+      next_delivery_attempt_at = case
+        when delivery_attempts + 1 >= 5 then null
+        else p_now + make_interval(
+          mins => least(60, power(2, delivery_attempts)::integer)
+        )
+      end,
+      delivery_lease_id = null
+  where id = p_occurrence_id
+    and status = 'delivering'
+    and delivery_lease_id = p_lease_id
+  returning * into failed;
+  if not found then
+    return false;
+  end if;
+  insert into public.history(reminder_id, occurrence_id, owner_id, event_type)
+  values (failed.reminder_id, failed.id, failed.owner_id, 'delivery-failed');
+  return true;
+end;
+$$;
+
+create or replace function public.record_occurrence_device_delivery(
+  p_occurrence_id text,
+  p_owner_id uuid,
+  p_device_id text,
+  p_lease_id uuid
+)
+returns boolean language plpgsql security definer set search_path = '' as $$
+declare active_occurrence text;
+begin
+  select id into active_occurrence
+  from public.occurrences
+  where id = p_occurrence_id
+    and owner_id = p_owner_id
+    and status = 'delivering'
+    and delivery_lease_id = p_lease_id
+  for update;
+  if not found then
+    return false;
+  end if;
+  insert into public.occurrence_device_deliveries(
+    occurrence_id, owner_id, device_id, delivered_at
+  )
+  values (p_occurrence_id, p_owner_id, p_device_id, now())
+  on conflict (occurrence_id, device_id) do update
+    set delivered_at = excluded.delivered_at;
+  return true;
+end;
+$$;
+
 create or replace function public.act_on_occurrence(
   p_occurrence_id text,
   p_event text,
@@ -77,8 +194,11 @@ begin
       snoozed_until = case when p_event = 'postponed' then p_snoozed_until else null end,
       delivered_at = case when p_event = 'postponed' then null else delivered_at end,
       delivery_attempts = case when p_event = 'postponed' then 0 else delivery_attempts end,
-      next_delivery_attempt_at = case when p_event = 'postponed' then null else next_delivery_attempt_at end
-  where id = p_occurrence_id and owner_id = requesting_user and status = 'triggered'
+      next_delivery_attempt_at = case when p_event = 'postponed' then null else next_delivery_attempt_at end,
+      delivery_lease_id = null
+  where id = p_occurrence_id
+    and owner_id = requesting_user
+    and status in ('triggered', 'delivering', 'delivery-failed')
   returning * into acted;
   if not found then
     return false;
@@ -95,3 +215,11 @@ $$;
 
 revoke all on function public.act_on_occurrence(text, text, timestamptz) from public, anon;
 grant execute on function public.act_on_occurrence(text, text, timestamptz) to authenticated, service_role;
+revoke all on function public.claim_occurrence_delivery(text, uuid, timestamptz, timestamptz) from public, anon, authenticated;
+revoke all on function public.complete_occurrence_delivery(text, uuid, timestamptz) from public, anon, authenticated;
+revoke all on function public.fail_occurrence_delivery(text, uuid, timestamptz) from public, anon, authenticated;
+revoke all on function public.record_occurrence_device_delivery(text, uuid, text, uuid) from public, anon, authenticated;
+grant execute on function public.claim_occurrence_delivery(text, uuid, timestamptz, timestamptz) to service_role;
+grant execute on function public.complete_occurrence_delivery(text, uuid, timestamptz) to service_role;
+grant execute on function public.fail_occurrence_delivery(text, uuid, timestamptz) to service_role;
+grant execute on function public.record_occurrence_device_delivery(text, uuid, text, uuid) to service_role;

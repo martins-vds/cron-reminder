@@ -138,6 +138,29 @@ describe("versioned JSON backup", () => {
     expect(result.invalid).toBe(1);
     expect(result.imported).toBe(0);
   });
+
+  it.each([
+    { overrides: { title: " " }, label: "blank title" },
+    { overrides: { revision: 0 }, label: "non-positive revision" },
+    { overrides: { revision: 1.5 }, label: "fractional revision" },
+    {
+      overrides: { createdAt: "not-a-date" },
+      label: "invalid creation timestamp",
+    },
+    {
+      overrides: { updatedAt: "not-a-date" },
+      label: "invalid update timestamp",
+    },
+  ])("rejects reminders with a $label", ({ overrides }) => {
+    const backup = JSON.stringify({
+      version: 1,
+      exportedAt: "2026-09-23T00:00:00.000Z",
+      reminders: [reminder(overrides)],
+    });
+    const result = importBackup(backup, [], "u1");
+    expect(result.invalid).toBe(1);
+    expect(result.imported).toBe(0);
+  });
 });
 
 class FakeSupabaseClient {

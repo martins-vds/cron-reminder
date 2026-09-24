@@ -49,6 +49,7 @@ import {
 import {
   authentication,
   deleteReminder,
+  flushNotificationActions,
   localRepository,
   rememberDevice,
   resolveSynchronizationConflict,
@@ -149,7 +150,11 @@ export function RootNavigator() {
 
   useEffect(() => {
     if (!ownerId) return;
-    const retry = () => void synchronizeReminders(ownerId).catch(() => {});
+    const retry = () => {
+      void synchronizeReminders(ownerId).catch(() => {});
+      void flushNotificationActions(ownerId).catch(() => {});
+    };
+    void flushNotificationActions(ownerId).catch(() => {});
     if (Platform.OS === "web") {
       globalThis.addEventListener("online", retry);
       return () => globalThis.removeEventListener("online", retry);
@@ -167,18 +172,25 @@ export function RootNavigator() {
       const action = parameters.get("action");
       const occurrenceId = parameters.get("occurrenceId");
       if (occurrenceId && (action === "dismiss" || action === "snooze")) {
-        void submitNotificationAction(occurrenceId, action);
-        globalThis.history.replaceState({}, "", globalThis.location.pathname);
+        void submitNotificationAction(occurrenceId, action, ownerId)
+          .then(() =>
+            globalThis.history.replaceState(
+              {},
+              "",
+              globalThis.location.pathname,
+            ),
+          )
+          .catch(() => {});
       }
       return;
     }
     let remove: (() => void) | undefined;
     void import("expo-notifications").then((Notifications) => {
-      const handleResponse = (
+      const handleResponse = async (
         response: Awaited<
           ReturnType<typeof Notifications.getLastNotificationResponseAsync>
         >,
-      ) => {
+      ): Promise<void> => {
         if (!response) return;
         const occurrenceId =
           response.notification.request.content.data?.occurrenceId;
@@ -187,14 +199,20 @@ export function RootNavigator() {
           typeof occurrenceId === "string" &&
           (action === "dismiss" || action === "snooze")
         )
-          void submitNotificationAction(occurrenceId, action);
+          await submitNotificationAction(occurrenceId, action, ownerId);
       };
       void Notifications.getLastNotificationResponseAsync().then((response) => {
-        handleResponse(response);
-        if (response) void Notifications.clearLastNotificationResponseAsync();
+        if (!response) return;
+        void handleResponse(response)
+          .then(() => Notifications.clearLastNotificationResponseAsync())
+          .catch(() => {});
       });
       const subscription =
-        Notifications.addNotificationResponseReceivedListener(handleResponse);
+        Notifications.addNotificationResponseReceivedListener((response) => {
+          void handleResponse(response)
+            .then(() => Notifications.clearLastNotificationResponseAsync())
+            .catch(() => {});
+        });
       remove = () => subscription.remove();
     });
     return () => remove?.();

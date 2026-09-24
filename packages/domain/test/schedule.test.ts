@@ -13,6 +13,12 @@ describe("cron schedule", () => {
     expect(validateCronExpression("* * * * * *").valid).toBe(false);
   });
 
+  it("rejects cron syntax unsupported by database validation", () => {
+    expect(validateCronExpression("0 9 L * *").valid).toBe(false);
+    expect(validateCronExpression("0 9 * * 1#2").valid).toBe(false);
+    expect(validateCronExpression("0 9 * JAN MON-FRI").valid).toBe(true);
+  });
+
   it("enforces a minimum one-minute interval", () => {
     expect(validateCronExpression("* * * * *")).toEqual({ valid: true });
   });
@@ -75,5 +81,22 @@ describe("cron schedule", () => {
         endAt: "not-a-date",
       }),
     ).toThrow("Schedule end must be a valid date.");
+  });
+
+  it("requires a positive integer occurrence limit", () => {
+    expect(() =>
+      validateSchedule({
+        kind: "cron",
+        expression: "0 9 * * *",
+        occurrenceLimit: 1.5,
+      }),
+    ).toThrow("positive integer");
+    expect(() =>
+      validateSchedule({
+        kind: "cron",
+        expression: "0 9 * * *",
+        occurrenceLimit: Number.NaN,
+      }),
+    ).toThrow("positive integer");
   });
 });

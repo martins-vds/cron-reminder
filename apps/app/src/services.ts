@@ -53,8 +53,17 @@ const redirectTo = makeRedirectUri({
 });
 const deviceKey = "cron-reminder:device-id";
 const deletedKey = "cron-reminder:deleted";
+const notificationActionsKey = "cron-reminder:notification-actions";
 let tombstoneQueue = Promise.resolve();
 let synchronizationQueue = Promise.resolve();
+let notificationActionQueue = Promise.resolve();
+let notificationActionFlushQueue = Promise.resolve();
+
+interface PendingNotificationAction {
+  occurrenceId: string;
+  action: "dismiss" | "snooze";
+  ownerId: string;
+}
 
 export const authentication: AuthenticationPort | null = supabase
   ? {
@@ -119,6 +128,13 @@ export const authentication: AuthenticationPort | null = supabase
               } else {
                 await AsyncStorage.removeItem(deletedKey);
               }
+            });
+            await withNotificationActions(async () => {
+              await writeNotificationActions(
+                (await readNotificationActions()).filter(
+                  (item) => item.ownerId !== ownerId,
+                ),
+              );
             });
           }
           await AsyncStorage.removeItem(deviceKey);
@@ -187,16 +203,59 @@ export async function flushDeletedReminders(ownerId: string): Promise<void> {
 export async function submitNotificationAction(
   occurrenceId: string,
   action: "dismiss" | "snooze",
+  ownerId: string,
 ): Promise<void> {
-  if (!supabase) return;
-  const body =
-    action === "snooze"
-      ? { occurrenceId, action, minutes: 10 }
-      : { occurrenceId, action };
-  const { error } = await supabase.functions.invoke("occurrence-action", {
-    body,
+  await withNotificationActions(async () => {
+    const pending = await readNotificationActions();
+    if (
+      !pending.some(
+        (item) =>
+          item.occurrenceId === occurrenceId &&
+          item.action === action &&
+          item.ownerId === ownerId,
+      )
+    ) {
+      pending.push({ occurrenceId, action, ownerId });
+      await writeNotificationActions(pending);
+    }
   });
-  if (error) throw error;
+  await flushNotificationActions(ownerId);
+}
+
+export async function flushNotificationActions(ownerId: string): Promise<void> {
+  if (!supabase) return;
+  return withNotificationActionFlush(async () => {
+    for (;;) {
+      const item = await withNotificationActions(async () =>
+        (await readNotificationActions()).find(
+          (value) => value.ownerId === ownerId,
+        ),
+      );
+      if (!item) return;
+      const body =
+        item.action === "snooze"
+          ? {
+              occurrenceId: item.occurrenceId,
+              action: item.action,
+              minutes: 10,
+            }
+          : { occurrenceId: item.occurrenceId, action: item.action };
+      const { error } = await supabase.functions.invoke("occurrence-action", {
+        body,
+      });
+      if (error && !isTerminalNotificationActionError(error)) return;
+      await withNotificationActions(async () => {
+        await writeNotificationActions(
+          (await readNotificationActions()).filter(
+            (value) =>
+              value.occurrenceId !== item.occurrenceId ||
+              value.action !== item.action ||
+              value.ownerId !== item.ownerId,
+          ),
+        );
+      });
+    }
+  });
 }
 
 export async function synchronizeReminders(
@@ -233,6 +292,47 @@ async function readDeleted(): Promise<Array<{ id: string; ownerId: string }>> {
   );
 }
 
+async function readNotificationActions(): Promise<PendingNotificationAction[]> {
+  const value = await AsyncStorage.getItem(notificationActionsKey);
+  if (!value) return [];
+  const parsed: unknown = JSON.parse(value);
+  if (!Array.isArray(parsed)) return [];
+  return parsed.filter(
+    (item): item is PendingNotificationAction =>
+      typeof item === "object" &&
+      item !== null &&
+      typeof (item as Record<string, unknown>).occurrenceId === "string" &&
+      ((item as Record<string, unknown>).action === "dismiss" ||
+        (item as Record<string, unknown>).action === "snooze") &&
+      typeof (item as Record<string, unknown>).ownerId === "string",
+  );
+}
+
+async function writeNotificationActions(
+  actions: readonly PendingNotificationAction[],
+): Promise<void> {
+  if (actions.length) {
+    await AsyncStorage.setItem(notificationActionsKey, JSON.stringify(actions));
+  } else {
+    await AsyncStorage.removeItem(notificationActionsKey);
+  }
+}
+
+function isTerminalNotificationActionError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null || !("context" in error))
+    return false;
+  const context = (error as { context?: unknown }).context;
+  if (
+    typeof context !== "object" ||
+    context === null ||
+    !("status" in context)
+  ) {
+    return false;
+  }
+  const status = (context as { status?: unknown }).status;
+  return status === 400 || status === 404;
+}
+
 function withTombstones<T>(operation: () => Promise<T>): Promise<T> {
   const result = tombstoneQueue.then(operation, operation);
   tombstoneQueue = result.then(
@@ -245,6 +345,26 @@ function withTombstones<T>(operation: () => Promise<T>): Promise<T> {
 function withSynchronization<T>(operation: () => Promise<T>): Promise<T> {
   const result = synchronizationQueue.then(operation, operation);
   synchronizationQueue = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
+
+function withNotificationActions<T>(operation: () => Promise<T>): Promise<T> {
+  const result = notificationActionQueue.then(operation, operation);
+  notificationActionQueue = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
+
+function withNotificationActionFlush<T>(
+  operation: () => Promise<T>,
+): Promise<T> {
+  const result = notificationActionFlushQueue.then(operation, operation);
+  notificationActionFlushQueue = result.then(
     () => undefined,
     () => undefined,
   );

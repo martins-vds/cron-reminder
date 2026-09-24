@@ -184,15 +184,21 @@ function isReminder(value: unknown): value is Reminder {
   if (!isRecord(value)) return false;
   if (
     typeof value.id !== "string" ||
+    !value.id.trim() ||
     typeof value.ownerId !== "string" ||
     typeof value.title !== "string" ||
+    !value.title.trim() ||
     typeof value.notes !== "string" ||
     !Array.isArray(value.tags) ||
     !value.tags.every((tag) => typeof tag === "string") ||
     typeof value.timezone !== "string" ||
     typeof value.revision !== "number" ||
+    !Number.isInteger(value.revision) ||
+    value.revision < 1 ||
     typeof value.createdAt !== "string" ||
+    !Number.isFinite(Date.parse(value.createdAt)) ||
     typeof value.updatedAt !== "string" ||
+    !Number.isFinite(Date.parse(value.updatedAt)) ||
     (value.status !== "active" &&
       value.status !== "disabled" &&
       value.status !== "archived") ||
