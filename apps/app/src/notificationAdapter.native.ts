@@ -100,6 +100,7 @@ export class DeviceNotificationAdapter implements NotificationPort {
         data: {
           occurrenceId: occurrence.id,
           reminderId: reminder.id,
+          ownerId: reminder.ownerId,
           soundMode: reminder.sound.mode,
         },
       },

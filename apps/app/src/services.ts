@@ -287,7 +287,11 @@ export async function flushDeletedReminders(ownerId: string): Promise<void> {
       .from("reminder_tombstones")
       .upsert(mine.map(({ id }) => ({ id, owner_id: ownerId })));
     if (tombstoneError) throw tombstoneError;
-    const { error } = await supabase.from("reminders").delete().in("id", ids);
+    const { error } = await supabase
+      .from("reminders")
+      .delete()
+      .eq("owner_id", ownerId)
+      .in("id", ids);
     if (error) throw error;
     const latest = await readDeleted();
     await AsyncStorage.setItem(

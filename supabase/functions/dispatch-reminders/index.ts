@@ -859,6 +859,7 @@ async function deliverToDevice(
     data: {
       reminderId: reminder.id,
       occurrenceId,
+      ownerId: reminder.owner_id,
       soundMode: reminder.sound.mode,
     },
   };

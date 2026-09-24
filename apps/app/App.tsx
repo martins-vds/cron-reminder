@@ -227,21 +227,25 @@ export function RootNavigator() {
   useEffect(() => {
     if (!ownerId) return;
     if (Platform.OS === "web") {
-      const parameters = new URLSearchParams(globalThis.location.search);
-      const action = parameters.get("action");
-      const occurrenceId = parameters.get("occurrenceId");
-      if (occurrenceId && (action === "dismiss" || action === "snooze")) {
-        void submitNotificationAction(occurrenceId, action, ownerId)
-          .then(() =>
-            globalThis.history.replaceState(
-              {},
-              "",
-              globalThis.location.pathname,
-            ),
-          )
-          .catch(() => {});
-      }
-      return;
+      const handleMessage = (event: MessageEvent<unknown>) => {
+        if (typeof event.data !== "object" || event.data === null) return;
+        const data = event.data as Record<string, unknown>;
+        if (
+          data.type === "notification-action" &&
+          data.ownerId === ownerId &&
+          typeof data.occurrenceId === "string" &&
+          (data.action === "dismiss" || data.action === "snooze")
+        ) {
+          void submitNotificationAction(
+            data.occurrenceId,
+            data.action,
+            ownerId,
+          ).catch(() => {});
+        }
+      };
+      navigator.serviceWorker.addEventListener("message", handleMessage);
+      return () =>
+        navigator.serviceWorker.removeEventListener("message", handleMessage);
     }
     let remove: (() => void) | undefined;
     let cancelled = false;
@@ -254,8 +258,11 @@ export function RootNavigator() {
         if (cancelled || !response) return;
         const occurrenceId =
           response.notification.request.content.data?.occurrenceId;
+        const notificationOwnerId =
+          response.notification.request.content.data?.ownerId;
         const action = response.actionIdentifier;
         if (
+          notificationOwnerId === ownerId &&
           typeof occurrenceId === "string" &&
           (action === "dismiss" || action === "snooze")
         )

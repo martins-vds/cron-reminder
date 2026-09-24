@@ -22,12 +22,20 @@ self.addEventListener("push", (event) => {
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const occurrenceId = encodeURIComponent(
-    event.notification.data?.occurrenceId || "",
-  );
+  const data = event.notification.data || {};
   event.waitUntil(
-    clients.openWindow(
-      `/?action=${event.action || "open"}&occurrenceId=${occurrenceId}`,
-    ),
+    clients
+      .matchAll({ type: "window", includeUncontrolled: true })
+      .then(async (windows) => {
+        const client = windows[0] || (await clients.openWindow("/"));
+        if (!client) return;
+        client.postMessage({
+          type: "notification-action",
+          action: event.action || "open",
+          occurrenceId: data.occurrenceId,
+          ownerId: data.ownerId,
+        });
+        if ("focus" in client) await client.focus();
+      }),
   );
 });
