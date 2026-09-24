@@ -1032,7 +1032,7 @@ function ReminderEditor({
               key={date.toISOString()}
               style={[styles.caption, { color: colors.muted }]}
             >
-              {date.toLocaleString(locale)}
+              {date.toLocaleString(locale, { timeZone: timezone })}
             </Text>
           ))}
         </View>

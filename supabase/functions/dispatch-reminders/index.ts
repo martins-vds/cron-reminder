@@ -85,9 +85,7 @@ Deno.serve(async (request) => {
   }
   const now = new Date();
   const runDeadline = Date.now() + RUN_DEADLINE_MS;
-  const minuteStart = new Date(now);
-  minuteStart.setUTCSeconds(0, 0);
-  const windowEnd = new Date(minuteStart.getTime() + 60_000);
+  const windowEnd = new Date(now.getTime() + 1);
   const { data: state, error: stateError } = await client
     .from('dispatch_state')
     .select(
@@ -98,7 +96,7 @@ Deno.serve(async (request) => {
   if (stateError) return json({ error: 'Unable to load dispatch state' }, 500);
   const windowStart = state?.last_dispatched_at
     ? new Date(state.last_dispatched_at)
-    : new Date(minuteStart.getTime() - 60_000);
+    : new Date(now.getTime() - 60_000);
   const windowStartReminderId =
     typeof state?.last_dispatched_reminder_id === 'string'
       ? state.last_dispatched_reminder_id
@@ -299,7 +297,7 @@ Deno.serve(async (request) => {
     try {
       const results = await Promise.all(
         chunk.map(({ reminder, due }) =>
-          processScheduledOccurrence(client, reminder, due, minuteStart),
+          processScheduledOccurrence(client, reminder, due, windowStart),
         ),
       );
       delivered += results.reduce((total, value) => total + value, 0);
@@ -468,10 +466,10 @@ async function processScheduledOccurrence(
   client: ServiceClient,
   reminder: ReminderRow,
   due: Date,
-  minuteStart: Date,
+  missedBefore: Date,
 ): Promise<number> {
   const occurrenceId = `${reminder.id}:${due.toISOString()}`;
-  if (due < minuteStart) {
+  if (due < missedBefore) {
     const { error } = await client.rpc('record_missed_occurrence', {
       p_occurrence_id: occurrenceId,
       p_reminder_id: reminder.id,

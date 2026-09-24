@@ -228,10 +228,12 @@ create or replace function public.protect_reminder_tombstones()
 returns trigger language plpgsql security definer set search_path = '' as $$
 begin
   if tg_op = 'DELETE' then
-    insert into public.reminder_tombstones(id, owner_id)
-    values (old.id, old.owner_id)
-    on conflict (id, owner_id) do update
-      set deleted_at = now();
+    if auth.uid() = old.owner_id then
+      insert into public.reminder_tombstones(id, owner_id)
+      values (old.id, old.owner_id)
+      on conflict (id, owner_id) do update
+        set deleted_at = now();
+    end if;
     return old;
   end if;
   if exists (
