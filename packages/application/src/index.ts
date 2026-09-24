@@ -13,12 +13,16 @@ import {
 
 export interface ReminderRepository {
   list(ownerId: string): Promise<Reminder[]>;
-  get(id: string): Promise<Reminder | null>;
+  get(ownerId: string, id: string): Promise<Reminder | null>;
   save(reminder: Reminder): Promise<void>;
-  delete(id: string): Promise<void>;
+  delete(ownerId: string, id: string): Promise<void>;
   listDeletedIds?(ownerId: string): Promise<string[]>;
-  getSyncedRevision?(id: string): Promise<number | null>;
-  setSyncedRevision?(id: string, revision: number): Promise<void>;
+  getSyncedRevision?(ownerId: string, id: string): Promise<number | null>;
+  setSyncedRevision?(
+    ownerId: string,
+    id: string,
+    revision: number,
+  ): Promise<void>;
 }
 
 export interface HistoryRepository {
@@ -88,10 +92,11 @@ export class ReminderService {
   }
 
   async update(
+    ownerId: string,
     id: string,
     changes: Parameters<typeof updateReminder>[1],
   ): Promise<Reminder> {
-    const reminder = await this.require(id);
+    const reminder = await this.require(ownerId, id);
     const updated = updateReminder(
       reminder,
       changes,
@@ -101,9 +106,9 @@ export class ReminderService {
     return updated;
   }
 
-  async duplicate(id: string): Promise<Reminder> {
+  async duplicate(ownerId: string, id: string): Promise<Reminder> {
     const copy = duplicateReminder(
-      await this.require(id),
+      await this.require(ownerId, id),
       this.createId(),
       this.clock.now().toISOString(),
     );
@@ -111,31 +116,41 @@ export class ReminderService {
     return copy;
   }
 
-  async setEnabled(id: string, enabled: boolean): Promise<Reminder> {
+  async setEnabled(
+    ownerId: string,
+    id: string,
+    enabled: boolean,
+  ): Promise<Reminder> {
     return this.save(
       setReminderEnabled(
-        await this.require(id),
+        await this.require(ownerId, id),
         enabled,
         this.clock.now().toISOString(),
       ),
     );
   }
 
-  async archive(id: string): Promise<Reminder> {
+  async archive(ownerId: string, id: string): Promise<Reminder> {
     return this.save(
-      archiveReminder(await this.require(id), this.clock.now().toISOString()),
+      archiveReminder(
+        await this.require(ownerId, id),
+        this.clock.now().toISOString(),
+      ),
     );
   }
 
-  async restore(id: string): Promise<Reminder> {
+  async restore(ownerId: string, id: string): Promise<Reminder> {
     return this.save(
-      restoreReminder(await this.require(id), this.clock.now().toISOString()),
+      restoreReminder(
+        await this.require(ownerId, id),
+        this.clock.now().toISOString(),
+      ),
     );
   }
 
-  async delete(id: string): Promise<void> {
-    await this.require(id);
-    await this.repository.delete(id);
+  async delete(ownerId: string, id: string): Promise<void> {
+    await this.require(ownerId, id);
+    await this.repository.delete(ownerId, id);
   }
 
   private async save(reminder: Reminder): Promise<Reminder> {
@@ -143,8 +158,8 @@ export class ReminderService {
     return reminder;
   }
 
-  private async require(id: string): Promise<Reminder> {
-    const reminder = await this.repository.get(id);
+  private async require(ownerId: string, id: string): Promise<Reminder> {
+    const reminder = await this.repository.get(ownerId, id);
     if (!reminder) throw new Error("Reminder not found.");
     return reminder;
   }

@@ -135,7 +135,7 @@ export const authentication: AuthenticationPort | null = supabase
           if (ownerId) {
             const reminders = await localRepository.list(ownerId);
             for (const reminder of reminders) {
-              await localRepository.delete(reminder.id);
+              await localRepository.delete(ownerId, reminder.id);
             }
             await withTombstones(async () => {
               const remaining = (await readDeleted()).filter(
@@ -160,7 +160,13 @@ export const authentication: AuthenticationPort | null = supabase
           }
           await AsyncStorage.removeItem(deviceKey);
           await removePendingDeviceDeregistration(device?.id);
-          await supabase.auth.signOut();
+          const { error: signOutError } = await supabase.auth.signOut();
+          if (signOutError) {
+            const { error: localError } = await supabase.auth.signOut({
+              scope: "local",
+            });
+            if (localError) throw localError;
+          }
         });
       },
     }
@@ -207,8 +213,8 @@ export async function deleteReminder(
         deleted.push({ id, ownerId });
       await AsyncStorage.setItem(deletedKey, JSON.stringify(deleted));
     });
-    await localRepository.delete(id);
-    await flushDeletedReminders(ownerId);
+    await localRepository.delete(ownerId, id);
+    void flushDeletedReminders(ownerId).catch(() => {});
   });
 }
 

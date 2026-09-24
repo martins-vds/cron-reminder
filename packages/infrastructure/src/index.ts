@@ -42,40 +42,55 @@ export class JsonReminderRepository implements ReminderRepository {
     );
   }
 
-  async get(id: string): Promise<Reminder | null> {
-    return (await this.read()).find((reminder) => reminder.id === id) ?? null;
+  async get(ownerId: string, id: string): Promise<Reminder | null> {
+    return (
+      (await this.read()).find(
+        (reminder) => reminder.ownerId === ownerId && reminder.id === id,
+      ) ?? null
+    );
   }
 
   async save(reminder: Reminder): Promise<void> {
     await this.serialize(async () => {
       const reminders = await this.read();
-      const index = reminders.findIndex(({ id }) => id === reminder.id);
+      const index = reminders.findIndex(
+        (existing) =>
+          existing.ownerId === reminder.ownerId && existing.id === reminder.id,
+      );
       if (index < 0) reminders.push(reminder);
       else reminders[index] = reminder;
       await this.write(reminders);
     });
   }
 
-  async delete(id: string): Promise<void> {
+  async delete(ownerId: string, id: string): Promise<void> {
     await this.serialize(async () => {
       await this.write(
-        (await this.read()).filter((reminder) => reminder.id !== id),
+        (await this.read()).filter(
+          (reminder) => reminder.ownerId !== ownerId || reminder.id !== id,
+        ),
       );
       const revisions = await this.readSyncedRevisions();
-      delete revisions[id];
+      delete revisions[syncRevisionKey(ownerId, id)];
       await this.writeSyncedRevisions(revisions);
     });
   }
 
-  async getSyncedRevision(id: string): Promise<number | null> {
+  async getSyncedRevision(ownerId: string, id: string): Promise<number | null> {
     await this.queue;
-    return (await this.readSyncedRevisions())[id] ?? null;
+    return (
+      (await this.readSyncedRevisions())[syncRevisionKey(ownerId, id)] ?? null
+    );
   }
 
-  async setSyncedRevision(id: string, revision: number): Promise<void> {
+  async setSyncedRevision(
+    ownerId: string,
+    id: string,
+    revision: number,
+  ): Promise<void> {
     await this.serialize(async () => {
       const revisions = await this.readSyncedRevisions();
-      revisions[id] = revision;
+      revisions[syncRevisionKey(ownerId, id)] = revision;
       await this.writeSyncedRevisions(revisions);
     });
   }
@@ -121,6 +136,10 @@ export class JsonReminderRepository implements ReminderRepository {
       await this.store.remove(this.syncKey);
     }
   }
+}
+
+function syncRevisionKey(ownerId: string, id: string): string {
+  return `${ownerId}\u0000${id}`;
 }
 
 export class BrowserKeyValueStore implements KeyValueStore {
@@ -284,23 +303,27 @@ export class SupabaseReminderRepository implements ReminderRepository {
     return (data ?? []).map(fromDatabase);
   }
 
-  async get(id: string): Promise<Reminder | null> {
-    const data = await this.getRow(id);
+  async get(ownerId: string, id: string): Promise<Reminder | null> {
+    const data = await this.getRow(ownerId, id);
     return data ? fromDatabase(data) : null;
   }
 
-  private async getRow(id: string): Promise<Record<string, unknown> | null> {
+  private async getRow(
+    ownerId: string,
+    id: string,
+  ): Promise<Record<string, unknown> | null> {
     const { data, error } = await this.client
       .from("reminders")
       .select("*")
       .eq("id", id)
+      .eq("owner_id", ownerId)
       .maybeSingle();
     if (error) throw error;
     return data;
   }
 
   async save(reminder: Reminder): Promise<void> {
-    const existingRow = await this.getRow(reminder.id);
+    const existingRow = await this.getRow(reminder.ownerId, reminder.id);
     const existing = existingRow ? fromDatabase(existingRow) : null;
     if (!existing || !existingRow) {
       const { error } = await this.client
@@ -331,6 +354,7 @@ export class SupabaseReminderRepository implements ReminderRepository {
         ),
       )
       .eq("id", reminder.id)
+      .eq("owner_id", reminder.ownerId)
       .eq("revision", existing.revision)
       .select("id");
     if (error) throw error;
@@ -341,15 +365,19 @@ export class SupabaseReminderRepository implements ReminderRepository {
     }
   }
 
-  async delete(id: string): Promise<void> {
-    const existing = await this.get(id);
+  async delete(ownerId: string, id: string): Promise<void> {
+    const existing = await this.get(ownerId, id);
     if (existing) {
       const { error: tombstoneError } = await this.client
         .from("reminder_tombstones")
         .upsert({ id, owner_id: existing.ownerId });
       if (tombstoneError) throw tombstoneError;
     }
-    const { error } = await this.client.from("reminders").delete().eq("id", id);
+    const { error } = await this.client
+      .from("reminders")
+      .delete()
+      .eq("id", id)
+      .eq("owner_id", ownerId);
     if (error) throw error;
   }
 
@@ -450,7 +478,7 @@ export class OfflineSynchronizationAdapter implements SynchronizationPort {
     if (this.local.getSyncedRevision) {
       await Promise.all(
         local.map(async ({ id }) => {
-          const revision = await this.local.getSyncedRevision?.(id);
+          const revision = await this.local.getSyncedRevision?.(ownerId, id);
           if (revision !== null && revision !== undefined)
             syncedRevisions.set(id, revision);
         }),
@@ -460,7 +488,7 @@ export class OfflineSynchronizationAdapter implements SynchronizationPort {
     await Promise.all(
       local
         .filter(({ id }) => deleted.has(id))
-        .map(({ id }) => this.local.delete(id)),
+        .map(({ id }) => this.local.delete(ownerId, id)),
     );
     const { merged, conflicts } = mergeForSynchronization(
       survivingLocal,
@@ -474,7 +502,7 @@ export class OfflineSynchronizationAdapter implements SynchronizationPort {
     await Promise.all(
       local
         .filter(({ id }) => latestDeleted.has(id))
-        .map(({ id }) => this.local.delete(id)),
+        .map(({ id }) => this.local.delete(ownerId, id)),
     );
     await Promise.all(
       merged
@@ -482,7 +510,11 @@ export class OfflineSynchronizationAdapter implements SynchronizationPort {
         .map(async (reminder) => {
           await this.remote.save(reminder);
           await this.local.save(reminder);
-          await this.local.setSyncedRevision?.(reminder.id, reminder.revision);
+          await this.local.setSyncedRevision?.(
+            reminder.ownerId,
+            reminder.id,
+            reminder.revision,
+          );
         }),
     );
     return conflicts;
@@ -496,7 +528,11 @@ export class OfflineSynchronizationAdapter implements SynchronizationPort {
     };
     await this.remote.save(resolved);
     await this.local.save(resolved);
-    await this.local.setSyncedRevision?.(resolved.id, resolved.revision);
+    await this.local.setSyncedRevision?.(
+      resolved.ownerId,
+      resolved.id,
+      resolved.revision,
+    );
   }
 }
 

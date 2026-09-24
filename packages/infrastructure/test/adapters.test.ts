@@ -42,11 +42,11 @@ describe("local persistence", () => {
     const repository = new JsonReminderRepository(new MemoryStore());
     const original = reminder();
     await repository.save(original);
-    const loaded = await repository.get(original.id);
+    const loaded = await repository.get(original.ownerId, original.id);
     expect(loaded).toEqual(original);
     expect(loaded).not.toBe(original);
-    await repository.delete(original.id);
-    expect(await repository.get(original.id)).toBeNull();
+    await repository.delete(original.ownerId, original.id);
+    expect(await repository.get(original.ownerId, original.id)).toBeNull();
   });
 
   it("serializes concurrent saves so none are lost", async () => {
@@ -59,6 +59,27 @@ describe("local persistence", () => {
     expect(stored.map(({ id }) => id).sort()).toEqual(
       reminders.map(({ id }) => id).sort(),
     );
+  });
+
+  it("isolates identical reminder IDs and sync metadata by owner", async () => {
+    const repository = new JsonReminderRepository(new MemoryStore());
+    const first = reminder({ ownerId: "u1", title: "First account" });
+    const second = reminder({ ownerId: "u2", title: "Second account" });
+    await repository.save(first);
+    await repository.save(second);
+    await repository.setSyncedRevision("u1", first.id, 2);
+    await repository.setSyncedRevision("u2", second.id, 5);
+
+    expect((await repository.get("u1", first.id))?.title).toBe("First account");
+    expect((await repository.get("u2", second.id))?.title).toBe(
+      "Second account",
+    );
+    expect(await repository.getSyncedRevision("u1", first.id)).toBe(2);
+    expect(await repository.getSyncedRevision("u2", second.id)).toBe(5);
+
+    await repository.delete("u2", second.id);
+    expect(await repository.get("u2", second.id)).toBeNull();
+    expect(await repository.get("u1", first.id)).toEqual(first);
   });
 });
 
@@ -180,53 +201,75 @@ class FakeSupabaseClient {
   }
 
   private remindersTable() {
+    const matchingRows = (criteria: Record<string, unknown>) =>
+      [...this.reminders.values()].filter((row) =>
+        Object.entries(criteria).every(
+          ([column, value]) => row[column] === value,
+        ),
+      );
     return {
-      select: () => ({
-        eq: (column: string, value: string) => {
-          const rows = [...this.reminders.values()].filter(
-            (row) => row[column] === value,
-          );
-          return {
-            then(
-              resolve: (result: {
-                data: Record<string, unknown>[];
-                error: null;
-              }) => void,
-            ) {
-              resolve({ data: rows, error: null });
-            },
-            maybeSingle: async () => ({
-              data: rows[0] ?? null,
-              error: null,
-            }),
-          };
-        },
-      }),
+      select: () => {
+        const criteria: Record<string, unknown> = {};
+        const query = {
+          eq: (column: string, value: unknown) => {
+            criteria[column] = value;
+            return query;
+          },
+          then(
+            resolve: (result: {
+              data: Record<string, unknown>[];
+              error: null;
+            }) => void,
+          ) {
+            resolve({ data: matchingRows(criteria), error: null });
+          },
+          maybeSingle: async () => ({
+            data: matchingRows(criteria)[0] ?? null,
+            error: null,
+          }),
+        };
+        return query;
+      },
       insert: async (row: Record<string, unknown>) => {
         this.reminders.set(row.id as string, row);
         return { error: null };
       },
-      update: (row: Record<string, unknown>) => ({
-        eq: (_c1: string, id: string) => ({
-          eq: (_c2: string, expectedRevision: number) => ({
-            select: () => {
-              const existing = this.reminders.get(id);
-              if (!existing || existing.revision !== expectedRevision) {
-                return Promise.resolve({ data: [], error: null });
-              }
-              this.reminders.set(id, row);
-              return Promise.resolve({ data: [{ id }], error: null });
-            },
-          }),
-        }),
-      }),
-      delete: () => ({
-        eq: (_column: string, id: string) => {
-          this.operations.push("delete");
-          this.reminders.delete(id);
-          return Promise.resolve({ error: null });
-        },
-      }),
+      update: (row: Record<string, unknown>) => {
+        const criteria: Record<string, unknown> = {};
+        const query = {
+          eq: (column: string, value: unknown) => {
+            criteria[column] = value;
+            return query;
+          },
+          select: () => {
+            const existing = matchingRows(criteria)[0];
+            if (!existing) return Promise.resolve({ data: [], error: null });
+            this.reminders.set(String(existing.id), row);
+            return Promise.resolve({
+              data: [{ id: existing.id }],
+              error: null,
+            });
+          },
+        };
+        return query;
+      },
+      delete: () => {
+        const criteria: Record<string, unknown> = {};
+        const query = {
+          eq: (column: string, value: unknown) => {
+            criteria[column] = value;
+            return query;
+          },
+          then: (resolve: (result: { error: null }) => void) => {
+            this.operations.push("delete");
+            for (const existing of matchingRows(criteria)) {
+              this.reminders.delete(String(existing.id));
+            }
+            resolve({ error: null });
+          },
+        };
+        return query;
+      },
     };
   }
 
@@ -372,7 +415,7 @@ describe("Supabase reminder repository", () => {
     const original = reminder();
     fake.reminders.set(original.id, toDatabaseRow(original));
 
-    await repository.delete(original.id);
+    await repository.delete(original.ownerId, original.id);
 
     expect(fake.reminders.has(original.id)).toBe(false);
     expect(await repository.listDeletedIds("u1")).toEqual([original.id]);
@@ -403,7 +446,7 @@ describe("synchronization", () => {
     const adapter = new OfflineSynchronizationAdapter(local, remote);
     await adapter.synchronize(staleLocal.ownerId);
 
-    expect(await local.get(staleLocal.id)).toBeNull();
+    expect(await local.get(staleLocal.ownerId, staleLocal.id)).toBeNull();
   });
 
   it("rechecks tombstones before uploading merged reminders", async () => {
@@ -424,7 +467,7 @@ describe("synchronization", () => {
     const adapter = new OfflineSynchronizationAdapter(local, remote);
     await adapter.synchronize(staleLocal.ownerId);
 
-    expect(await local.get(staleLocal.id)).toBeNull();
+    expect(await local.get(staleLocal.ownerId, staleLocal.id)).toBeNull();
     expect(fake.reminders.has(staleLocal.id)).toBe(false);
   });
 
@@ -436,7 +479,7 @@ describe("synchronization", () => {
       updatedAt: "2026-09-24T00:00:00.000Z",
     });
     await local.save(localEdit);
-    await local.setSyncedRevision(localEdit.id, 1);
+    await local.setSyncedRevision(localEdit.ownerId, localEdit.id, 1);
 
     const remoteEdit = reminder({
       title: "Remote edit",
@@ -461,7 +504,9 @@ describe("synchronization", () => {
       local: { title: "Local edit", revision: 2 },
       remote: { title: "Remote edit", revision: 3 },
     });
-    expect((await local.get(localEdit.id))?.title).toBe("Local edit");
+    expect((await local.get(localEdit.ownerId, localEdit.id))?.title).toBe(
+      "Local edit",
+    );
     expect(fake.reminders.get(remoteEdit.id)?.title).toBe("Remote edit");
   });
 
@@ -470,7 +515,7 @@ describe("synchronization", () => {
     const localEdit = reminder({ title: "Local edit", revision: 2 });
     const remoteEdit = reminder({ title: "Remote edit", revision: 3 });
     await local.save(localEdit);
-    await local.setSyncedRevision(localEdit.id, 1);
+    await local.setSyncedRevision(localEdit.ownerId, localEdit.id, 1);
 
     const fake = new FakeSupabaseClient();
     fake.reminders.set(remoteEdit.id, toDatabaseRow(remoteEdit));
@@ -486,8 +531,12 @@ describe("synchronization", () => {
       localEdit,
     );
 
-    expect((await local.get(localEdit.id))?.revision).toBe(4);
+    expect((await local.get(localEdit.ownerId, localEdit.id))?.revision).toBe(
+      4,
+    );
     expect(fake.reminders.get(remoteEdit.id)?.revision).toBe(4);
-    expect(await local.getSyncedRevision(localEdit.id)).toBe(4);
+    expect(await local.getSyncedRevision(localEdit.ownerId, localEdit.id)).toBe(
+      4,
+    );
   });
 });

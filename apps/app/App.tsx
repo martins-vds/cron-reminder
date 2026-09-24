@@ -14,6 +14,7 @@ import {
   Alert,
   AppState,
   Appearance,
+  FlatList,
   Platform,
   Pressable,
   SafeAreaView,
@@ -182,6 +183,7 @@ export function RootNavigator() {
         .catch(() => {});
       void flushNotificationActions(ownerId).catch(() => {});
     };
+    retry();
     void flushNotificationActions(ownerId).catch(() => {});
     if (Platform.OS === "web") {
       globalThis.addEventListener("online", retry);
@@ -352,49 +354,79 @@ function HistoryScreen({
   locale: Locale;
   colors: Colors;
 }) {
+  const pageSize = 100;
   const t = createTranslator(locale);
   const [events, setEvents] = useState<HistoryRow[]>([]);
   const [query, setQuery] = useState("");
+  const [hasMore, setHasMore] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const loadPage = useCallback(
+    async (offset: number, replace = false) => {
+      if (!supabase) return;
+      setLoading(true);
+      try {
+        const cutoff = new Date(Date.now() - 30 * 86_400_000).toISOString();
+        const { data, error } = await supabase
+          .from("history")
+          .select("id,reminder_id,event_type,occurred_at")
+          .eq("owner_id", ownerId)
+          .gte("occurred_at", cutoff)
+          .order("occurred_at", { ascending: false })
+          .range(offset, offset + pageSize - 1);
+        if (error) throw error;
+        const page = (data ?? []) as HistoryRow[];
+        setEvents((current) => (replace ? page : [...current, ...page]));
+        setHasMore(page.length === pageSize);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [ownerId],
+  );
   useEffect(() => {
-    if (!supabase) return;
-    const cutoff = new Date(Date.now() - 30 * 86_400_000).toISOString();
-    void supabase
-      .from("history")
-      .select("id,reminder_id,event_type,occurred_at")
-      .eq("owner_id", ownerId)
-      .gte("occurred_at", cutoff)
-      .order("occurred_at", { ascending: false })
-      .then(({ data }) => setEvents((data ?? []) as HistoryRow[]));
-  }, [ownerId]);
+    setEvents([]);
+    setHasMore(true);
+    void loadPage(0, true);
+  }, [loadPage, ownerId]);
   const visible = events.filter((event) =>
     `${event.reminder_id} ${event.event_type}`
       .toLowerCase()
       .includes(query.toLowerCase()),
   );
   return (
-    <ScrollView contentContainerStyle={styles.page}>
-      <Text
-        accessibilityRole="header"
-        style={[styles.heading, { color: colors.text }]}
-      >
-        {t("history")}
-      </Text>
-      <Text style={[styles.body, { color: colors.muted }]}>
-        Triggered, dismissed, postponed, missed, and delivery failures are
-        retained for 30 days.
-      </Text>
-      <Field
-        label={t("search")}
-        value={query}
-        onChangeText={setQuery}
-        colors={colors}
-      />
-      {visible.length === 0 && (
+    <FlatList
+      data={visible}
+      keyExtractor={(event) => event.id}
+      contentContainerStyle={styles.page}
+      onEndReached={() => {
+        if (hasMore && !loading) void loadPage(events.length);
+      }}
+      onEndReachedThreshold={0.5}
+      ListHeaderComponent={
+        <>
+          <Text
+            accessibilityRole="header"
+            style={[styles.heading, { color: colors.text }]}
+          >
+            {t("history")}
+          </Text>
+          <Text style={[styles.body, { color: colors.muted }]}>
+            Triggered, dismissed, postponed, missed, and delivery failures are
+            retained for 30 days.
+          </Text>
+          <Field
+            label={t("search")}
+            value={query}
+            onChangeText={setQuery}
+            colors={colors}
+          />
+        </>
+      }
+      ListEmptyComponent={
         <EmptyState title={t("history")} message={t("empty")} colors={colors} />
-      )}
-      {visible.map((event) => (
+      }
+      renderItem={({ item: event }) => (
         <View
-          key={event.id}
           style={[
             styles.card,
             { backgroundColor: colors.surface, borderColor: colors.border },
@@ -410,8 +442,8 @@ function HistoryScreen({
             {new Date(event.occurred_at).toLocaleString(locale)}
           </Text>
         </View>
-      ))}
-    </ScrollView>
+      )}
+    />
   );
 }
 
@@ -703,7 +735,9 @@ function ReminderList({
                 accessibilityLabel={`${reminder.title}: ${t("enabled")}`}
                 value={reminder.status === "active"}
                 onValueChange={(value) =>
-                  void mutate(() => service.setEnabled(reminder.id, value))
+                  void mutate(() =>
+                    service.setEnabled(ownerId, reminder.id, value),
+                  )
                 }
               />
             )}
@@ -717,7 +751,9 @@ function ReminderList({
             />
             <Button
               label={t("duplicate")}
-              onPress={() => void mutate(() => service.duplicate(reminder.id))}
+              onPress={() =>
+                void mutate(() => service.duplicate(ownerId, reminder.id))
+              }
               colors={colors}
               compact
             />
@@ -728,8 +764,8 @@ function ReminderList({
               onPress={() =>
                 void mutate(() =>
                   reminder.status === "archived"
-                    ? service.restore(reminder.id)
-                    : service.archive(reminder.id),
+                    ? service.restore(ownerId, reminder.id)
+                    : service.archive(ownerId, reminder.id),
                 )
               }
               colors={colors}
@@ -836,7 +872,7 @@ function ReminderEditor({
       };
       await runReminderMutation(() =>
         reminder
-          ? service.update(reminder.id, changes)
+          ? service.update(ownerId, reminder.id, changes)
           : service.create({ ...changes, ownerId }),
       );
       const conflicts = await synchronizeReminders(ownerId).catch(() => []);

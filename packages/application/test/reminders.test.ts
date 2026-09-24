@@ -14,14 +14,15 @@ class MemoryRepository implements ReminderRepository {
   async list(ownerId: string): Promise<Reminder[]> {
     return [...this.items.values()].filter((item) => item.ownerId === ownerId);
   }
-  async get(id: string): Promise<Reminder | null> {
-    return this.items.get(id) ?? null;
+  async get(ownerId: string, id: string): Promise<Reminder | null> {
+    const item = this.items.get(id);
+    return item?.ownerId === ownerId ? item : null;
   }
   async save(reminder: Reminder): Promise<void> {
     this.items.set(reminder.id, reminder);
   }
-  async delete(id: string): Promise<void> {
-    this.items.delete(id);
+  async delete(ownerId: string, id: string): Promise<void> {
+    if ((await this.get(ownerId, id)) !== null) this.items.delete(id);
   }
 }
 
@@ -42,15 +43,19 @@ describe("ReminderService", () => {
       schedule: { kind: "cron", expression: "0 9 1 * *" },
       timezone: "America/Sao_Paulo",
     });
-    const copy = await service.duplicate(reminder.id);
+    const copy = await service.duplicate("user-1", reminder.id);
     expect(copy.title).toBe("Pay rent");
-    expect((await service.setEnabled(reminder.id, false)).status).toBe(
-      "disabled",
+    expect(
+      (await service.setEnabled("user-1", reminder.id, false)).status,
+    ).toBe("disabled");
+    expect((await service.archive("user-1", reminder.id)).status).toBe(
+      "archived",
     );
-    expect((await service.archive(reminder.id)).status).toBe("archived");
-    expect((await service.restore(reminder.id)).status).toBe("active");
-    await service.delete(reminder.id);
-    expect(await repository.get(reminder.id)).toBeNull();
+    expect((await service.restore("user-1", reminder.id)).status).toBe(
+      "active",
+    );
+    await service.delete("user-1", reminder.id);
+    expect(await repository.get("user-1", reminder.id)).toBeNull();
   });
 
   it("searches, filters, and sorts reminders", async () => {
