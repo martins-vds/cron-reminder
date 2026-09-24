@@ -151,9 +151,8 @@ Deno.serve(async (request) => {
     }
   }
 
-  const { error: updateStateError } = await client.from('dispatch_state').upsert({
-    id: DISPATCH_STATE_ID,
-    last_dispatched_at: nextWindowStart.toISOString(),
+  const { error: updateStateError } = await client.rpc('advance_dispatch_state', {
+    p_last_dispatched_at: nextWindowStart.toISOString(),
   });
   if (updateStateError)
     return json({ error: 'Unable to update dispatch state' }, 500);
@@ -344,7 +343,11 @@ async function deliverToDevices(
     const payload = {
       title: reminder.title,
       body: reminder.notes,
-      data: { reminderId: reminder.id, occurrenceId },
+      data: {
+        reminderId: reminder.id,
+        occurrenceId,
+        soundMode: reminder.sound.mode,
+      },
     };
     try {
       if (device.platform === 'web') {

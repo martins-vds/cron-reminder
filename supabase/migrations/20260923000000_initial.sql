@@ -3,6 +3,127 @@ create extension if not exists pgcrypto;
 create type public.reminder_status as enum ('active', 'disabled', 'archived');
 create type public.occurrence_status as enum ('scheduled', 'triggered', 'delivering', 'dismissed', 'postponed', 'missed', 'delivery-failed');
 
+create or replace function public.is_valid_cron_field(
+  field text,
+  minimum integer,
+  maximum integer,
+  names text[] default null
+)
+returns boolean language plpgsql immutable set search_path = '' as $$
+declare
+  part text;
+  base text;
+  bounds text[];
+  value integer;
+  lower_value integer;
+  upper_value integer;
+  step integer;
+begin
+  if field is null or field = '' then
+    return false;
+  end if;
+  foreach part in array string_to_array(field, ',') loop
+    base := split_part(part, '/', 1);
+    if strpos(part, '/') > 0 then
+      if part !~ '^[^/]+/[0-9]+$' then return false; end if;
+      step := split_part(part, '/', 2)::integer;
+      if step < 1 then return false; end if;
+    end if;
+    if base = '*' then continue; end if;
+    if base ~ '^[0-9]+$' or upper(base) = any(names) then
+      value := case
+        when base ~ '^[0-9]+$' then base::integer
+        else minimum + array_position(names, upper(base)) - 1
+      end;
+      if value < minimum or value > maximum then return false; end if;
+      continue;
+    end if;
+    bounds := string_to_array(base, '-');
+    if array_length(bounds, 1) <> 2 then return false; end if;
+    lower_value := case
+      when bounds[1] ~ '^[0-9]+$' then bounds[1]::integer
+      when upper(bounds[1]) = any(names)
+        then minimum + array_position(names, upper(bounds[1])) - 1
+      else null
+    end;
+    upper_value := case
+      when bounds[2] ~ '^[0-9]+$' then bounds[2]::integer
+      when upper(bounds[2]) = any(names)
+        then minimum + array_position(names, upper(bounds[2])) - 1
+      else null
+    end;
+    if lower_value is null
+      or upper_value is null
+      or lower_value < minimum
+      or upper_value > maximum
+      or lower_value > upper_value then
+      return false;
+    end if;
+  end loop;
+  return true;
+exception when others then
+  return false;
+end;
+$$;
+
+create or replace function public.is_valid_schedule(value jsonb)
+returns boolean language plpgsql immutable set search_path = '' as $$
+declare
+  fields text[];
+  starts_at timestamptz;
+  ends_at timestamptz;
+begin
+  if jsonb_typeof(value) <> 'object' then return false; end if;
+  if value->>'kind' = 'once' then
+    if jsonb_typeof(value->'at') <> 'string' then return false; end if;
+    perform (value->>'at')::timestamptz;
+    return true;
+  end if;
+  if value->>'kind' <> 'cron'
+    or jsonb_typeof(value->'expression') <> 'string' then
+    return false;
+  end if;
+  fields := regexp_split_to_array(trim(value->>'expression'), '\s+');
+  if array_length(fields, 1) <> 5
+    or not public.is_valid_cron_field(fields[1], 0, 59)
+    or not public.is_valid_cron_field(fields[2], 0, 23)
+    or not public.is_valid_cron_field(fields[3], 1, 31)
+    or not public.is_valid_cron_field(
+      fields[4], 1, 12,
+      array['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC']
+    )
+    or not public.is_valid_cron_field(
+      fields[5], 0, 7,
+      array['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT']
+    ) then
+    return false;
+  end if;
+  if value ? 'occurrenceLimit' and (
+    jsonb_typeof(value->'occurrenceLimit') <> 'number'
+    or (value->>'occurrenceLimit')::numeric < 1
+    or (value->>'occurrenceLimit')::numeric % 1 <> 0
+  ) then return false; end if;
+  if value ? 'startAt' then
+    if jsonb_typeof(value->'startAt') <> 'string' then return false; end if;
+    starts_at := (value->>'startAt')::timestamptz;
+  end if;
+  if value ? 'endAt' then
+    if jsonb_typeof(value->'endAt') <> 'string' then return false; end if;
+    ends_at := (value->>'endAt')::timestamptz;
+  end if;
+  return starts_at is null or ends_at is null or starts_at <= ends_at;
+exception when others then
+  return false;
+end;
+$$;
+
+create or replace function public.is_valid_timezone(value text)
+returns boolean language sql stable set search_path = '' as $$
+  select exists (
+    select 1 from pg_catalog.pg_timezone_names where lower(name) = lower(value)
+  );
+$$;
+
 create table public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,
   locale text not null default 'en' check (locale in ('en', 'pt-BR')),
@@ -17,21 +138,8 @@ create table public.reminders (
   title text not null check (length(trim(title)) > 0),
   notes text not null default '',
   tags text[] not null default '{}',
-  schedule jsonb not null check (
-    coalesce(
-      jsonb_typeof(schedule) = 'object'
-      and schedule->>'kind' in ('once', 'cron')
-      and (
-        (schedule->>'kind' = 'once' and schedule ? 'at')
-        or
-        (
-          schedule->>'kind' = 'cron'
-          and schedule->>'expression' ~ '^\S+\s+\S+\s+\S+\s+\S+\s+\S+$'
-        )
-      )
-    , false)
-  ),
-  timezone text not null check (length(trim(timezone)) > 0),
+  schedule jsonb not null check (public.is_valid_schedule(schedule)),
+  timezone text not null check (public.is_valid_timezone(timezone)),
   sound jsonb not null default '{"mode":"default"}',
   status public.reminder_status not null default 'active',
   revision integer not null default 1 check (revision > 0),
@@ -103,6 +211,13 @@ create table public.dispatch_state (
 );
 insert into public.dispatch_state (id, last_dispatched_at) values (true, now());
 
+create or replace function public.advance_dispatch_state(p_last_dispatched_at timestamptz)
+returns void language sql security definer set search_path = '' as $$
+  update public.dispatch_state
+  set last_dispatched_at = greatest(last_dispatched_at, p_last_dispatched_at)
+  where id = true;
+$$;
+
 alter table public.profiles enable row level security;
 alter table public.reminders enable row level security;
 alter table public.occurrences enable row level security;
@@ -141,3 +256,5 @@ $$;
 
 revoke all on function public.delete_expired_history() from public, anon, authenticated;
 grant execute on function public.delete_expired_history() to service_role;
+revoke all on function public.advance_dispatch_state(timestamptz) from public, anon, authenticated;
+grant execute on function public.advance_dispatch_state(timestamptz) to service_role;

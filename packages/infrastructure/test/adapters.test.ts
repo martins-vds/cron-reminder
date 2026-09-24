@@ -127,6 +127,17 @@ describe("versioned JSON backup", () => {
     expect(result.invalid).toBe(1);
     expect(result.imported).toBe(0);
   });
+
+  it("rejects reminders with an invalid timezone", () => {
+    const backup = JSON.stringify({
+      version: 1,
+      exportedAt: "2026-09-23T00:00:00.000Z",
+      reminders: [reminder({ timezone: "Not/A_Timezone" })],
+    });
+    const result = importBackup(backup, [], "u1");
+    expect(result.invalid).toBe(1);
+    expect(result.imported).toBe(0);
+  });
 });
 
 class FakeSupabaseClient {

@@ -7,6 +7,7 @@ import {
   postponeOccurrence,
   restoreReminder,
   setReminderEnabled,
+  updateReminder,
 } from "../src/index";
 
 const base = {
@@ -21,6 +22,19 @@ const base = {
 describe("reminder lifecycle", () => {
   it("requires a title", () => {
     expect(() => createReminder({ ...base, title: " " })).toThrow("title");
+  });
+
+  it("rejects invalid IANA timezones when creating or updating", () => {
+    expect(() =>
+      createReminder({ ...base, timezone: "Not/A_Timezone" }),
+    ).toThrow("timezone");
+    expect(() =>
+      updateReminder(
+        createReminder(base),
+        { timezone: "Not/A_Timezone" },
+        base.now,
+      ),
+    ).toThrow("timezone");
   });
 
   it("disables, archives, and restores a reminder", () => {

@@ -83,6 +83,10 @@ begin
   if not found then
     return false;
   end if;
+  if p_event = 'postponed' then
+    delete from public.occurrence_device_deliveries
+    where occurrence_id = acted.id and owner_id = acted.owner_id;
+  end if;
   insert into public.history(reminder_id, occurrence_id, owner_id, event_type)
   values (acted.reminder_id, acted.id, acted.owner_id, p_event::public.occurrence_status);
   return true;

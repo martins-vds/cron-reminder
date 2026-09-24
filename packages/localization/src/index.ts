@@ -20,6 +20,7 @@ const messages = {
     history: "History",
     interval: "Interval",
     language: "Language",
+    monthly: "Monthly",
     notes: "Notes",
     once: "Once",
     reminders: "Reminders",
@@ -36,6 +37,7 @@ const messages = {
     title: "Title",
     upcoming: "Next occurrences",
     weekdays: "Weekdays",
+    yearly: "Yearly",
   },
   "pt-BR": {
     active: "Ativo",
@@ -56,6 +58,7 @@ const messages = {
     history: "Histórico",
     interval: "Intervalo",
     language: "Idioma",
+    monthly: "Mensalmente",
     notes: "Notas",
     once: "Uma vez",
     reminders: "Lembretes",
@@ -72,6 +75,7 @@ const messages = {
     title: "Título",
     upcoming: "Próximas ocorrências",
     weekdays: "Dias úteis",
+    yearly: "Anualmente",
   },
 } as const;
 

@@ -6,7 +6,7 @@ import type {
 } from "@cron-reminder/application";
 import { detectConflict } from "@cron-reminder/application";
 import type { Reminder, Schedule } from "@cron-reminder/domain";
-import { validateSchedule } from "@cron-reminder/domain";
+import { validateSchedule, validateTimezone } from "@cron-reminder/domain";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 type SupabaseClientLike = Pick<SupabaseClient, "auth" | "from" | "functions">;
@@ -203,6 +203,7 @@ function isReminder(value: unknown): value is Reminder {
   }
   try {
     validateSchedule(value.schedule);
+    validateTimezone(value.timezone);
   } catch {
     return false;
   }

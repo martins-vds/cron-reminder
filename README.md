@@ -27,7 +27,7 @@ The domain package has no React, Expo, storage, or Supabase dependencies.
 
 ```sh
 npm install
-cp .env.example .env
+cp apps/app/.env.example apps/app/.env
 npx supabase link
 npx supabase db push
 npx supabase functions deploy delete-account

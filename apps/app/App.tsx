@@ -814,9 +814,7 @@ function ReminderEditor({
         ).map((value) => (
           <Button
             key={value}
-            label={t(
-              value === "monthly" || value === "yearly" ? "schedule" : value,
-            )}
+            label={t(value)}
             onPress={() => chooseKind(value)}
             active={kind === value}
             colors={colors}

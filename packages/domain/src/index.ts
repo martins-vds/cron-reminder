@@ -132,10 +132,19 @@ export function validateSchedule(schedule: Schedule): void {
   }
 }
 
+export function validateTimezone(timezone: string): void {
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: timezone }).format();
+  } catch {
+    throw new Error("A valid IANA timezone is required.");
+  }
+}
+
 export function createReminder(input: CreateReminderInput): Reminder {
   const title = input.title.trim();
   if (!title) throw new Error("Reminder title is required.");
   validateSchedule(input.schedule);
+  validateTimezone(input.timezone);
   return {
     id: input.id,
     ownerId: input.ownerId,
@@ -172,6 +181,7 @@ export function updateReminder(
   };
   if (!updated.title.trim()) throw new Error("Reminder title is required.");
   validateSchedule(updated.schedule);
+  validateTimezone(updated.timezone);
   return updated;
 }
 

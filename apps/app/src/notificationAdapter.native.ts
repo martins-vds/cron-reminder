@@ -5,15 +5,20 @@ import type {
   NotificationRegistration,
 } from "@cron-reminder/application";
 import type { Occurrence, Reminder } from "@cron-reminder/domain";
-import { Platform } from "react-native";
+import { Platform, Vibration } from "react-native";
 
 Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldPlaySound: true,
-    shouldSetBadge: false,
-    shouldShowBanner: true,
-    shouldShowList: true,
-  }),
+  handleNotification: async (notification) => {
+    if (notification.request.content.data?.soundMode === "vibrate") {
+      Vibration.vibrate();
+    }
+    return {
+      shouldPlaySound: notification.request.content.sound != null,
+      shouldSetBadge: false,
+      shouldShowBanner: true,
+      shouldShowList: true,
+    };
+  },
 });
 
 const projectId =
@@ -50,7 +55,11 @@ export class DeviceNotificationAdapter implements NotificationPort {
         body: reminder.notes || undefined,
         sound: reminder.sound.mode === "silent" ? undefined : "default",
         categoryIdentifier: "reminder",
-        data: { occurrenceId: occurrence.id, reminderId: reminder.id },
+        data: {
+          occurrenceId: occurrence.id,
+          reminderId: reminder.id,
+          soundMode: reminder.sound.mode,
+        },
       },
       trigger: {
         type: Notifications.SchedulableTriggerInputTypes.DATE,
