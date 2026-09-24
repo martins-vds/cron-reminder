@@ -169,6 +169,7 @@ create table public.occurrences (
   id text not null,
   reminder_id text not null,
   owner_id uuid not null references auth.users(id) on delete cascade,
+  reminder_revision integer not null check (reminder_revision > 0),
   scheduled_at timestamptz not null,
   status public.occurrence_status not null default 'scheduled',
   acted_at timestamptz,
@@ -199,12 +200,15 @@ create table public.devices (
   owner_id uuid not null references auth.users(id) on delete cascade,
   platform text not null check (platform in ('android', 'ios', 'web')),
   token text not null,
+  token_hash bytea generated always as (digest(token, 'sha256')) stored,
   deregistration_token uuid not null default gen_random_uuid(),
   enabled boolean not null default true,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 create index devices_owner_idx on public.devices(owner_id) where enabled;
+create unique index devices_platform_token_idx
+  on public.devices(platform, token_hash);
 
 create table public.sync_conflicts (
   id uuid primary key default gen_random_uuid(),

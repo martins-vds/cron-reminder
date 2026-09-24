@@ -46,14 +46,14 @@ interface ScheduledOccurrence {
 type ServiceClient = ReturnType<typeof createClient<any>>;
 
 const DISPATCH_STATE_ID = true;
-const MAX_SCHEDULED_OCCURRENCES_PER_RUN = 50;
+const MAX_SCHEDULED_OCCURRENCES_PER_RUN = 500;
 const MAX_PENDING_DELIVERIES_PER_RUN = 25;
 const MAX_POSTPONED_DELIVERIES_PER_RUN = 25;
 const DELIVERY_LEASE_MS = 5 * 60_000;
 const MAX_DELIVERY_ATTEMPTS = 5;
 const PUSH_TIMEOUT_MS = 5_000;
 const RUN_DEADLINE_MS = 60_000;
-const OCCURRENCE_CONCURRENCY = 10;
+const OCCURRENCE_CONCURRENCY = 25;
 const DEVICE_SEND_CONCURRENCY = 10;
 const MAX_DEVICES_PER_DELIVERY_ATTEMPT = 10;
 const EXPO_RECEIPT_BATCH_SIZE = 1_000;
@@ -477,25 +477,28 @@ async function processScheduledOccurrence(
       p_occurrence_id: occurrenceId,
       p_reminder_id: reminder.id,
       p_owner_id: reminder.owner_id,
+      p_reminder_revision: reminder.revision,
       p_scheduled_at: due.toISOString(),
     });
     if (error) throw error;
     return 0;
   }
-  const { error } = await client.from('occurrences').insert({
-    id: occurrenceId,
-    reminder_id: reminder.id,
-    owner_id: reminder.owner_id,
-    scheduled_at: due.toISOString(),
-    status: 'triggered',
+  const now = new Date();
+  const leaseId = crypto.randomUUID();
+  const { data, error } = await client.rpc('prepare_occurrence_delivery', {
+    p_occurrence_id: occurrenceId,
+    p_reminder_id: reminder.id,
+    p_owner_id: reminder.owner_id,
+    p_reminder_revision: reminder.revision,
+    p_scheduled_at: due.toISOString(),
+    p_lease_id: leaseId,
+    p_now: now.toISOString(),
+    p_stale_before: new Date(
+      now.getTime() - DELIVERY_LEASE_MS,
+    ).toISOString(),
   });
-  if (error && error.code !== '23505') throw error;
-  const leaseId = await claimUndelivered(
-    client,
-    occurrenceId,
-    reminder.owner_id,
-  );
-  return leaseId
+  if (error) throw error;
+  return data
     ? deliverOccurrence(client, reminder, occurrenceId, leaseId)
     : 0;
 }
@@ -503,13 +506,15 @@ async function processScheduledOccurrence(
 async function claimUndelivered(
   client: ServiceClient,
   occurrenceId: string,
-  ownerId: string,
+  reminder: ReminderRow,
 ): Promise<string | null> {
   const now = new Date();
   const leaseId = crypto.randomUUID();
   const { data, error } = await client.rpc('claim_occurrence_delivery', {
     p_occurrence_id: occurrenceId,
-    p_owner_id: ownerId,
+    p_owner_id: reminder.owner_id,
+    p_reminder_id: reminder.id,
+    p_reminder_revision: reminder.revision,
     p_lease_id: leaseId,
     p_now: now.toISOString(),
     p_stale_before: new Date(
@@ -602,7 +607,7 @@ async function processRetryOccurrence(
   const leaseId = await claimUndelivered(
     client,
     occurrence.id,
-    reminder.owner_id,
+    reminder,
   );
   return leaseId
     ? deliverOccurrence(client, reminder, occurrence.id, leaseId)

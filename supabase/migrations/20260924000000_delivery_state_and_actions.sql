@@ -63,12 +63,31 @@ create or replace function public.record_missed_occurrence(
   p_occurrence_id text,
   p_reminder_id text,
   p_owner_id uuid,
+  p_reminder_revision integer,
   p_scheduled_at timestamptz
 )
 returns boolean language plpgsql security definer set search_path = '' as $$
 begin
-  insert into public.occurrences(id, reminder_id, owner_id, scheduled_at, status)
-  values (p_occurrence_id, p_reminder_id, p_owner_id, p_scheduled_at, 'missed');
+  if not exists (
+    select 1 from public.reminders
+    where id = p_reminder_id
+      and owner_id = p_owner_id
+      and status = 'active'
+      and revision = p_reminder_revision
+  ) then
+    return false;
+  end if;
+  insert into public.occurrences(
+    id, reminder_id, owner_id, reminder_revision, scheduled_at, status
+  )
+  values (
+    p_occurrence_id,
+    p_reminder_id,
+    p_owner_id,
+    p_reminder_revision,
+    p_scheduled_at,
+    'missed'
+  );
   insert into public.history(reminder_id, occurrence_id, owner_id, event_type)
   values (p_reminder_id, p_occurrence_id, p_owner_id, 'missed');
   return true;
@@ -78,12 +97,14 @@ exception
 end;
 $$;
 
-revoke all on function public.record_missed_occurrence(text, text, uuid, timestamptz) from public, anon, authenticated;
-grant execute on function public.record_missed_occurrence(text, text, uuid, timestamptz) to service_role;
+revoke all on function public.record_missed_occurrence(text, text, uuid, integer, timestamptz) from public, anon, authenticated;
+grant execute on function public.record_missed_occurrence(text, text, uuid, integer, timestamptz) to service_role;
 
 create or replace function public.claim_occurrence_delivery(
   p_occurrence_id text,
   p_owner_id uuid,
+  p_reminder_id text,
+  p_reminder_revision integer,
   p_lease_id uuid,
   p_now timestamptz,
   p_stale_before timestamptz
@@ -97,6 +118,7 @@ begin
       delivery_lease_id = p_lease_id
   where id = p_occurrence_id
     and owner_id = p_owner_id
+    and reminder_id = p_reminder_id
     and delivered_at is null
     and delivery_attempts < 5
     and (next_delivery_attempt_at is null or next_delivery_attempt_at <= p_now)
@@ -107,6 +129,20 @@ begin
         and (acted_at is null or acted_at < p_stale_before)
       )
       or (status = 'postponed' and snoozed_until <= p_now)
+    )
+    and exists (
+      select 1 from public.reminders
+      where id = p_reminder_id
+        and owner_id = p_owner_id
+        and status = 'active'
+        and (
+          public.occurrences.status = 'postponed'
+          or (
+            revision = p_reminder_revision
+            and public.occurrences.reminder_revision =
+              p_reminder_revision
+          )
+        )
     )
   returning true into claimed;
   return coalesce(claimed, false);
@@ -138,6 +174,57 @@ begin
   insert into public.history(reminder_id, occurrence_id, owner_id, event_type)
   values (completed.reminder_id, completed.id, completed.owner_id, 'triggered');
   return true;
+end;
+$$;
+
+create or replace function public.prepare_occurrence_delivery(
+  p_occurrence_id text,
+  p_reminder_id text,
+  p_owner_id uuid,
+  p_reminder_revision integer,
+  p_scheduled_at timestamptz,
+  p_lease_id uuid,
+  p_now timestamptz,
+  p_stale_before timestamptz
+)
+returns boolean language plpgsql security definer set search_path = '' as $$
+begin
+  perform 1
+  from public.reminders
+  where id = p_reminder_id
+    and owner_id = p_owner_id
+    and status = 'active'
+    and revision = p_reminder_revision
+  for share;
+  if not found then
+    return false;
+  end if;
+  insert into public.occurrences(
+    id,
+    reminder_id,
+    owner_id,
+    reminder_revision,
+    scheduled_at,
+    status
+  )
+  values (
+    p_occurrence_id,
+    p_reminder_id,
+    p_owner_id,
+    p_reminder_revision,
+    p_scheduled_at,
+    'triggered'
+  )
+  on conflict (id, owner_id) do nothing;
+  return public.claim_occurrence_delivery(
+    p_occurrence_id,
+    p_owner_id,
+    p_reminder_id,
+    p_reminder_revision,
+    p_lease_id,
+    p_now,
+    p_stale_before
+  );
 end;
 $$;
 
@@ -435,8 +522,9 @@ $$;
 
 revoke all on function public.act_on_occurrence(text, text, integer) from public, anon;
 grant execute on function public.act_on_occurrence(text, text, integer) to authenticated, service_role;
-revoke all on function public.claim_occurrence_delivery(text, uuid, uuid, timestamptz, timestamptz) from public, anon, authenticated;
+revoke all on function public.claim_occurrence_delivery(text, uuid, text, integer, uuid, timestamptz, timestamptz) from public, anon, authenticated;
 revoke all on function public.complete_occurrence_delivery(text, uuid, uuid, timestamptz) from public, anon, authenticated;
+revoke all on function public.prepare_occurrence_delivery(text, text, uuid, integer, timestamptz, uuid, timestamptz, timestamptz) from public, anon, authenticated;
 revoke all on function public.renew_occurrence_delivery_lease(text, uuid, uuid, timestamptz) from public, anon, authenticated;
 revoke all on function public.fail_occurrence_delivery(text, uuid, uuid, timestamptz) from public, anon, authenticated;
 revoke all on function public.record_occurrence_device_delivery(text, uuid, text, uuid) from public, anon, authenticated;
@@ -444,8 +532,9 @@ revoke all on function public.record_expo_push_ticket(text, text, uuid, text, uu
 revoke all on function public.complete_expo_push_ticket(text) from public, anon, authenticated;
 revoke all on function public.fail_expo_push_ticket(text, boolean) from public, anon, authenticated;
 revoke all on function public.defer_occurrence_delivery(text, uuid, uuid, timestamptz) from public, anon, authenticated;
-grant execute on function public.claim_occurrence_delivery(text, uuid, uuid, timestamptz, timestamptz) to service_role;
+grant execute on function public.claim_occurrence_delivery(text, uuid, text, integer, uuid, timestamptz, timestamptz) to service_role;
 grant execute on function public.complete_occurrence_delivery(text, uuid, uuid, timestamptz) to service_role;
+grant execute on function public.prepare_occurrence_delivery(text, text, uuid, integer, timestamptz, uuid, timestamptz, timestamptz) to service_role;
 grant execute on function public.renew_occurrence_delivery_lease(text, uuid, uuid, timestamptz) to service_role;
 grant execute on function public.fail_occurrence_delivery(text, uuid, uuid, timestamptz) to service_role;
 grant execute on function public.record_occurrence_device_delivery(text, uuid, text, uuid) to service_role;
