@@ -65,6 +65,7 @@ create table if not exists public.expo_push_tickets (
   occurrence_id text not null,
   owner_id uuid not null references auth.users(id) on delete cascade,
   device_id text not null references public.devices(id) on delete cascade,
+  device_token_hash bytea not null,
   delivery_round_id uuid not null,
   created_at timestamptz not null default now(),
   last_checked_at timestamptz,
@@ -461,15 +462,23 @@ begin
     return false;
   end if;
   insert into public.expo_push_tickets(
-    ticket_id, occurrence_id, owner_id, device_id, delivery_round_id
+    ticket_id,
+    occurrence_id,
+    owner_id,
+    device_id,
+    device_token_hash,
+    delivery_round_id
   )
-  values (
+  select
     p_ticket_id,
     p_occurrence_id,
     p_owner_id,
     p_device_id,
+    device.token_hash,
     p_lease_id
-  )
+  from public.devices device
+  where device.id = p_device_id
+    and device.owner_id = p_owner_id
   on conflict (ticket_id) do nothing
   returning true into inserted;
   if coalesce(inserted, false) then
@@ -545,7 +554,9 @@ begin
     where ticket_id = p_ticket_id;
     update public.devices
     set enabled = false, updated_at = now()
-    where id = ticket.device_id;
+    where id = ticket.device_id
+      and owner_id = ticket.owner_id
+      and token_hash = ticket.device_token_hash;
   else
     if failed.status = 'delivering' then
       return false;

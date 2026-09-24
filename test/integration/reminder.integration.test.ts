@@ -451,4 +451,51 @@ describe("Edge Function state transitions", () => {
     );
     expect(devices.rowCount).toBe(0);
   });
+
+  it("does not disable a refreshed token from a stale Expo receipt", async () => {
+    const { id, scheduledAt } = await insertReminder({
+      id: "refreshed-token-reminder",
+    });
+    const occurrenceId = `${id}:${scheduledAt.toISOString()}`;
+    const deviceId = "refreshed-token-device";
+    const leaseId = crypto.randomUUID();
+    await pool.query(
+      `insert into public.devices(
+        id, owner_id, platform, token, deregistration_token
+      ) values ($1, $2, 'ios', 'old-token', $3)`,
+      [deviceId, ownerId, crypto.randomUUID()],
+    );
+    await pool.query(
+      `insert into public.occurrences(
+        id, reminder_id, owner_id, reminder_revision, scheduled_at,
+        status, delivery_lease_id, acted_at
+      ) values ($1, $2, $3, 1, $4, 'delivering', $5, now())`,
+      [occurrenceId, id, ownerId, scheduledAt.toISOString(), leaseId],
+    );
+    await pool.query(
+      `select public.record_expo_push_ticket(
+        'stale-token-ticket', $1, $2, $3, $4
+      )`,
+      [occurrenceId, ownerId, deviceId, leaseId],
+    );
+    await pool.query(
+      `update public.devices set token = 'refreshed-token'
+       where id = $1 and owner_id = $2`,
+      [deviceId, ownerId],
+    );
+
+    await pool.query(
+      "select public.fail_expo_push_ticket('stale-token-ticket', true)",
+    );
+
+    const device = await pool.query<{ enabled: boolean; token: string }>(
+      `select enabled, token from public.devices
+       where id = $1 and owner_id = $2`,
+      [deviceId, ownerId],
+    );
+    expect(device.rows[0]).toEqual({
+      enabled: true,
+      token: "refreshed-token",
+    });
+  });
 });
