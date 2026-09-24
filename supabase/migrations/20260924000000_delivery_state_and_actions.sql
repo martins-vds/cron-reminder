@@ -17,7 +17,6 @@ create table if not exists public.occurrence_device_deliveries (
   occurrence_id text not null,
   owner_id uuid not null references auth.users(id) on delete cascade,
   device_id text not null references public.devices(id) on delete cascade,
-  delivery_round_id uuid not null,
   delivered_at timestamptz not null default now(),
   primary key (occurrence_id, device_id),
   foreign key (occurrence_id, owner_id) references public.occurrences(id, owner_id) on delete cascade
@@ -30,6 +29,7 @@ create table if not exists public.expo_push_tickets (
   occurrence_id text not null,
   owner_id uuid not null references auth.users(id) on delete cascade,
   device_id text not null references public.devices(id) on delete cascade,
+  delivery_round_id uuid not null,
   created_at timestamptz not null default now(),
   last_checked_at timestamptz,
   foreign key (occurrence_id, owner_id)

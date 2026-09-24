@@ -46,13 +46,13 @@ interface ScheduledOccurrence {
 type ServiceClient = ReturnType<typeof createClient<any>>;
 
 const DISPATCH_STATE_ID = true;
-const MAX_DISPATCH_WORK_PER_RUN = 500;
+const MAX_DISPATCH_WORK_PER_RUN = 100;
 const DELIVERY_LEASE_MS = 5 * 60_000;
 const MAX_DELIVERY_ATTEMPTS = 5;
 const PUSH_TIMEOUT_MS = 30_000;
 const DEVICE_SEND_CONCURRENCY = 10;
-const MAX_DEVICES_PER_DELIVERY_ATTEMPT = 20;
-const EXPO_RECEIPT_BATCH_SIZE = 100;
+const MAX_DEVICES_PER_DELIVERY_ATTEMPT = 10;
+const EXPO_RECEIPT_BATCH_SIZE = 1_000;
 const ALLOWED_PUSH_HOSTS = [
   'fcm.googleapis.com',
   'android.googleapis.com',
@@ -889,7 +889,7 @@ async function sendExpoPush(
     }),
   });
   if (!response.ok) {
-    if ([400, 404, 410].includes(response.status)) {
+    if (response.status === 410) {
       throw new PermanentDeliveryError('Expo push failed permanently');
     }
     throw new Error('Expo push failed');
@@ -924,18 +924,33 @@ async function sendExpoPush(
 
 async function processExpoReceipts(client: ServiceClient): Promise<void> {
   const now = new Date();
-  const { data: tickets, error } = await client
+  const { data: newTickets, error: newTicketsError } = await client
     .from('expo_push_tickets')
     .select('ticket_id,created_at,last_checked_at')
-    .or(
-      `last_checked_at.is.null,last_checked_at.lte.${new Date(
-        now.getTime() - 60_000,
-      ).toISOString()}`,
-    )
-    .order('last_checked_at', { ascending: true, nullsFirst: true })
+    .is('last_checked_at', null)
     .order('created_at')
     .limit(EXPO_RECEIPT_BATCH_SIZE);
-  if (error) throw error;
+  if (newTicketsError) throw newTicketsError;
+  const { data: retryTickets, error: retryTicketsError } = await client
+    .from('expo_push_tickets')
+    .select('ticket_id,created_at,last_checked_at')
+    .lte(
+      'last_checked_at',
+      new Date(now.getTime() - 60_000).toISOString(),
+    )
+    .order('last_checked_at')
+    .order('created_at')
+    .limit(EXPO_RECEIPT_BATCH_SIZE);
+  if (retryTicketsError) throw retryTicketsError;
+  await processExpoReceiptBatch(client, newTickets ?? [], now);
+  await processExpoReceiptBatch(client, retryTickets ?? [], now);
+}
+
+async function processExpoReceiptBatch(
+  client: ServiceClient,
+  tickets: Array<{ ticket_id: string; created_at: string }>,
+  now: Date,
+): Promise<void> {
   if (!tickets?.length) return;
   const response = await fetch(
     'https://exp.host/--/api/v2/push/getReceipts',
