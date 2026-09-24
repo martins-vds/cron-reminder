@@ -53,6 +53,7 @@ import {
   deleteReminder,
   flushPendingDeviceDeregistrations,
   flushNotificationActions,
+  getRememberedDeviceId,
   localRepository,
   rememberDevice,
   resolveSynchronizationConflict,
@@ -60,8 +61,12 @@ import {
   submitNotificationAction,
   supabase,
   synchronizeReminders,
+  updateRememberedDeviceToken,
 } from "./src/services";
-import { DeviceNotificationAdapter } from "./src/notificationAdapter";
+import {
+  DeviceNotificationAdapter,
+  subscribeToPushTokenChanges,
+} from "./src/notificationAdapter";
 
 type ThemePreference = "system" | "light" | "dark";
 type EditorKind =
@@ -174,9 +179,12 @@ export function RootNavigator() {
 
   useEffect(() => {
     if (!ownerId) return;
+    let active = true;
+    setBackgroundSyncConflicts([]);
     const retry = () => {
       void synchronizeReminders(ownerId)
         .then((conflicts) => {
+          if (!active) return;
           setBackgroundSyncConflicts(conflicts);
           setSyncRevision((revision) => revision + 1);
         })
@@ -184,15 +192,27 @@ export function RootNavigator() {
       void flushNotificationActions(ownerId).catch(() => {});
     };
     retry();
-    void flushNotificationActions(ownerId).catch(() => {});
     if (Platform.OS === "web") {
       globalThis.addEventListener("online", retry);
-      return () => globalThis.removeEventListener("online", retry);
+      return () => {
+        active = false;
+        globalThis.removeEventListener("online", retry);
+      };
     }
     const subscription = AppState.addEventListener("change", (state) => {
       if (state === "active") retry();
     });
-    return () => subscription.remove();
+    return () => {
+      active = false;
+      subscription.remove();
+    };
+  }, [ownerId]);
+
+  useEffect(() => {
+    if (!ownerId) return;
+    return subscribeToPushTokenChanges((token) => {
+      void updateRememberedDeviceToken(ownerId, token).catch(() => {});
+    });
   }, [ownerId]);
 
   useEffect(() => {
@@ -345,6 +365,11 @@ interface HistoryRow {
   occurred_at: string;
 }
 
+interface HistoryCursor {
+  occurredAt: string;
+  id: string;
+}
+
 function HistoryScreen({
   ownerId,
   locale,
@@ -360,23 +385,33 @@ function HistoryScreen({
   const [query, setQuery] = useState("");
   const [hasMore, setHasMore] = useState(true);
   const [loading, setLoading] = useState(false);
+  const [cursor, setCursor] = useState<HistoryCursor | null>(null);
   const loadPage = useCallback(
-    async (offset: number, replace = false) => {
+    async (after: HistoryCursor | null, replace = false) => {
       if (!supabase) return;
       setLoading(true);
       try {
         const cutoff = new Date(Date.now() - 30 * 86_400_000).toISOString();
-        const { data, error } = await supabase
+        let request = supabase
           .from("history")
           .select("id,reminder_id,event_type,occurred_at")
           .eq("owner_id", ownerId)
           .gte("occurred_at", cutoff)
           .order("occurred_at", { ascending: false })
-          .range(offset, offset + pageSize - 1);
+          .order("id", { ascending: false })
+          .limit(pageSize);
+        if (after) {
+          request = request.or(
+            `occurred_at.lt.${after.occurredAt},and(occurred_at.eq.${after.occurredAt},id.lt.${after.id})`,
+          );
+        }
+        const { data, error } = await request;
         if (error) throw error;
         const page = (data ?? []) as HistoryRow[];
         setEvents((current) => (replace ? page : [...current, ...page]));
         setHasMore(page.length === pageSize);
+        const last = page[page.length - 1];
+        setCursor(last ? { occurredAt: last.occurred_at, id: last.id } : after);
       } finally {
         setLoading(false);
       }
@@ -386,7 +421,8 @@ function HistoryScreen({
   useEffect(() => {
     setEvents([]);
     setHasMore(true);
-    void loadPage(0, true);
+    setCursor(null);
+    void loadPage(null, true);
   }, [loadPage, ownerId]);
   const visible = events.filter((event) =>
     `${event.reminder_id} ${event.event_type}`
@@ -399,7 +435,7 @@ function HistoryScreen({
       keyExtractor={(event) => event.id}
       contentContainerStyle={styles.page}
       onEndReached={() => {
-        if (hasMore && !loading) void loadPage(events.length);
+        if (hasMore && !loading) void loadPage(cursor);
       }}
       onEndReachedThreshold={0.5}
       ListHeaderComponent={
@@ -546,8 +582,14 @@ function ReminderList({
     refresh();
   }, [backgroundSyncConflicts, refresh, syncRevision]);
   useEffect(() => {
+    setSyncConflicts([]);
+    setSyncMessage("");
+  }, [ownerId]);
+  useEffect(() => {
+    let active = true;
     void synchronizeReminders(ownerId)
       .then((conflicts) => {
+        if (!active) return;
         setSyncConflicts(conflicts);
         setSyncMessage(
           conflicts.length
@@ -557,10 +599,15 @@ function ReminderList({
         refresh();
       })
       .catch(() =>
-        setSyncMessage(
-          "Offline changes will synchronize when connectivity returns.",
-        ),
+        active
+          ? setSyncMessage(
+              "Offline changes will synchronize when connectivity returns.",
+            )
+          : undefined,
       );
+    return () => {
+      active = false;
+    };
   }, [ownerId, refresh]);
   const visible = useMemo(
     () => filterReminders(reminders, { query, status, sort: "updated" }),
@@ -1140,8 +1187,9 @@ function Settings({
 
     if (supabase) {
       const deregistrationToken = Crypto.randomUUID();
+      const deviceId = (await getRememberedDeviceId()) ?? Crypto.randomUUID();
       const { error } = await supabase.from("devices").upsert({
-        id: registration.id,
+        id: deviceId,
         owner_id: registration.ownerId,
         platform: registration.platform,
         token: registration.token,
@@ -1150,7 +1198,7 @@ function Settings({
         updated_at: new Date().toISOString(),
       });
       if (error) throw error;
-      await rememberDevice(registration.id, deregistrationToken);
+      await rememberDevice(deviceId, deregistrationToken);
     } else {
       return;
     }

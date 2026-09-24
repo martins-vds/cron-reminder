@@ -81,8 +81,8 @@ begin
     perform (value->>'at')::timestamptz;
     return true;
   end if;
-  if value->>'kind' <> 'cron'
-    or jsonb_typeof(value->'expression') <> 'string' then
+  if coalesce(value->>'kind' = 'cron', false) = false
+    or coalesce(jsonb_typeof(value->'expression') = 'string', false) = false then
     return false;
   end if;
   fields := regexp_split_to_array(trim(value->>'expression'), '\s+');
@@ -190,7 +190,8 @@ create table public.history (
   foreign key (reminder_id, owner_id) references public.reminders(id, owner_id) on delete cascade,
   foreign key (occurrence_id, owner_id) references public.occurrences(id, owner_id) on delete cascade
 );
-create index history_owner_occurred_idx on public.history(owner_id, occurred_at desc);
+create index history_owner_occurred_idx
+  on public.history(owner_id, occurred_at desc, id desc);
 create index history_occurred_idx on public.history(occurred_at);
 
 create table public.devices (

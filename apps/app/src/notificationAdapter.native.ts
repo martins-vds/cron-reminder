@@ -24,6 +24,17 @@ Notifications.setNotificationHandler({
 const projectId =
   Constants.expoConfig?.extra?.eas?.projectId ?? Constants.easConfig?.projectId;
 
+export function subscribeToPushTokenChanges(
+  listener: (token: string) => void,
+): () => void {
+  const subscription = Notifications.addPushTokenListener(() => {
+    void Notifications.getExpoPushTokenAsync(
+      projectId ? { projectId } : undefined,
+    ).then((token) => listener(token.data));
+  });
+  return () => subscription.remove();
+}
+
 function notificationChannelId(mode: Reminder["sound"]["mode"]): string {
   if (mode === "silent") return "reminders-silent";
   if (mode === "vibrate") return "reminders-vibrate";

@@ -39,6 +39,8 @@ create index if not exists expo_push_tickets_created_idx
   on public.expo_push_tickets(created_at);
 create index if not exists expo_push_tickets_check_idx
   on public.expo_push_tickets(last_checked_at, created_at);
+create index if not exists expo_push_tickets_occurrence_idx
+  on public.expo_push_tickets(occurrence_id, owner_id);
 alter table public.expo_push_tickets enable row level security;
 
 drop policy if exists "owners manage occurrences" on public.occurrences;

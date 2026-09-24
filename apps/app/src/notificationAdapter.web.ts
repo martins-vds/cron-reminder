@@ -4,6 +4,13 @@ import type {
 } from "@cron-reminder/application";
 import type { Occurrence, Reminder } from "@cron-reminder/domain";
 
+export function subscribeToPushTokenChanges(
+  listener: (token: string) => void,
+): () => void {
+  void listener;
+  return () => {};
+}
+
 export class DeviceNotificationAdapter implements NotificationPort {
   async requestPermission(): Promise<"granted" | "denied"> {
     if (!("Notification" in globalThis)) return "denied";

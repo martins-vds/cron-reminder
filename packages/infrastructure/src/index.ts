@@ -496,6 +496,12 @@ export class OfflineSynchronizationAdapter implements SynchronizationPort {
       syncedRevisions,
     );
     const conflictedIds = new Set(conflicts.map(({ id }) => id));
+    const localById = new Map(
+      survivingLocal.map((reminder) => [reminder.id, reminder]),
+    );
+    const remoteById = new Map(
+      remote.map((reminder) => [reminder.id, reminder]),
+    );
     const latestDeletedIds =
       (await this.remote.listDeletedIds?.(ownerId)) ?? [];
     const latestDeleted = new Set([...deletedIds, ...latestDeletedIds]);
@@ -508,8 +514,17 @@ export class OfflineSynchronizationAdapter implements SynchronizationPort {
       merged
         .filter(({ id }) => !conflictedIds.has(id) && !latestDeleted.has(id))
         .map(async (reminder) => {
-          await this.remote.save(reminder);
-          await this.local.save(reminder);
+          const localReminder = localById.get(reminder.id);
+          const remoteReminder = remoteById.get(reminder.id);
+          if (!remoteReminder) {
+            await this.remote.save(reminder);
+          } else if (!localReminder) {
+            await this.local.save(reminder);
+          } else if (!sameReminder(localReminder, remoteReminder)) {
+            if (sameReminder(reminder, localReminder))
+              await this.remote.save(reminder);
+            else await this.local.save(reminder);
+          }
           await this.local.setSyncedRevision?.(
             reminder.ownerId,
             reminder.id,

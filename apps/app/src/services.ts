@@ -13,7 +13,7 @@ import type {
   SyncConflict,
 } from "@cron-reminder/application";
 import type { Reminder } from "@cron-reminder/domain";
-import { Platform } from "react-native";
+import { AppState, Platform } from "react-native";
 
 export const localRepository = new JsonReminderRepository({
   get: (key) => AsyncStorage.getItem(key),
@@ -44,6 +44,15 @@ export const supabase =
         },
       })
     : null;
+
+if (supabase && Platform.OS !== "web") {
+  if (AppState.currentState === "active") supabase.auth.startAutoRefresh();
+  else supabase.auth.stopAutoRefresh();
+  AppState.addEventListener("change", (state) => {
+    if (state === "active") supabase.auth.startAutoRefresh();
+    else supabase.auth.stopAutoRefresh();
+  });
+}
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -185,6 +194,25 @@ export const synchronization = supabase
 
 export async function rememberDevice(id: string, token: string): Promise<void> {
   await AsyncStorage.setItem(deviceKey, JSON.stringify({ id, token }));
+}
+
+export async function getRememberedDeviceId(): Promise<string | null> {
+  return (await readDeviceRegistration())?.id ?? null;
+}
+
+export async function updateRememberedDeviceToken(
+  ownerId: string,
+  token: string,
+): Promise<void> {
+  if (!supabase) return;
+  const device = await readDeviceRegistration();
+  if (!device) return;
+  const { error } = await supabase
+    .from("devices")
+    .update({ token, updated_at: new Date().toISOString() })
+    .eq("id", device.id)
+    .eq("owner_id", ownerId);
+  if (error) throw error;
 }
 
 export async function flushPendingDeviceDeregistrations(): Promise<void> {
