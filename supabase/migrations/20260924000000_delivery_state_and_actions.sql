@@ -153,6 +153,55 @@ begin
 end;
 $$;
 
+create or replace function public.list_deliverable_occurrences(
+  p_now timestamptz,
+  p_stale_before timestamptz,
+  p_limit integer,
+  p_postponed boolean
+)
+returns table(occurrence_id text, reminder jsonb)
+language sql security definer set search_path = '' as $$
+  select occurrence.id, to_jsonb(reminder)
+  from public.occurrences occurrence
+  join public.reminders reminder
+    on reminder.id = occurrence.reminder_id
+    and reminder.owner_id = occurrence.owner_id
+  where reminder.status = 'active'
+    and occurrence.delivered_at is null
+    and occurrence.delivery_attempts < 5
+    and (
+      (
+        p_postponed
+        and occurrence.status = 'postponed'
+        and occurrence.snoozed_until <= p_now
+      )
+      or (
+        not p_postponed
+        and occurrence.reminder_revision = reminder.revision
+        and (
+          occurrence.status in ('triggered', 'delivery-failed')
+          or (
+            occurrence.status = 'delivering'
+            and (
+              occurrence.acted_at is null
+              or occurrence.acted_at < p_stale_before
+            )
+          )
+        )
+        and (
+          occurrence.next_delivery_attempt_at is null
+          or occurrence.next_delivery_attempt_at <= p_now
+        )
+      )
+    )
+  order by
+    coalesce(occurrence.snoozed_until, occurrence.next_delivery_attempt_at),
+    occurrence.scheduled_at,
+    occurrence.owner_id,
+    occurrence.id
+  limit greatest(p_limit, 0);
+$$;
+
 create or replace function public.complete_occurrence_delivery(
   p_occurrence_id text,
   p_owner_id uuid,
@@ -527,6 +576,7 @@ $$;
 revoke all on function public.act_on_occurrence(text, text, integer) from public, anon;
 grant execute on function public.act_on_occurrence(text, text, integer) to authenticated, service_role;
 revoke all on function public.claim_occurrence_delivery(text, uuid, text, integer, uuid, timestamptz, timestamptz) from public, anon, authenticated;
+revoke all on function public.list_deliverable_occurrences(timestamptz, timestamptz, integer, boolean) from public, anon, authenticated;
 revoke all on function public.complete_occurrence_delivery(text, uuid, uuid, timestamptz) from public, anon, authenticated;
 revoke all on function public.prepare_occurrence_delivery(text, text, uuid, integer, timestamptz, uuid, timestamptz, timestamptz) from public, anon, authenticated;
 revoke all on function public.renew_occurrence_delivery_lease(text, uuid, uuid, timestamptz) from public, anon, authenticated;
@@ -537,6 +587,7 @@ revoke all on function public.complete_expo_push_ticket(text) from public, anon,
 revoke all on function public.fail_expo_push_ticket(text, boolean) from public, anon, authenticated;
 revoke all on function public.defer_occurrence_delivery(text, uuid, uuid, timestamptz) from public, anon, authenticated;
 grant execute on function public.claim_occurrence_delivery(text, uuid, text, integer, uuid, timestamptz, timestamptz) to service_role;
+grant execute on function public.list_deliverable_occurrences(timestamptz, timestamptz, integer, boolean) to service_role;
 grant execute on function public.complete_occurrence_delivery(text, uuid, uuid, timestamptz) to service_role;
 grant execute on function public.prepare_occurrence_delivery(text, text, uuid, integer, timestamptz, uuid, timestamptz, timestamptz) to service_role;
 grant execute on function public.renew_occurrence_delivery_lease(text, uuid, uuid, timestamptz) to service_role;

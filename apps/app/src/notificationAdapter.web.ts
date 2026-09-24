@@ -4,6 +4,8 @@ import type {
 } from "@cron-reminder/application";
 import type { Occurrence, Reminder } from "@cron-reminder/domain";
 
+const scheduledNotifications = new Map<string, ReturnType<typeof setTimeout>>();
+
 export function subscribeToPushTokenChanges(
   listener: (token: string) => void,
 ): () => void {
@@ -49,13 +51,19 @@ export class DeviceNotificationAdapter implements NotificationPort {
   async schedule(reminder: Reminder, occurrence: Occurrence): Promise<void> {
     const delay = Date.parse(occurrence.scheduledAt) - Date.now();
     if (delay <= 0 || delay > 2_147_483_647) return;
-    globalThis.setTimeout(
-      () => new Notification(reminder.title, { body: reminder.notes }),
-      delay,
-    );
+    await this.cancel(occurrence.id);
+    const timeout = globalThis.setTimeout(() => {
+      scheduledNotifications.delete(occurrence.id);
+      new Notification(reminder.title, { body: reminder.notes });
+    }, delay);
+    scheduledNotifications.set(occurrence.id, timeout);
   }
 
-  async cancel(): Promise<void> {}
+  async cancel(occurrenceId: string): Promise<void> {
+    const timeout = scheduledNotifications.get(occurrenceId);
+    if (timeout !== undefined) globalThis.clearTimeout(timeout);
+    scheduledNotifications.delete(occurrenceId);
+  }
 
   async showMissedSummary(count: number): Promise<void> {
     new Notification("Missed reminders", {

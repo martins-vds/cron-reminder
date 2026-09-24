@@ -56,7 +56,6 @@ const MAX_SCHEDULED_OCCURRENCES_PER_RUN = 500;
 const MAX_PENDING_DELIVERIES_PER_RUN = 25;
 const MAX_POSTPONED_DELIVERIES_PER_RUN = 25;
 const DELIVERY_LEASE_MS = 5 * 60_000;
-const MAX_DELIVERY_ATTEMPTS = 5;
 const PUSH_TIMEOUT_MS = 5_000;
 const RUN_DEADLINE_MS = 60_000;
 const OCCURRENCE_CONCURRENCY = 25;
@@ -598,18 +597,24 @@ async function dispatchPendingDeliveries(
 ): Promise<DispatchWorkResult> {
   if (limit <= 0) return { delivered: 0, processed: 0 };
   const now = new Date();
-  const { data, error } = await client
-    .from('occurrences')
-    .select(`id,reminder_id,reminders!inner(${REMINDER_SELECT},status)`)
-    .eq('reminders.status', 'active')
-    .is('delivered_at', null)
-    .lt('delivery_attempts', MAX_DELIVERY_ATTEMPTS)
-    .or(deliverableFilter(now))
-    .limit(limit);
+  const { data, error } = await client.rpc(
+    'list_deliverable_occurrences',
+    {
+      p_now: now.toISOString(),
+      p_stale_before: new Date(
+        now.getTime() - DELIVERY_LEASE_MS,
+      ).toISOString(),
+      p_limit: limit,
+      p_postponed: false,
+    },
+  );
   if (error) throw error;
   let delivered = 0;
   let processed = 0;
-  const rows = data ?? [];
+  const rows = (data ?? []) as Array<{
+    occurrence_id: string;
+    reminder: unknown;
+  }>;
   for (
     let offset = 0;
     offset < rows.length;
@@ -635,17 +640,24 @@ async function dispatchPostponed(
   deadline: number,
 ): Promise<DispatchWorkResult> {
   if (limit <= 0) return { delivered: 0, processed: 0 };
-  const { data, error } = await client
-    .from('occurrences')
-    .select(`id,reminder_id,reminders!inner(${REMINDER_SELECT},status)`)
-    .eq('reminders.status', 'active')
-    .eq('status', 'postponed')
-    .lte('snoozed_until', now.toISOString())
-    .limit(limit);
+  const { data, error } = await client.rpc(
+    'list_deliverable_occurrences',
+    {
+      p_now: now.toISOString(),
+      p_stale_before: new Date(
+        now.getTime() - DELIVERY_LEASE_MS,
+      ).toISOString(),
+      p_limit: limit,
+      p_postponed: true,
+    },
+  );
   if (error) throw error;
   let delivered = 0;
   let processed = 0;
-  const rows = data ?? [];
+  const rows = (data ?? []) as Array<{
+    occurrence_id: string;
+    reminder: unknown;
+  }>;
   for (
     let offset = 0;
     offset < rows.length;
@@ -666,17 +678,22 @@ async function dispatchPostponed(
 
 async function processRetryOccurrence(
   client: ServiceClient,
-  occurrence: { id: string; reminders: unknown },
+  occurrence: { occurrence_id: string; reminder: unknown },
 ): Promise<number> {
-  const reminder = embeddedReminder(occurrence.reminders);
+  const reminder = embeddedReminder(occurrence.reminder);
   if (!reminder) return 0;
   const leaseId = await claimUndelivered(
     client,
-    occurrence.id,
+    occurrence.occurrence_id,
     reminder,
   );
   return leaseId
-    ? deliverOccurrence(client, reminder, occurrence.id, leaseId)
+    ? deliverOccurrence(
+        client,
+        reminder,
+        occurrence.occurrence_id,
+        leaseId,
+      )
     : 0;
 }
 
@@ -929,24 +946,6 @@ async function renewActiveLease(
   return Boolean(data);
 }
 
-function deliveryAttemptDueFilter(now: Date): string {
-  return `next_delivery_attempt_at.is.null,next_delivery_attempt_at.lte.${now.toISOString()}`;
-}
-
-function deliverableStatusFilter(now: Date): string {
-  const staleBefore = new Date(now.getTime() - DELIVERY_LEASE_MS).toISOString();
-  return [
-    'status.eq.triggered',
-    'status.eq.delivery-failed',
-    `and(status.eq.delivering,acted_at.lt.${staleBefore})`,
-    'and(status.eq.delivering,acted_at.is.null)',
-  ].join(',');
-}
-
-function deliverableFilter(now: Date): string {
-  return `and(or(${deliveryAttemptDueFilter(now)}),or(${deliverableStatusFilter(now)}))`;
-}
-
 async function disableDevice(
   client: ServiceClient,
   deviceId: string,
@@ -973,7 +972,7 @@ function isPermanentDeliveryFailure(error: unknown): boolean {
   const statusCode = (error as { statusCode?: unknown }).statusCode;
   return (
     typeof statusCode === 'number' &&
-    (statusCode === 400 || statusCode === 404 || statusCode === 410)
+    (statusCode === 404 || statusCode === 410)
   );
 }
 
