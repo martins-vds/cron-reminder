@@ -238,7 +238,8 @@ create or replace function public.claim_device_token(
   p_device_id text,
   p_platform text,
   p_token text,
-  p_deregistration_token uuid
+  p_deregistration_token uuid,
+  p_existing_deregistration_token uuid
 )
 returns boolean language plpgsql security definer set search_path = '' as $$
 declare
@@ -256,6 +257,10 @@ begin
     platform = p_platform
     and token_hash = extensions.digest(p_token, 'sha256')
     and id <> p_device_id
+    and (
+      owner_id = requesting_user
+      or deregistration_token = p_existing_deregistration_token
+    )
   );
   insert into public.devices(
     id,
@@ -304,6 +309,34 @@ create table public.reminder_tombstones (
   primary key (id, owner_id)
 );
 create index reminder_tombstones_owner_idx on public.reminder_tombstones(owner_id);
+
+create or replace function public.manage_reminder_scheduler_fields()
+returns trigger language plpgsql set search_path = '' as $$
+begin
+  if current_user in ('postgres', 'service_role') then
+    return new;
+  end if;
+  if tg_op = 'INSERT' then
+    new.occurrence_count := 0;
+    new.schedule_revision := 1;
+    return new;
+  end if;
+  new.occurrence_count := old.occurrence_count;
+  if new.schedule is distinct from old.schedule
+    or new.timezone is distinct from old.timezone
+    or new.status is distinct from old.status then
+    new.schedule_revision := old.schedule_revision + 1;
+  else
+    new.schedule_revision := old.schedule_revision;
+    new.next_due_at := old.next_due_at;
+  end if;
+  return new;
+end;
+$$;
+
+create trigger reminders_manage_scheduler_fields
+before insert or update on public.reminders
+for each row execute procedure public.manage_reminder_scheduler_fields();
 
 create or replace function public.protect_reminder_tombstones()
 returns trigger language plpgsql security definer set search_path = '' as $$
@@ -406,7 +439,17 @@ create policy "owners read occurrences" on public.occurrences for select using (
 create policy "owners read history" on public.history for select using (owner_id = auth.uid());
 create policy "owners register devices" on public.devices for all using (owner_id = auth.uid()) with check (owner_id = auth.uid());
 create policy "owners manage conflicts" on public.sync_conflicts for all using (owner_id = auth.uid()) with check (owner_id = auth.uid());
-create policy "owners manage tombstones" on public.reminder_tombstones for all using (owner_id = auth.uid()) with check (owner_id = auth.uid());
+create policy "owners read tombstones" on public.reminder_tombstones
+  for select using (owner_id = auth.uid());
+create policy "owners create tombstones" on public.reminder_tombstones
+  for insert with check (owner_id = auth.uid());
+create policy "owners refresh tombstones" on public.reminder_tombstones
+  for update using (owner_id = auth.uid()) with check (owner_id = auth.uid());
+
+revoke insert(occurrence_count, schedule_revision)
+  on public.reminders from authenticated;
+revoke update(occurrence_count, schedule_revision)
+  on public.reminders from authenticated;
 
 create or replace function public.create_profile()
 returns trigger language plpgsql security definer set search_path = '' as $$
@@ -446,7 +489,7 @@ revoke all on function public.advance_dispatch_state(timestamptz, uuid, text) fr
 grant execute on function public.advance_dispatch_state(timestamptz, uuid, text) to service_role;
 revoke all on function public.update_reminder_next_due(jsonb) from public, anon, authenticated;
 grant execute on function public.update_reminder_next_due(jsonb) to service_role;
-revoke all on function public.claim_device_token(text, text, text, uuid) from public, anon;
-grant execute on function public.claim_device_token(text, text, text, uuid) to authenticated, service_role;
+revoke all on function public.claim_device_token(text, text, text, uuid, uuid) from public, anon;
+grant execute on function public.claim_device_token(text, text, text, uuid, uuid) to authenticated, service_role;
 revoke all on function public.delete_current_user() from public, anon;
 grant execute on function public.delete_current_user() to authenticated;

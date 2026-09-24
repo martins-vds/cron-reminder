@@ -211,6 +211,96 @@ describe("database migrations and delivery RPCs", () => {
       [secondOwner],
     );
     expect(remaining.rowCount).toBe(1);
+
+    const schedulerPatch = await fetch(
+      "http://127.0.0.1:55421/rest/v1/reminders?id=eq.first-owner-reminder",
+      {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bearer ${userToken}`,
+          apikey: "integration-anon-key",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          next_due_at: "2099-01-01T00:00:00.000Z",
+          occurrence_count: 999,
+          schedule_revision: 999,
+        }),
+      },
+    );
+    expect(schedulerPatch.ok).toBe(false);
+    const protectedState = await pool.query<{
+      occurrence_count: string;
+      schedule_revision: number;
+    }>(
+      `select occurrence_count, schedule_revision
+       from public.reminders
+       where id = 'first-owner-reminder' and owner_id = $1`,
+      [ownerId],
+    );
+    expect(Number(protectedState.rows[0]?.occurrence_count)).toBe(0);
+    expect(protectedState.rows[0]?.schedule_revision).toBe(1);
+
+    await pool.query(
+      `insert into public.reminder_tombstones(id, owner_id)
+       values ('deleted-reminder', $1)`,
+      [ownerId],
+    );
+    const tombstoneDelete = await fetch(
+      "http://127.0.0.1:55421/rest/v1/reminder_tombstones?id=eq.deleted-reminder",
+      {
+        method: "DELETE",
+        headers: {
+          Authorization: `Bearer ${userToken}`,
+          apikey: "integration-anon-key",
+        },
+      },
+    );
+    expect(tombstoneDelete.ok).toBe(false);
+    const tombstone = await pool.query(
+      `select 1 from public.reminder_tombstones
+       where id = 'deleted-reminder' and owner_id = $1`,
+      [ownerId],
+    );
+    expect(tombstone.rowCount).toBe(1);
+  });
+
+  it("does not let another owner claim a push token without revocation proof", async () => {
+    const secondOwner = "22222222-2222-4222-8222-222222222222";
+    await pool.query("insert into auth.users(id, email) values ($1, $2)", [
+      secondOwner,
+      "second@example.com",
+    ]);
+    await pool.query(
+      `insert into public.devices(
+        id, owner_id, platform, token, deregistration_token
+      ) values ('second-device', $1, 'ios', 'shared-token', $2)`,
+      [secondOwner, crypto.randomUUID()],
+    );
+
+    const response = await fetch(
+      "http://127.0.0.1:55421/rest/v1/rpc/claim_device_token",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${jwt("authenticated", ownerId)}`,
+          apikey: "integration-anon-key",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          p_device_id: "attacker-device",
+          p_platform: "ios",
+          p_token: "shared-token",
+          p_deregistration_token: crypto.randomUUID(),
+          p_existing_deregistration_token: null,
+        }),
+      },
+    );
+    expect(response.ok).toBe(false);
+    const device = await pool.query<{ owner_id: string }>(
+      "select owner_id from public.devices where id = 'second-device'",
+    );
+    expect(device.rows[0]?.owner_id).toBe(secondOwner);
   });
 });
 

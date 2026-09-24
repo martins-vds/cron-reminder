@@ -56,7 +56,7 @@ import {
   flushPendingDeviceDeregistrations,
   flushNotificationActions,
   flushPendingPushTokenUpdate,
-  getRememberedDeviceId,
+  getRememberedDeviceRegistration,
   localRepository,
   rememberDevice,
   resolveSynchronizationConflict,
@@ -1255,12 +1255,14 @@ function Settings({
 
     if (supabase) {
       const deregistrationToken = Crypto.randomUUID();
-      const deviceId = (await getRememberedDeviceId()) ?? Crypto.randomUUID();
+      const rememberedDevice = await getRememberedDeviceRegistration();
+      const deviceId = rememberedDevice?.id ?? Crypto.randomUUID();
       const { data, error } = await supabase.rpc("claim_device_token", {
         p_device_id: deviceId,
         p_platform: registration.platform,
         p_token: registration.token,
         p_deregistration_token: deregistrationToken,
+        p_existing_deregistration_token: rememberedDevice?.token ?? null,
       });
       if (error) throw error;
       if (!data) throw new Error("Unable to claim push token.");

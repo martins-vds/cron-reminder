@@ -210,6 +210,10 @@ export async function getRememberedDeviceId(): Promise<string | null> {
   return (await readDeviceRegistration())?.id ?? null;
 }
 
+export async function getRememberedDeviceRegistration(): Promise<StoredDeviceRegistration | null> {
+  return readDeviceRegistration();
+}
+
 export async function updateRememberedDeviceToken(
   ownerId: string,
   token: string,
@@ -245,6 +249,7 @@ export async function flushPendingPushTokenUpdate(): Promise<void> {
             : "android",
       p_token: pending.token,
       p_deregistration_token: device.token,
+      p_existing_deregistration_token: device.token,
     });
     if (error || !data) return;
     await AsyncStorage.removeItem(pendingPushTokenKey);

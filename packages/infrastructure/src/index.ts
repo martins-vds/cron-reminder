@@ -344,7 +344,7 @@ export class SupabaseReminderRepository implements ReminderRepository {
     if (!existing || !existingRow) {
       const { error } = await this.client
         .from("reminders")
-        .insert(toDatabase(reminder, calculateInitialDueAt(reminder), 1));
+        .insert(toDatabase(reminder, calculateInitialDueAt(reminder)));
       if (error) throw error;
       return;
     }
@@ -365,9 +365,6 @@ export class SupabaseReminderRepository implements ReminderRepository {
         : typeof existingRow.next_due_at === "string"
           ? existingRow.next_due_at
           : null,
-      changedScheduling
-        ? Number(existingRow.schedule_revision ?? 1) + 1
-        : Number(existingRow.schedule_revision ?? 1),
     );
     if (!changedScheduling) delete databaseUpdate.next_due_at;
     const { data, error } = await this.client
@@ -586,7 +583,6 @@ export class OfflineSynchronizationAdapter implements SynchronizationPort {
 function toDatabase(
   reminder: Reminder,
   nextDueAt = calculateInitialDueAt(reminder),
-  scheduleRevision = 1,
 ): Record<string, unknown> {
   return {
     id: reminder.id,
@@ -599,7 +595,6 @@ function toDatabase(
     sound: reminder.sound,
     status: reminder.status,
     revision: reminder.revision,
-    schedule_revision: scheduleRevision,
     created_at: reminder.createdAt,
     updated_at: reminder.updatedAt,
     next_due_at: nextDueAt,
