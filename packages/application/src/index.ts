@@ -195,6 +195,10 @@ export function detectConflict(
 }
 
 export function sameReminder(left: Reminder, right: Reminder): boolean {
+  return structurallyEqual(left, right);
+}
+
+export function structurallyEqual(left: unknown, right: unknown): boolean {
   return (
     JSON.stringify(canonicalize(left)) === JSON.stringify(canonicalize(right))
   );

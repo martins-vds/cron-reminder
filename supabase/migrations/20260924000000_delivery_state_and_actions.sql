@@ -29,11 +29,14 @@ create table if not exists public.expo_push_tickets (
   owner_id uuid not null references auth.users(id) on delete cascade,
   device_id text not null references public.devices(id) on delete cascade,
   created_at timestamptz not null default now(),
+  last_checked_at timestamptz,
   foreign key (occurrence_id, owner_id)
     references public.occurrences(id, owner_id) on delete cascade
 );
 create index if not exists expo_push_tickets_created_idx
   on public.expo_push_tickets(created_at);
+create index if not exists expo_push_tickets_check_idx
+  on public.expo_push_tickets(last_checked_at, created_at);
 alter table public.expo_push_tickets enable row level security;
 
 drop policy if exists "owners manage occurrences" on public.occurrences;
@@ -239,7 +242,8 @@ $$;
 
 create or replace function public.complete_expo_push_ticket(p_ticket_id text)
 returns boolean language plpgsql security definer set search_path = '' as $$
-declare ticket public.expo_push_tickets%rowtype;
+declare
+  ticket public.expo_push_tickets%rowtype;
 begin
   delete from public.expo_push_tickets
   where ticket_id = p_ticket_id
@@ -262,7 +266,9 @@ create or replace function public.fail_expo_push_ticket(
   p_disable_device boolean
 )
 returns boolean language plpgsql security definer set search_path = '' as $$
-declare ticket public.expo_push_tickets%rowtype;
+declare
+  ticket public.expo_push_tickets%rowtype;
+  failed public.occurrences%rowtype;
 begin
   delete from public.expo_push_tickets
   where ticket_id = p_ticket_id
@@ -274,6 +280,30 @@ begin
     update public.devices
     set enabled = false, updated_at = now()
     where id = ticket.device_id;
+  else
+    update public.occurrences
+    set status = 'delivery-failed',
+        delivery_attempts = least(delivery_attempts + 1, 5),
+        next_delivery_attempt_at = case
+          when delivery_attempts + 1 >= 5 then null
+          else now() + make_interval(
+            mins => least(60, power(2, delivery_attempts)::integer)
+          )
+        end
+    where id = ticket.occurrence_id
+      and delivered_at is null
+    returning * into failed;
+    if found then
+      insert into public.history(
+        reminder_id, occurrence_id, owner_id, event_type
+      )
+      values (
+        failed.reminder_id,
+        failed.id,
+        failed.owner_id,
+        'delivery-failed'
+      );
+    end if;
   end if;
   return true;
 end;
@@ -343,6 +373,8 @@ begin
   end if;
   if p_event = 'postponed' then
     delete from public.occurrence_device_deliveries
+    where occurrence_id = acted.id and owner_id = acted.owner_id;
+    delete from public.expo_push_tickets
     where occurrence_id = acted.id and owner_id = acted.owner_id;
   end if;
   insert into public.history(reminder_id, occurrence_id, owner_id, event_type)

@@ -283,9 +283,11 @@ returns void language sql security definer set search_path = '' as $$
   set next_due_at = updates.next_due_at
   from jsonb_to_recordset(p_updates) as updates(
     id text,
+    revision integer,
     next_due_at timestamptz
   )
-  where reminder.id = updates.id;
+  where reminder.id = updates.id
+    and reminder.revision = updates.revision;
 $$;
 
 alter table public.profiles enable row level security;

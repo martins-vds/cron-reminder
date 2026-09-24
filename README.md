@@ -67,7 +67,7 @@ npm run build        # Type check and export the web application
 - A repeated daylight-saving time fires once.
 - Recurring dismissal affects only the selected occurrence.
 - Snooze presets are 5, 10, 15, 30, and 60 minutes.
-- Missed occurrences are presented as a summary rather than a notification storm.
+- Missed occurrences are recorded individually in the 30-day history.
 
 ## Data and security
 

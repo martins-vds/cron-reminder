@@ -81,6 +81,7 @@ const service = new ReminderService(
 interface AppContextValue {
   ownerId: string;
   syncRevision: number;
+  backgroundSyncConflicts: readonly SyncConflict[];
   locale: Locale;
   setLocale: (locale: Locale) => void;
   theme: ThemePreference;
@@ -114,6 +115,9 @@ export function RootNavigator() {
   );
   const [ownerId, setOwnerId] = useState<string | null>(null);
   const [syncRevision, setSyncRevision] = useState(0);
+  const [backgroundSyncConflicts, setBackgroundSyncConflicts] = useState<
+    readonly SyncConflict[]
+  >([]);
   const [loadingSession, setLoadingSession] = useState(true);
   const pathname = usePathname();
   const isDark = (theme === "system" ? systemTheme : theme) === "dark";
@@ -171,7 +175,10 @@ export function RootNavigator() {
     if (!ownerId) return;
     const retry = () => {
       void synchronizeReminders(ownerId)
-        .then(() => setSyncRevision((revision) => revision + 1))
+        .then((conflicts) => {
+          setBackgroundSyncConflicts(conflicts);
+          setSyncRevision((revision) => revision + 1);
+        })
         .catch(() => {});
       void flushNotificationActions(ownerId).catch(() => {});
     };
@@ -255,6 +262,7 @@ export function RootNavigator() {
   const appContext: AppContextValue = {
     ownerId,
     syncRevision,
+    backgroundSyncConflicts,
     locale,
     setLocale,
     theme,
@@ -295,11 +303,13 @@ export function RootNavigator() {
 }
 
 export function RemindersRoute() {
-  const { ownerId, syncRevision, locale, colors } = useAppContext();
+  const { ownerId, syncRevision, backgroundSyncConflicts, locale, colors } =
+    useAppContext();
   return (
     <ReminderList
       ownerId={ownerId}
       syncRevision={syncRevision}
+      backgroundSyncConflicts={backgroundSyncConflicts}
       locale={locale}
       colors={colors}
     />
@@ -471,11 +481,13 @@ function SignIn({
 function ReminderList({
   ownerId,
   syncRevision,
+  backgroundSyncConflicts,
   locale,
   colors,
 }: {
   ownerId: string;
   syncRevision: number;
+  backgroundSyncConflicts: readonly SyncConflict[];
   locale: Locale;
   colors: Colors;
 }) {
@@ -492,7 +504,15 @@ function ReminderList({
     () => void localRepository.list(ownerId).then(setReminders),
     [ownerId],
   );
-  useEffect(refresh, [refresh, syncRevision]);
+  useEffect(() => {
+    setSyncConflicts(backgroundSyncConflicts);
+    setSyncMessage(
+      backgroundSyncConflicts.length
+        ? `${backgroundSyncConflicts.length} concurrent edit(s) need manual resolution. Local versions are preserved.`
+        : "",
+    );
+    refresh();
+  }, [backgroundSyncConflicts, refresh, syncRevision]);
   useEffect(() => {
     void synchronizeReminders(ownerId)
       .then((conflicts) => {
@@ -1036,7 +1056,7 @@ function Settings({
       await synchronizeReminders(ownerId).catch(() => []);
       setImportConflicts(result.conflicts);
       setBackupMessage(
-        `${result.imported} imported, ${result.skipped} skipped, ${result.conflicts.length} conflict(s) require manual resolution.`,
+        `${result.imported} imported, ${result.skipped} skipped, ${result.invalid} invalid, ${result.conflicts.length} conflict(s) require manual resolution.`,
       );
     } catch {
       setBackupMessage("The backup is invalid or unsupported.");

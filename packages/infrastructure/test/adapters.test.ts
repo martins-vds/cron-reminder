@@ -295,6 +295,31 @@ describe("Supabase reminder repository", () => {
     );
   });
 
+  it("preserves the server due cursor for non-scheduling edits", async () => {
+    const fake = new FakeSupabaseClient();
+    const repository = new SupabaseReminderRepository(
+      fake as unknown as ConstructorParameters<
+        typeof SupabaseReminderRepository
+      >[0],
+    );
+    const original = reminder({ revision: 1 });
+    fake.reminders.set(original.id, {
+      ...toDatabaseRow(original),
+      next_due_at: "2026-09-25T09:00:00.000Z",
+    });
+
+    await repository.save({
+      ...original,
+      title: "Renamed",
+      revision: 2,
+      updatedAt: "2026-09-24T12:00:00.000Z",
+    });
+
+    expect(fake.reminders.get(original.id)?.next_due_at).toBe(
+      "2026-09-25T09:00:00.000Z",
+    );
+  });
+
   it("accepts identical equal-revision writes and rejects divergent ones", async () => {
     const fake = new FakeSupabaseClient();
     const repository = new SupabaseReminderRepository(

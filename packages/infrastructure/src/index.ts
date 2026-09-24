@@ -4,7 +4,11 @@ import type {
   SyncConflict,
   SynchronizationPort,
 } from "@cron-reminder/application";
-import { detectConflict, sameReminder } from "@cron-reminder/application";
+import {
+  detectConflict,
+  sameReminder,
+  structurallyEqual,
+} from "@cron-reminder/application";
 import type { Reminder, Schedule } from "@cron-reminder/domain";
 import {
   nextOccurrences,
@@ -281,21 +285,27 @@ export class SupabaseReminderRepository implements ReminderRepository {
   }
 
   async get(id: string): Promise<Reminder | null> {
+    const data = await this.getRow(id);
+    return data ? fromDatabase(data) : null;
+  }
+
+  private async getRow(id: string): Promise<Record<string, unknown> | null> {
     const { data, error } = await this.client
       .from("reminders")
       .select("*")
       .eq("id", id)
       .maybeSingle();
     if (error) throw error;
-    return data ? fromDatabase(data) : null;
+    return data;
   }
 
   async save(reminder: Reminder): Promise<void> {
-    const existing = await this.get(reminder.id);
-    if (!existing) {
+    const existingRow = await this.getRow(reminder.id);
+    const existing = existingRow ? fromDatabase(existingRow) : null;
+    if (!existing || !existingRow) {
       const { error } = await this.client
         .from("reminders")
-        .insert(toDatabase(reminder));
+        .insert(toDatabase(reminder, calculateInitialDueAt(reminder)));
       if (error) throw error;
       return;
     }
@@ -310,7 +320,16 @@ export class SupabaseReminderRepository implements ReminderRepository {
     }
     const { data, error } = await this.client
       .from("reminders")
-      .update(toDatabase(reminder))
+      .update(
+        toDatabase(
+          reminder,
+          schedulingChanged(existing, reminder)
+            ? calculateNextDueAt(reminder)
+            : typeof existingRow.next_due_at === "string"
+              ? existingRow.next_due_at
+              : null,
+        ),
+      )
       .eq("id", reminder.id)
       .eq("revision", existing.revision)
       .select("id");
@@ -481,7 +500,10 @@ export class OfflineSynchronizationAdapter implements SynchronizationPort {
   }
 }
 
-function toDatabase(reminder: Reminder): Record<string, unknown> {
+function toDatabase(
+  reminder: Reminder,
+  nextDueAt = calculateInitialDueAt(reminder),
+): Record<string, unknown> {
   return {
     id: reminder.id,
     owner_id: reminder.ownerId,
@@ -495,23 +517,44 @@ function toDatabase(reminder: Reminder): Record<string, unknown> {
     revision: reminder.revision,
     created_at: reminder.createdAt,
     updated_at: reminder.updatedAt,
-    next_due_at: calculateNextDueAt(reminder),
+    next_due_at: nextDueAt,
   };
+}
+
+function schedulingChanged(existing: Reminder, updated: Reminder): boolean {
+  return (
+    existing.status !== updated.status ||
+    existing.timezone !== updated.timezone ||
+    !structurallyEqual(existing.schedule, updated.schedule)
+  );
+}
+
+function calculateInitialDueAt(reminder: Reminder): string | null {
+  if (reminder.status !== "active") return null;
+  if (reminder.schedule.kind === "once") return reminder.schedule.at;
+  try {
+    return (
+      nextOccurrences(
+        reminder.schedule,
+        reminder.timezone,
+        new Date(Date.parse(reminder.createdAt) - 1),
+        1,
+      )[0]?.toISOString() ?? null
+    );
+  } catch {
+    return null;
+  }
 }
 
 function calculateNextDueAt(reminder: Reminder): string | null {
   if (reminder.status !== "active") return null;
   if (reminder.schedule.kind === "once") return reminder.schedule.at;
   try {
-    const cursor =
-      reminder.revision === 1
-        ? new Date(Date.parse(reminder.createdAt) - 1)
-        : new Date();
     return (
       nextOccurrences(
         reminder.schedule,
         reminder.timezone,
-        cursor,
+        new Date(),
         1,
       )[0]?.toISOString() ?? null
     );

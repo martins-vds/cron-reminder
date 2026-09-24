@@ -18,6 +18,7 @@ interface ReminderRow {
       };
   timezone: string;
   sound: { mode: 'default' | 'silent' | 'vibrate' };
+  revision: number;
   created_at: string;
   next_due_at: string | null;
 }
@@ -60,7 +61,7 @@ const ALLOWED_PUSH_HOSTS = [
   'push.apple.com',
 ];
 const REMINDER_SELECT =
-  'id,owner_id,title,notes,schedule,timezone,sound,created_at,next_due_at';
+  'id,owner_id,title,notes,schedule,timezone,sound,revision,created_at,next_due_at';
 
 Deno.serve(async (request) => {
   const cronSecret = Deno.env.get('CRON_SECRET');
@@ -117,6 +118,7 @@ Deno.serve(async (request) => {
 
   const scheduled: ScheduledOccurrence[] = [];
   const exhaustedReminderIds = new Set<string>();
+  const cursorUpdateReminderIds = new Set<string>();
   let candidateGenerationTruncated = false;
   let candidateCapacity = remainingWork + 1;
   for (const reminder of remainingWork > 0 ? reminders : []) {
@@ -136,7 +138,10 @@ Deno.serve(async (request) => {
       continue;
     }
     let occurrences = dueResult.occurrences;
-    if (!occurrences.length) continue;
+    if (!occurrences.length) {
+      exhaustedReminderIds.add(reminder.id);
+      continue;
+    }
 
     if (
       reminder.schedule.kind === 'cron' &&
@@ -237,6 +242,7 @@ Deno.serve(async (request) => {
     if (!candidate) continue;
     if (candidate.recorded) {
       lastExamined = candidate;
+      cursorUpdateReminderIds.add(candidate.reminder.id);
       continue;
     }
     if (selected.length >= remainingWork) break;
@@ -264,6 +270,7 @@ Deno.serve(async (request) => {
       );
       if (missedError)
         return json({ error: 'Unable to record missed occurrence' }, 500);
+      cursorUpdateReminderIds.add(reminder.id);
       continue;
     }
 
@@ -290,6 +297,7 @@ Deno.serve(async (request) => {
           occurrenceId,
           leaseId,
         );
+      cursorUpdateReminderIds.add(reminder.id);
       continue;
     }
     if (occurrenceError)
@@ -303,6 +311,7 @@ Deno.serve(async (request) => {
         occurrenceId,
         leaseId,
       );
+    cursorUpdateReminderIds.add(reminder.id);
   }
 
   const lastSelected = lastExamined;
@@ -318,17 +327,24 @@ Deno.serve(async (request) => {
       : hasUnprocessedScheduleWork
         ? windowStartReminderId
         : null;
-  const nextDueUpdates = reminders.map((reminder) => ({
-    id: reminder.id,
-    next_due_at: exhaustedReminderIds.has(reminder.id)
-      ? null
-      : nextDueAtCursor(
-          reminder,
-          nextWindowStart,
-          nextWindowReminderId === null ||
-            reminder.id > nextWindowReminderId,
-        ),
-  }));
+  const nextDueUpdates = reminders
+    .filter(
+      (reminder) =>
+        exhaustedReminderIds.has(reminder.id) ||
+        cursorUpdateReminderIds.has(reminder.id),
+    )
+    .map((reminder) => ({
+      id: reminder.id,
+      revision: reminder.revision,
+      next_due_at: exhaustedReminderIds.has(reminder.id)
+        ? null
+        : nextDueAtCursor(
+            reminder,
+            nextWindowStart,
+            nextWindowReminderId === null ||
+              reminder.id > nextWindowReminderId,
+          ),
+    }));
   if (nextDueUpdates.length) {
     const { error: nextDueError } = await client.rpc(
       'update_reminder_next_due',
@@ -565,7 +581,7 @@ async function deliverToDevices(
   const awaitingReceipt = new Set(
     (pendingTickets ?? []).map(({ device_id }) => String(device_id)),
   );
-  let delivered = alreadyDelivered.size;
+  let delivered = 0;
   let retryableFailures = 0;
   let deferred = awaitingReceipt.size > 0;
   const pendingDevices = (devices ?? []).filter(
@@ -907,9 +923,16 @@ async function sendExpoPush(
 }
 
 async function processExpoReceipts(client: ServiceClient): Promise<void> {
+  const now = new Date();
   const { data: tickets, error } = await client
     .from('expo_push_tickets')
-    .select('ticket_id,created_at')
+    .select('ticket_id,created_at,last_checked_at')
+    .or(
+      `last_checked_at.is.null,last_checked_at.lte.${new Date(
+        now.getTime() - 60_000,
+      ).toISOString()}`,
+    )
+    .order('last_checked_at', { ascending: true, nullsFirst: true })
     .order('created_at')
     .limit(EXPO_RECEIPT_BATCH_SIZE);
   if (error) throw error;
@@ -934,6 +957,7 @@ async function processExpoReceipts(client: ServiceClient): Promise<void> {
     (payload as { data?: unknown }).data !== null
       ? ((payload as { data: Record<string, unknown> }).data ?? {})
       : {};
+  const unresolvedTicketIds: string[] = [];
   for (const ticket of tickets) {
     const receipt = receipts[ticket.ticket_id];
     if (typeof receipt !== 'object' || receipt === null) {
@@ -942,6 +966,8 @@ async function processExpoReceipts(client: ServiceClient): Promise<void> {
         24 * 60 * 60_000
       ) {
         await failExpoPushTicket(client, ticket.ticket_id, false);
+      } else {
+        unresolvedTicketIds.push(ticket.ticket_id);
       }
       continue;
     }
@@ -963,7 +989,16 @@ async function processExpoReceipts(client: ServiceClient): Promise<void> {
         ticket.ticket_id,
         providerError === 'DeviceNotRegistered',
       );
+      continue;
     }
+    unresolvedTicketIds.push(ticket.ticket_id);
+  }
+  if (unresolvedTicketIds.length) {
+    const { error: updateError } = await client
+      .from('expo_push_tickets')
+      .update({ last_checked_at: now.toISOString() })
+      .in('ticket_id', unresolvedTicketIds);
+    if (updateError) throw updateError;
   }
 }
 
