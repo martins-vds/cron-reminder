@@ -458,8 +458,7 @@ declare
 begin
   select * into ticket
   from public.expo_push_tickets
-  where ticket_id = p_ticket_id
-  for update;
+  where ticket_id = p_ticket_id;
   if not found then
     return false;
   end if;
@@ -467,6 +466,15 @@ begin
   from public.occurrences
   where id = ticket.occurrence_id
     and owner_id = ticket.owner_id
+  for update;
+  if not found then
+    return false;
+  end if;
+  select * into ticket
+  from public.expo_push_tickets
+  where ticket_id = p_ticket_id
+    and occurrence_id = failed.id
+    and owner_id = failed.owner_id
   for update;
   if not found then
     return false;
