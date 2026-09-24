@@ -99,28 +99,31 @@ export const authentication: AuthenticationPort | null = supabase
       async deleteAccount() {
         const { data: userData } = await supabase.auth.getUser();
         const ownerId = userData.user?.id;
-        const { error } = await supabase.functions.invoke("delete-account");
-        if (error) throw error;
-        if (ownerId) {
-          const reminders = await localRepository.list(ownerId);
-          for (const reminder of reminders) {
-            await localRepository.delete(reminder.id);
-          }
-        }
-        if (ownerId) {
-          await withTombstones(async () => {
-            const remaining = (await readDeleted()).filter(
-              (item) => item.ownerId !== ownerId,
-            );
-            if (remaining.length) {
-              await AsyncStorage.setItem(deletedKey, JSON.stringify(remaining));
-            } else {
-              await AsyncStorage.removeItem(deletedKey);
+        await withSynchronization(async () => {
+          const { error } = await supabase.functions.invoke("delete-account");
+          if (error) throw error;
+          if (ownerId) {
+            const reminders = await localRepository.list(ownerId);
+            for (const reminder of reminders) {
+              await localRepository.delete(reminder.id);
             }
-          });
-        }
-        await AsyncStorage.removeItem(deviceKey);
-        await supabase.auth.signOut();
+            await withTombstones(async () => {
+              const remaining = (await readDeleted()).filter(
+                (item) => item.ownerId !== ownerId,
+              );
+              if (remaining.length) {
+                await AsyncStorage.setItem(
+                  deletedKey,
+                  JSON.stringify(remaining),
+                );
+              } else {
+                await AsyncStorage.removeItem(deletedKey);
+              }
+            });
+          }
+          await AsyncStorage.removeItem(deviceKey);
+          await supabase.auth.signOut();
+        });
       },
     }
   : null;

@@ -21,6 +21,11 @@ interface ReminderRow {
   created_at: string;
 }
 
+interface DeviceDeliveryResult {
+  delivered: number;
+  retryableFailures: number;
+}
+
 const DISPATCH_STATE_ID = true;
 const MAX_OCCURRENCES_PER_RUN = 500;
 const REMINDER_PAGE_SIZE = 1_000;
@@ -262,7 +267,10 @@ async function deliverOccurrence(
   occurrenceId: string,
 ): Promise<number> {
   try {
-    const delivered = await deliverToDevices(client, reminder, occurrenceId);
+    const result = await deliverToDevices(client, reminder, occurrenceId);
+    if (result.retryableFailures > 0) {
+      throw new Error('Retryable device deliveries failed');
+    }
     await recordHistory(client, reminder, occurrenceId);
     const { error } = await client
       .from('occurrences')
@@ -270,7 +278,7 @@ async function deliverOccurrence(
       .eq('id', occurrenceId)
       .eq('status', 'delivering');
     if (error) throw error;
-    return delivered;
+    return result.delivered;
   } catch {
     await markDeliveryFailed(client, reminder, occurrenceId);
     return 0;
@@ -313,16 +321,26 @@ async function deliverToDevices(
   client: ReturnType<typeof createClient>,
   reminder: ReminderRow,
   occurrenceId: string,
-): Promise<number> {
+): Promise<DeviceDeliveryResult> {
   const { data: devices, error } = await client
     .from('devices')
     .select('id,platform,token')
     .eq('owner_id', reminder.owner_id)
     .eq('enabled', true);
   if (error) throw error;
+  const { data: deliveredDevices, error: deliveredDevicesError } = await client
+    .from('occurrence_device_deliveries')
+    .select('device_id')
+    .eq('occurrence_id', occurrenceId)
+    .eq('owner_id', reminder.owner_id);
+  if (deliveredDevicesError) throw deliveredDevicesError;
+  const alreadyDelivered = new Set(
+    (deliveredDevices ?? []).map(({ device_id }) => String(device_id)),
+  );
   let delivered = 0;
-  let failed = 0;
+  let retryableFailures = 0;
   for (const device of devices ?? []) {
+    if (alreadyDelivered.has(device.id)) continue;
     const payload = {
       title: reminder.title,
       body: reminder.notes,
@@ -334,18 +352,32 @@ async function deliverToDevices(
       } else {
         await sendExpoPush(device.token, payload, reminder.sound);
       }
+      await recordDeviceDelivery(client, occurrenceId, reminder.owner_id, device.id);
       delivered++;
     } catch (error) {
-      failed++;
       if (isPermanentDeliveryFailure(error)) {
         await disableDevice(client, device.id);
+      } else {
+        retryableFailures++;
       }
     }
   }
-  if ((devices?.length ?? 0) > 0 && delivered === 0 && failed > 0) {
-    throw new Error('All device deliveries failed');
-  }
-  return delivered;
+  return { delivered, retryableFailures };
+}
+
+async function recordDeviceDelivery(
+  client: ReturnType<typeof createClient>,
+  occurrenceId: string,
+  ownerId: string,
+  deviceId: string,
+) {
+  const { error } = await client.from('occurrence_device_deliveries').upsert({
+    occurrence_id: occurrenceId,
+    owner_id: ownerId,
+    device_id: deviceId,
+    delivered_at: new Date().toISOString(),
+  });
+  if (error) throw error;
 }
 
 function deliveryAttemptDueFilter(now: Date): string {

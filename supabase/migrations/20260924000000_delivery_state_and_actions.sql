@@ -3,6 +3,17 @@ alter table public.occurrences add column delivery_attempts integer not null def
 alter table public.occurrences add column next_delivery_attempt_at timestamptz;
 alter type public.occurrence_status add value if not exists 'delivering' after 'triggered';
 
+create table if not exists public.occurrence_device_deliveries (
+  occurrence_id text not null,
+  owner_id uuid not null references auth.users(id) on delete cascade,
+  device_id text not null references public.devices(id) on delete cascade,
+  delivered_at timestamptz not null default now(),
+  primary key (occurrence_id, device_id),
+  foreign key (occurrence_id, owner_id) references public.occurrences(id, owner_id) on delete cascade
+);
+create index if not exists occurrence_device_deliveries_owner_idx on public.occurrence_device_deliveries(owner_id, delivered_at desc);
+alter table public.occurrence_device_deliveries enable row level security;
+
 drop policy if exists "owners manage occurrences" on public.occurrences;
 do $$
 begin

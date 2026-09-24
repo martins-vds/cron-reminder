@@ -18,16 +18,18 @@ create table public.reminders (
   notes text not null default '',
   tags text[] not null default '{}',
   schedule jsonb not null check (
-    jsonb_typeof(schedule) = 'object'
-    and schedule->>'kind' in ('once', 'cron')
-    and (
-      (schedule->>'kind' = 'once' and schedule ? 'at')
-      or
-      (
-        schedule->>'kind' = 'cron'
-        and schedule->>'expression' ~ '^\S+\s+\S+\s+\S+\s+\S+\s+\S+$'
+    coalesce(
+      jsonb_typeof(schedule) = 'object'
+      and schedule->>'kind' in ('once', 'cron')
+      and (
+        (schedule->>'kind' = 'once' and schedule ? 'at')
+        or
+        (
+          schedule->>'kind' = 'cron'
+          and schedule->>'expression' ~ '^\S+\s+\S+\s+\S+\s+\S+\s+\S+$'
+        )
       )
-    )
+    , false)
   ),
   timezone text not null check (length(trim(timezone)) > 0),
   sound jsonb not null default '{"mode":"default"}',
