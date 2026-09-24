@@ -228,9 +228,10 @@ export function RootNavigator() {
     if (!ownerId) return;
     if (Platform.OS === "web") {
       const submitWebAction = async (data: Record<string, unknown>) => {
+        if (data.ownerId !== ownerId) return;
+        let queued = data.action === "open";
         if (
           data.type === "notification-action" &&
-          data.ownerId === ownerId &&
           typeof data.occurrenceId === "string" &&
           (data.action === "dismiss" || data.action === "snooze")
         ) {
@@ -238,6 +239,13 @@ export function RootNavigator() {
             data.occurrenceId,
             data.action,
             ownerId,
+          );
+          queued = true;
+        }
+        if (queued && typeof data.cacheKey === "string") {
+          const cache = await caches.open("cron-reminder-actions-v1");
+          await cache.delete(
+            new Request(new URL(data.cacheKey, globalThis.location.origin)),
           );
         }
       };
@@ -264,7 +272,6 @@ export function RootNavigator() {
               if (typeof data === "object" && data !== null) {
                 await submitWebAction(data as Record<string, unknown>);
               }
-              await cache.delete(request);
             }
           }
         })

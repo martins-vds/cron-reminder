@@ -30,26 +30,27 @@ self.addEventListener("notificationclick", (event) => {
     clients
       .matchAll({ type: "window", includeUncontrolled: true })
       .then(async (windows) => {
+        const cache = await caches.open(actionCacheName);
+        const key = `${actionPathPrefix}${Date.now()}-${crypto.randomUUID()}`;
         const action = {
           type: "notification-action",
           action: event.action || "open",
           occurrenceId: data.occurrenceId,
           ownerId: data.ownerId,
+          cacheKey: key,
         };
-        const client = windows[0];
-        if (client) {
-          client.postMessage(action);
-          if ("focus" in client) await client.focus();
-          return;
-        }
-        const cache = await caches.open(actionCacheName);
-        const key = `${actionPathPrefix}${Date.now()}-${crypto.randomUUID()}`;
         await cache.put(
           new Request(new URL(key, self.location.origin)),
           new Response(JSON.stringify(action), {
             headers: { "Content-Type": "application/json" },
           }),
         );
+        const client = windows[0];
+        if (client) {
+          client.postMessage(action);
+          if ("focus" in client) await client.focus();
+          return;
+        }
         await clients.openWindow("/");
       }),
   );

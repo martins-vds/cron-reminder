@@ -36,10 +36,24 @@ begin
   get diagnostics deleted_history = row_count;
   delete from public.occurrences
   where created_at < now() - interval '30 days'
+    and not exists (
+      select 1 from public.history
+      where history.occurrence_id = occurrences.id
+        and history.owner_id = occurrences.owner_id
+        and history.occurred_at >= now() - interval '30 days'
+    )
     and (
       status in ('dismissed', 'missed')
       or delivered_at is not null
       or (status = 'delivery-failed' and delivery_attempts >= 5)
+      or not exists (
+        select 1 from public.reminders
+        where reminders.id = occurrences.reminder_id
+          and reminders.owner_id = occurrences.owner_id
+          and reminders.status = 'active'
+          and reminders.schedule_revision =
+            occurrences.reminder_revision
+      )
     );
   get diagnostics deleted_occurrences = row_count;
   return deleted_history + deleted_occurrences;
@@ -576,14 +590,19 @@ create or replace function public.defer_occurrence_delivery(
   p_occurrence_id text,
   p_owner_id uuid,
   p_lease_id uuid,
-  p_now timestamptz
+  p_now timestamptz,
+  p_delay_minutes integer
 )
 returns boolean language plpgsql security definer set search_path = '' as $$
 declare deferred boolean;
 begin
+  if p_delay_minutes not in (1, 15) then
+    raise exception 'Unsupported delivery deferral %', p_delay_minutes;
+  end if;
   update public.occurrences
   set status = 'delivery-failed',
-      next_delivery_attempt_at = p_now + interval '1 minute',
+      next_delivery_attempt_at =
+        p_now + make_interval(mins => p_delay_minutes),
       delivery_lease_id = null
   where id = p_occurrence_id
     and owner_id = p_owner_id
@@ -664,7 +683,7 @@ revoke all on function public.record_occurrence_device_delivery(text, uuid, text
 revoke all on function public.record_expo_push_ticket(text, text, uuid, text, uuid) from public, anon, authenticated;
 revoke all on function public.complete_expo_push_ticket(text) from public, anon, authenticated;
 revoke all on function public.fail_expo_push_ticket(text, boolean) from public, anon, authenticated;
-revoke all on function public.defer_occurrence_delivery(text, uuid, uuid, timestamptz) from public, anon, authenticated;
+revoke all on function public.defer_occurrence_delivery(text, uuid, uuid, timestamptz, integer) from public, anon, authenticated;
 grant execute on function public.claim_occurrence_delivery(text, uuid, text, integer, uuid, timestamptz, timestamptz) to service_role;
 grant execute on function public.list_deliverable_occurrences(timestamptz, timestamptz, integer, boolean) to service_role;
 grant execute on function public.get_recorded_occurrence_ids(uuid, text[]) to service_role;
@@ -676,4 +695,4 @@ grant execute on function public.record_occurrence_device_delivery(text, uuid, t
 grant execute on function public.record_expo_push_ticket(text, text, uuid, text, uuid) to service_role;
 grant execute on function public.complete_expo_push_ticket(text) to service_role;
 grant execute on function public.fail_expo_push_ticket(text, boolean) to service_role;
-grant execute on function public.defer_occurrence_delivery(text, uuid, uuid, timestamptz) to service_role;
+grant execute on function public.defer_occurrence_delivery(text, uuid, uuid, timestamptz, integer) to service_role;

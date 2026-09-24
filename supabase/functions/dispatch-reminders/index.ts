@@ -28,7 +28,8 @@ interface ReminderRow {
 interface DeviceDeliveryResult {
   delivered: number;
   retryableFailures: number;
-  deferred: boolean;
+  awaitingReceipts: boolean;
+  moreDevices: boolean;
 }
 
 interface DeviceAttemptResult extends DeviceDeliveryResult {}
@@ -725,12 +726,13 @@ async function deliverOccurrence(
     if (result.retryableFailures > 0) {
       throw new RetryableDeliveryError(result.delivered);
     }
-    if (result.deferred) {
+    if (result.awaitingReceipts || result.moreDevices) {
       const { error } = await client.rpc('defer_occurrence_delivery', {
         p_occurrence_id: occurrenceId,
         p_owner_id: reminder.owner_id,
         p_lease_id: leaseId,
         p_now: new Date().toISOString(),
+        p_delay_minutes: result.moreDevices ? 1 : 15,
       });
       if (error) throw error;
       return result.delivered;
@@ -793,12 +795,13 @@ async function deliverToDevices(
   );
   let delivered = 0;
   let retryableFailures = 0;
-  let deferred = awaitingReceipt.size > 0;
+  let awaitingReceipts = awaitingReceipt.size > 0;
   const pendingDevices = (devices ?? []).filter(
     (device) =>
       !alreadyDelivered.has(device.id) && !awaitingReceipt.has(device.id),
   );
-  if (pendingDevices.length > MAX_DEVICES_PER_DELIVERY_ATTEMPT) deferred = true;
+  const moreDevices =
+    pendingDevices.length > MAX_DEVICES_PER_DELIVERY_ATTEMPT;
   const attemptedDevices = pendingDevices.slice(
     0,
     MAX_DEVICES_PER_DELIVERY_ATTEMPT,
@@ -823,10 +826,15 @@ async function deliverToDevices(
       }
       delivered += outcome.value.delivered;
       retryableFailures += outcome.value.retryableFailures;
-      deferred ||= outcome.value.deferred;
+      awaitingReceipts ||= outcome.value.awaitingReceipts;
     }
   }
-  return { delivered, retryableFailures, deferred };
+  return {
+    delivered,
+    retryableFailures,
+    awaitingReceipts,
+    moreDevices,
+  };
 }
 
 async function deliverToDevice(
@@ -867,7 +875,12 @@ async function deliverToDevice(
         leaseId,
       );
       if (!recorded) throw new LeaseLostError();
-      return { delivered: 1, retryableFailures: 0, deferred: false };
+      return {
+        delivered: 1,
+        retryableFailures: 0,
+        awaitingReceipts: false,
+        moreDevices: false,
+      };
     }
     const ticketId = await sendExpoPush(
       device.token,
@@ -883,14 +896,29 @@ async function deliverToDevice(
       leaseId,
     );
     if (!recorded) throw new LeaseLostError();
-    return { delivered: 0, retryableFailures: 0, deferred: true };
+    return {
+      delivered: 0,
+      retryableFailures: 0,
+      awaitingReceipts: true,
+      moreDevices: false,
+    };
   } catch (error) {
     if (error instanceof LeaseLostError) throw error;
     if (isPermanentDeliveryFailure(error)) {
       await disableDevice(client, device.id);
-      return { delivered: 0, retryableFailures: 0, deferred: false };
+      return {
+        delivered: 0,
+        retryableFailures: 0,
+        awaitingReceipts: false,
+        moreDevices: false,
+      };
     }
-    return { delivered: 0, retryableFailures: 1, deferred: false };
+    return {
+      delivered: 0,
+      retryableFailures: 1,
+      awaitingReceipts: false,
+      moreDevices: false,
+    };
   }
 }
 
