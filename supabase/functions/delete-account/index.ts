@@ -9,16 +9,17 @@ Deno.serve(async (request) => {
 
   const url = Deno.env.get('SUPABASE_URL');
   const anonKey = Deno.env.get('SUPABASE_ANON_KEY');
-  const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
-  if (!url || !anonKey || !serviceKey) return response({ error: 'Server configuration missing' }, 500);
+  if (!url || !anonKey)
+    return response({ error: 'Server configuration missing' }, 500);
 
-  const userClient = createClient(url, anonKey, { global: { headers: { Authorization: authorization } } });
-  const { data, error } = await userClient.auth.getUser();
-  if (error || !data.user) return response({ error: 'Unauthorized' }, 401);
-
-  const admin = createClient(url, serviceKey);
-  const result = await admin.auth.admin.deleteUser(data.user.id);
-  return result.error ? response({ error: 'Account deletion failed' }, 500) : response({ deleted: true });
+  const client = createClient(url, anonKey, {
+    global: { headers: { Authorization: authorization } },
+  });
+  const { data, error } = await client.rpc('delete_current_user');
+  if (error) return response({ error: 'Account deletion failed' }, 500);
+  return data
+    ? response({ deleted: true })
+    : response({ error: 'Unauthorized' }, 401);
 });
 
 function response(body: unknown, status = 200) {

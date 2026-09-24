@@ -105,3 +105,22 @@ services:
     depends_on:
       gateway:
         condition: service_healthy
+
+  delete-account:
+    build:
+      context: .
+      dockerfile: test/integration/edge.Dockerfile
+    command:
+      - run
+      - --allow-all
+      - --config
+      - /app/supabase/functions/deno.json
+      - /app/supabase/functions/delete-account/index.ts
+    environment:
+      SUPABASE_ANON_KEY: integration-anon-key
+      SUPABASE_URL: http://gateway:8000
+    ports:
+      - "55434:8000"
+    depends_on:
+      gateway:
+        condition: service_healthy

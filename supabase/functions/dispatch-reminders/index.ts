@@ -61,6 +61,7 @@ const MAX_POSTPONED_DELIVERIES_PER_RUN = 25;
 const DELIVERY_LEASE_MS = 5 * 60_000;
 const PUSH_TIMEOUT_MS = 5_000;
 const RUN_DEADLINE_MS = 60_000;
+const MISSED_GRACE_MS = 60_000;
 const OCCURRENCE_CONCURRENCY = 25;
 const DEVICE_SEND_CONCURRENCY = 10;
 const MAX_DEVICES_PER_DELIVERY_ATTEMPT = 10;
@@ -97,6 +98,7 @@ Deno.serve(async (request) => {
     console.error('Unable to process Expo push receipts', error);
   }
   const now = new Date();
+  const missedBefore = new Date(now.getTime() - MISSED_GRACE_MS);
   const windowEnd = new Date(now.getTime() + 1);
   const { data: state, error: stateError } = await client
     .from('dispatch_state')
@@ -332,7 +334,7 @@ Deno.serve(async (request) => {
     try {
       const results = await Promise.all(
         chunk.map(({ reminder, due }) =>
-          processScheduledOccurrence(client, reminder, due, windowStart),
+          processScheduledOccurrence(client, reminder, due, missedBefore),
         ),
       );
       delivered += results.reduce((total, value) => total + value, 0);

@@ -215,6 +215,41 @@ describe("database migrations and delivery RPCs", () => {
 });
 
 describe("Edge Function state transitions", () => {
+  it("rejects unauthenticated account deletion and deletes only the authenticated user", async () => {
+    await insertReminder({ id: "delete-account-edge-reminder" });
+
+    const unauthenticated = await fetch("http://127.0.0.1:55434/", {
+      method: "POST",
+    });
+    expect(unauthenticated.status).toBe(401);
+    const before = await pool.query("select 1 from auth.users where id = $1", [
+      ownerId,
+    ]);
+    expect(before.rowCount).toBe(1);
+
+    const authenticated = await fetch("http://127.0.0.1:55434/", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${jwt("authenticated", ownerId)}`,
+      },
+    });
+    expect(authenticated.status).toBe(200);
+    const users = await pool.query("select 1 from auth.users where id = $1", [
+      ownerId,
+    ]);
+    expect(users.rowCount).toBe(0);
+    const reminders = await pool.query(
+      "select 1 from public.reminders where owner_id = $1",
+      [ownerId],
+    );
+    expect(reminders.rowCount).toBe(0);
+    const tombstones = await pool.query(
+      "select 1 from public.reminder_tombstones where owner_id = $1",
+      [ownerId],
+    );
+    expect(tombstones.rowCount).toBe(0);
+  });
+
   it("dispatches a due reminder through PostgREST and transactional RPCs", async () => {
     const { id, scheduledAt } = await insertReminder({
       id: "dispatch-reminder",

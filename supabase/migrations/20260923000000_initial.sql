@@ -309,7 +309,11 @@ create or replace function public.protect_reminder_tombstones()
 returns trigger language plpgsql security definer set search_path = '' as $$
 begin
   if tg_op = 'DELETE' then
-    if auth.uid() = old.owner_id then
+    if auth.uid() = old.owner_id
+      and coalesce(
+        current_setting('app.account_deletion', true),
+        ''
+      ) <> 'on' then
       insert into public.reminder_tombstones(id, owner_id)
       values (old.id, old.owner_id)
       on conflict (id, owner_id) do update
@@ -413,6 +417,19 @@ end;
 $$;
 create trigger on_auth_user_created after insert on auth.users for each row execute procedure public.create_profile();
 
+create or replace function public.delete_current_user()
+returns boolean language plpgsql security definer set search_path = '' as $$
+declare requesting_user uuid := auth.uid();
+begin
+  if requesting_user is null then
+    return false;
+  end if;
+  perform set_config('app.account_deletion', 'on', true);
+  delete from auth.users where id = requesting_user;
+  return found;
+end;
+$$;
+
 create or replace function public.delete_expired_history()
 returns integer language plpgsql security definer set search_path = '' as $$
 declare deleted integer;
@@ -431,3 +448,5 @@ revoke all on function public.update_reminder_next_due(jsonb) from public, anon,
 grant execute on function public.update_reminder_next_due(jsonb) to service_role;
 revoke all on function public.claim_device_token(text, text, text, uuid) from public, anon;
 grant execute on function public.claim_device_token(text, text, text, uuid) to authenticated, service_role;
+revoke all on function public.delete_current_user() from public, anon;
+grant execute on function public.delete_current_user() to authenticated;

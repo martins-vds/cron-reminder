@@ -72,6 +72,7 @@ try {
     waitFor("http://127.0.0.1:55431/"),
     waitFor("http://127.0.0.1:55432/"),
     waitFor("http://127.0.0.1:55433/"),
+    waitFor("http://127.0.0.1:55434/"),
   ]);
   const tests = spawnSync(
     "npx",

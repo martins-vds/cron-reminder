@@ -357,21 +357,22 @@ export class SupabaseReminderRepository implements ReminderRepository {
     if (reminder.revision < existing.revision) {
       throw new Error(`Reminder ${reminder.id} is stale; refresh and retry.`);
     }
+    const changedScheduling = schedulingChanged(existing, reminder);
+    const databaseUpdate = toDatabase(
+      reminder,
+      changedScheduling
+        ? calculateNextDueAt(reminder)
+        : typeof existingRow.next_due_at === "string"
+          ? existingRow.next_due_at
+          : null,
+      changedScheduling
+        ? Number(existingRow.schedule_revision ?? 1) + 1
+        : Number(existingRow.schedule_revision ?? 1),
+    );
+    if (!changedScheduling) delete databaseUpdate.next_due_at;
     const { data, error } = await this.client
       .from("reminders")
-      .update(
-        toDatabase(
-          reminder,
-          schedulingChanged(existing, reminder)
-            ? calculateNextDueAt(reminder)
-            : typeof existingRow.next_due_at === "string"
-              ? existingRow.next_due_at
-              : null,
-          schedulingChanged(existing, reminder)
-            ? Number(existingRow.schedule_revision ?? 1) + 1
-            : Number(existingRow.schedule_revision ?? 1),
-        ),
-      )
+      .update(databaseUpdate)
       .eq("id", reminder.id)
       .eq("owner_id", reminder.ownerId)
       .eq("revision", existing.revision)

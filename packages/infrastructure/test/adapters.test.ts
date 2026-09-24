@@ -271,7 +271,10 @@ class FakeSupabaseClient {
           select: () => {
             const existing = matchingRows(criteria)[0];
             if (!existing) return Promise.resolve({ data: [], error: null });
-            this.reminders.set(String(existing.id), row);
+            this.reminders.set(String(existing.id), {
+              ...existing,
+              ...row,
+            });
             return Promise.resolve({
               data: [{ id: existing.id }],
               error: null,
