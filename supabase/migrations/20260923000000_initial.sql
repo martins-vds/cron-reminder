@@ -79,6 +79,7 @@ begin
     if coalesce(jsonb_typeof(value->'at') = 'string', false) = false then
       return false;
     end if;
+    if value ? 'occurrenceLimit' then return false; end if;
     if value->>'at' !~ '(Z|[+-][0-9]{2}:[0-9]{2})$' then return false; end if;
     perform (value->>'at')::timestamptz;
     return true;

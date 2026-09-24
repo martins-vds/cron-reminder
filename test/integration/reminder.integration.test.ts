@@ -47,11 +47,13 @@ async function insertReminder(options?: {
   const id = options?.id ?? "integration-reminder";
   const scheduledAt = options?.scheduledAt ?? new Date(Date.now() - 5_000);
   const schedule = {
-    kind: "once",
-    at: scheduledAt.toISOString(),
     ...(options?.occurrenceLimit
-      ? { occurrenceLimit: options.occurrenceLimit }
-      : {}),
+      ? {
+          kind: "cron",
+          expression: "* * * * *",
+          occurrenceLimit: options.occurrenceLimit,
+        }
+      : { kind: "once", at: scheduledAt.toISOString() }),
   };
   await pool.query(
     `insert into public.reminders(
@@ -155,6 +157,60 @@ describe("database migrations and delivery RPCs", () => {
       [ownerId],
     );
     expect(tombstones.rowCount).toBe(0);
+  });
+
+  it("enforces cross-user RLS and occurrence-action isolation", async () => {
+    const secondOwner = "22222222-2222-4222-8222-222222222222";
+    await pool.query("insert into auth.users(id, email) values ($1, $2)", [
+      secondOwner,
+      "second@example.com",
+    ]);
+    await insertReminder({ id: "first-owner-reminder" });
+    await pool.query(
+      `insert into public.reminders(
+        id, owner_id, title, schedule, timezone, sound, next_due_at
+      ) values (
+        'second-owner-reminder', $1, 'Second owner',
+        '{"kind":"once","at":"2026-09-25T09:00:00.000Z"}',
+        'UTC', '{"mode":"default"}', '2026-09-25T09:00:00.000Z'
+      )`,
+      [secondOwner],
+    );
+
+    const userToken = jwt("authenticated", ownerId);
+    const listResponse = await fetch(
+      "http://127.0.0.1:55421/rest/v1/reminders?select=id,owner_id",
+      {
+        headers: {
+          Authorization: `Bearer ${userToken}`,
+          apikey: "integration-anon-key",
+        },
+      },
+    );
+    expect(listResponse.status).toBe(200);
+    const rows = (await listResponse.json()) as Array<{
+      id: string;
+      owner_id: string;
+    }>;
+    expect(rows).toEqual([{ id: "first-owner-reminder", owner_id: ownerId }]);
+
+    const deleteResponse = await fetch(
+      "http://127.0.0.1:55421/rest/v1/reminders?id=eq.second-owner-reminder",
+      {
+        method: "DELETE",
+        headers: {
+          Authorization: `Bearer ${userToken}`,
+          apikey: "integration-anon-key",
+        },
+      },
+    );
+    expect(deleteResponse.status).toBe(204);
+    const remaining = await pool.query(
+      `select 1 from public.reminders
+       where id = 'second-owner-reminder' and owner_id = $1`,
+      [secondOwner],
+    );
+    expect(remaining.rowCount).toBe(1);
   });
 });
 
