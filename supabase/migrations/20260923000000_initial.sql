@@ -144,7 +144,7 @@ create table public.profiles (
 );
 
 create table public.reminders (
-  id text primary key,
+  id text not null,
   owner_id uuid not null references auth.users(id) on delete cascade,
   title text not null check (length(trim(title)) > 0),
   notes text not null default '',
@@ -158,7 +158,7 @@ create table public.reminders (
   next_due_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  unique (id, owner_id)
+  primary key (id, owner_id)
 );
 create index reminders_owner_status_idx on public.reminders(owner_id, status);
 create index reminders_tags_idx on public.reminders using gin(tags);
@@ -166,7 +166,7 @@ create index reminders_due_idx on public.reminders(next_due_at, id)
   where status = 'active' and next_due_at is not null;
 
 create table public.occurrences (
-  id text primary key,
+  id text not null,
   reminder_id text not null,
   owner_id uuid not null references auth.users(id) on delete cascade,
   scheduled_at timestamptz not null,
@@ -174,8 +174,8 @@ create table public.occurrences (
   acted_at timestamptz,
   snoozed_until timestamptz,
   created_at timestamptz not null default now(),
-  unique(reminder_id, scheduled_at),
-  unique (id, owner_id),
+  primary key (id, owner_id),
+  unique(reminder_id, owner_id, scheduled_at),
   foreign key (reminder_id, owner_id) references public.reminders(id, owner_id) on delete cascade
 );
 create index occurrences_owner_scheduled_idx on public.occurrences(owner_id, scheduled_at desc);

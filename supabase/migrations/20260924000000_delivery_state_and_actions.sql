@@ -18,7 +18,7 @@ create table if not exists public.occurrence_device_deliveries (
   owner_id uuid not null references auth.users(id) on delete cascade,
   device_id text not null references public.devices(id) on delete cascade,
   delivered_at timestamptz not null default now(),
-  primary key (occurrence_id, device_id),
+  primary key (occurrence_id, owner_id, device_id),
   foreign key (occurrence_id, owner_id) references public.occurrences(id, owner_id) on delete cascade
 );
 create index if not exists occurrence_device_deliveries_owner_idx on public.occurrence_device_deliveries(owner_id, delivered_at desc);
@@ -83,6 +83,7 @@ grant execute on function public.record_missed_occurrence(text, text, uuid, time
 
 create or replace function public.claim_occurrence_delivery(
   p_occurrence_id text,
+  p_owner_id uuid,
   p_lease_id uuid,
   p_now timestamptz,
   p_stale_before timestamptz
@@ -95,6 +96,7 @@ begin
       acted_at = p_now,
       delivery_lease_id = p_lease_id
   where id = p_occurrence_id
+    and owner_id = p_owner_id
     and delivered_at is null
     and delivery_attempts < 5
     and (next_delivery_attempt_at is null or next_delivery_attempt_at <= p_now)
@@ -113,6 +115,7 @@ $$;
 
 create or replace function public.complete_occurrence_delivery(
   p_occurrence_id text,
+  p_owner_id uuid,
   p_lease_id uuid,
   p_delivered_at timestamptz
 )
@@ -125,6 +128,7 @@ begin
       next_delivery_attempt_at = null,
       delivery_lease_id = null
   where id = p_occurrence_id
+    and owner_id = p_owner_id
     and status = 'delivering'
     and delivery_lease_id = p_lease_id
   returning * into completed;
@@ -139,6 +143,7 @@ $$;
 
 create or replace function public.renew_occurrence_delivery_lease(
   p_occurrence_id text,
+  p_owner_id uuid,
   p_lease_id uuid,
   p_now timestamptz
 )
@@ -148,6 +153,7 @@ begin
   update public.occurrences
   set acted_at = p_now
   where id = p_occurrence_id
+    and owner_id = p_owner_id
     and status = 'delivering'
     and delivery_lease_id = p_lease_id
   returning true into renewed;
@@ -157,6 +163,7 @@ $$;
 
 create or replace function public.fail_occurrence_delivery(
   p_occurrence_id text,
+  p_owner_id uuid,
   p_lease_id uuid,
   p_now timestamptz
 )
@@ -174,6 +181,7 @@ begin
       end,
       delivery_lease_id = null
   where id = p_occurrence_id
+    and owner_id = p_owner_id
     and status = 'delivering'
     and delivery_lease_id = p_lease_id
   returning * into failed;
@@ -209,7 +217,7 @@ begin
     occurrence_id, owner_id, device_id, delivered_at
   )
   values (p_occurrence_id, p_owner_id, p_device_id, now())
-  on conflict (occurrence_id, device_id) do update
+  on conflict (occurrence_id, owner_id, device_id) do update
     set delivered_at = excluded.delivered_at;
   return true;
 end;
@@ -265,7 +273,7 @@ begin
     occurrence_id, owner_id, device_id, delivered_at
   )
   values (ticket.occurrence_id, ticket.owner_id, ticket.device_id, now())
-  on conflict (occurrence_id, device_id) do update
+  on conflict (occurrence_id, owner_id, device_id) do update
     set delivered_at = excluded.delivered_at;
   return true;
 end;
@@ -280,17 +288,38 @@ declare
   ticket public.expo_push_tickets%rowtype;
   failed public.occurrences%rowtype;
 begin
-  delete from public.expo_push_tickets
+  select * into ticket
+  from public.expo_push_tickets
   where ticket_id = p_ticket_id
-  returning * into ticket;
+  for update;
+  if not found then
+    return false;
+  end if;
+  select * into failed
+  from public.occurrences
+  where id = ticket.occurrence_id
+    and owner_id = ticket.owner_id
+  for update;
   if not found then
     return false;
   end if;
   if p_disable_device then
+    delete from public.expo_push_tickets
+    where ticket_id = p_ticket_id;
     update public.devices
     set enabled = false, updated_at = now()
     where id = ticket.device_id;
   else
+    if failed.status = 'delivering' then
+      return false;
+    end if;
+    delete from public.expo_push_tickets
+    where ticket_id = p_ticket_id;
+    if failed.status <> 'delivery-failed'
+      or failed.delivered_at is not null
+      or failed.last_failed_delivery_round_id = ticket.delivery_round_id then
+      return true;
+    end if;
     update public.occurrences
     set status = 'delivery-failed',
         delivery_attempts = least(delivery_attempts + 1, 5),
@@ -302,6 +331,7 @@ begin
         end,
         last_failed_delivery_round_id = ticket.delivery_round_id
     where id = ticket.occurrence_id
+      and owner_id = ticket.owner_id
       and status = 'delivery-failed'
       and delivered_at is null
       and last_failed_delivery_round_id is distinct from
@@ -325,6 +355,7 @@ $$;
 
 create or replace function public.defer_occurrence_delivery(
   p_occurrence_id text,
+  p_owner_id uuid,
   p_lease_id uuid,
   p_now timestamptz
 )
@@ -336,6 +367,7 @@ begin
       next_delivery_attempt_at = p_now + interval '1 minute',
       delivery_lease_id = null
   where id = p_occurrence_id
+    and owner_id = p_owner_id
     and status = 'delivering'
     and delivery_lease_id = p_lease_id
   returning true into deferred;
@@ -402,21 +434,21 @@ $$;
 
 revoke all on function public.act_on_occurrence(text, text, integer) from public, anon;
 grant execute on function public.act_on_occurrence(text, text, integer) to authenticated, service_role;
-revoke all on function public.claim_occurrence_delivery(text, uuid, timestamptz, timestamptz) from public, anon, authenticated;
-revoke all on function public.complete_occurrence_delivery(text, uuid, timestamptz) from public, anon, authenticated;
-revoke all on function public.renew_occurrence_delivery_lease(text, uuid, timestamptz) from public, anon, authenticated;
-revoke all on function public.fail_occurrence_delivery(text, uuid, timestamptz) from public, anon, authenticated;
+revoke all on function public.claim_occurrence_delivery(text, uuid, uuid, timestamptz, timestamptz) from public, anon, authenticated;
+revoke all on function public.complete_occurrence_delivery(text, uuid, uuid, timestamptz) from public, anon, authenticated;
+revoke all on function public.renew_occurrence_delivery_lease(text, uuid, uuid, timestamptz) from public, anon, authenticated;
+revoke all on function public.fail_occurrence_delivery(text, uuid, uuid, timestamptz) from public, anon, authenticated;
 revoke all on function public.record_occurrence_device_delivery(text, uuid, text, uuid) from public, anon, authenticated;
 revoke all on function public.record_expo_push_ticket(text, text, uuid, text, uuid) from public, anon, authenticated;
 revoke all on function public.complete_expo_push_ticket(text) from public, anon, authenticated;
 revoke all on function public.fail_expo_push_ticket(text, boolean) from public, anon, authenticated;
-revoke all on function public.defer_occurrence_delivery(text, uuid, timestamptz) from public, anon, authenticated;
-grant execute on function public.claim_occurrence_delivery(text, uuid, timestamptz, timestamptz) to service_role;
-grant execute on function public.complete_occurrence_delivery(text, uuid, timestamptz) to service_role;
-grant execute on function public.renew_occurrence_delivery_lease(text, uuid, timestamptz) to service_role;
-grant execute on function public.fail_occurrence_delivery(text, uuid, timestamptz) to service_role;
+revoke all on function public.defer_occurrence_delivery(text, uuid, uuid, timestamptz) from public, anon, authenticated;
+grant execute on function public.claim_occurrence_delivery(text, uuid, uuid, timestamptz, timestamptz) to service_role;
+grant execute on function public.complete_occurrence_delivery(text, uuid, uuid, timestamptz) to service_role;
+grant execute on function public.renew_occurrence_delivery_lease(text, uuid, uuid, timestamptz) to service_role;
+grant execute on function public.fail_occurrence_delivery(text, uuid, uuid, timestamptz) to service_role;
 grant execute on function public.record_occurrence_device_delivery(text, uuid, text, uuid) to service_role;
 grant execute on function public.record_expo_push_ticket(text, text, uuid, text, uuid) to service_role;
 grant execute on function public.complete_expo_push_ticket(text) to service_role;
 grant execute on function public.fail_expo_push_ticket(text, boolean) to service_role;
-grant execute on function public.defer_occurrence_delivery(text, uuid, timestamptz) to service_role;
+grant execute on function public.defer_occurrence_delivery(text, uuid, uuid, timestamptz) to service_role;

@@ -1273,14 +1273,14 @@ function Settings({
         colors={colors}
       />
       <Field
-        label="Paste JSON backup to merge"
+        label={t("importBackupPrompt")}
         value={backupText}
         onChangeText={setBackupText}
         colors={colors}
         multiline
       />
       <Button
-        label="Import JSON"
+        label={t("importBackup")}
         onPress={() => void importJson()}
         colors={colors}
         disabled={!backupText.trim()}
@@ -1329,7 +1329,7 @@ function Settings({
         </View>
       ))}
       <Button
-        label="Enable notifications on this device"
+        label={t("enableNotifications")}
         onPress={() =>
           void enableNotifications().catch(() =>
             Alert.alert("Notifications", "Device registration failed."),
@@ -1338,16 +1338,16 @@ function Settings({
         colors={colors}
       />
       <Button
-        label="Sign out"
+        label={t("signOut")}
         onPress={() => void authentication?.signOut()}
         colors={colors}
       />
       <Button
-        label="Delete account and data"
+        label={t("deleteAccount")}
         onPress={() =>
           confirmDestructiveAction(
-            "Delete account",
-            "This permanently deletes all synchronized data.",
+            t("deleteAccountTitle"),
+            t("deleteAccountMessage"),
             t("cancel"),
             t("delete"),
             () => void authentication?.deleteAccount(),
