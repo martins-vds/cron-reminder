@@ -536,7 +536,7 @@ export class OfflineSynchronizationAdapter implements SynchronizationPort {
           );
         }),
     );
-    return conflicts;
+    return conflicts.filter(({ id }) => !latestDeleted.has(id));
   }
 
   async resolve(conflict: SyncConflict, resolution: Reminder): Promise<void> {
