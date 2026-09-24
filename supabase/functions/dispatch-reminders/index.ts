@@ -884,6 +884,7 @@ async function deliverToDevice(
     }
     const ticketId = await sendExpoPush(
       device.token,
+      device.platform,
       payload,
       reminder.sound,
     );
@@ -1114,11 +1115,15 @@ function truncateUtf8(value: string, maximumBytes: number): string {
 
 async function sendExpoPush(
   token: string,
+  platform: string,
   payload: Record<string, unknown>,
   sound: ReminderRow['sound'],
 ): Promise<string> {
   const nativeSound =
-    sound.mode === 'silent' || sound.mode === 'vibrate' ? undefined : 'default';
+    sound.mode === 'silent' ||
+      (sound.mode === 'vibrate' && platform !== 'ios')
+      ? undefined
+      : 'default';
   const response = await fetch('https://exp.host/--/api/v2/push/send', {
     method: 'POST',
     signal: AbortSignal.timeout(PUSH_TIMEOUT_MS),

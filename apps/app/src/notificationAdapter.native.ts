@@ -30,11 +30,13 @@ export function subscribeToPushTokenChanges(
   listener: (token: string) => void,
 ): () => void {
   if (!projectId) return () => {};
-  const subscription = Notifications.addPushTokenListener(() => {
+  const refreshToken = () => {
     void Notifications.getExpoPushTokenAsync({ projectId })
       .then((token) => listener(token.data))
       .catch(() => {});
-  });
+  };
+  refreshToken();
+  const subscription = Notifications.addPushTokenListener(refreshToken);
   return () => subscription.remove();
 }
 
@@ -97,7 +99,11 @@ export class DeviceNotificationAdapter implements NotificationPort {
       content: {
         title: reminder.title,
         body: reminder.notes || undefined,
-        sound: reminder.sound.mode === "default" ? "default" : undefined,
+        sound:
+          reminder.sound.mode === "default" ||
+          (reminder.sound.mode === "vibrate" && Platform.OS === "ios")
+            ? "default"
+            : undefined,
         categoryIdentifier: "reminder",
         data: {
           occurrenceId: occurrence.id,
