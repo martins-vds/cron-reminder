@@ -386,10 +386,11 @@ begin
     return false;
   end if;
   if p_event = 'postponed' then
+    delete from public.expo_push_tickets
+    where occurrence_id = acted.id and owner_id = acted.owner_id;
     delete from public.occurrence_device_deliveries
     where occurrence_id = acted.id and owner_id = acted.owner_id;
-  end if;
-  if p_event in ('dismissed', 'postponed') then
+  elsif p_event = 'dismissed' then
     delete from public.expo_push_tickets
     where occurrence_id = acted.id and owner_id = acted.owner_id;
   end if;

@@ -47,6 +47,8 @@ type ServiceClient = ReturnType<typeof createClient<any>>;
 
 const DISPATCH_STATE_ID = true;
 const MAX_DISPATCH_WORK_PER_RUN = 100;
+const MAX_PENDING_DELIVERIES_PER_RUN = 25;
+const MAX_POSTPONED_DELIVERIES_PER_RUN = 25;
 const DELIVERY_LEASE_MS = 5 * 60_000;
 const MAX_DELIVERY_ATTEMPTS = 5;
 const PUSH_TIMEOUT_MS = 30_000;
@@ -94,13 +96,19 @@ Deno.serve(async (request) => {
     typeof state?.last_dispatched_reminder_id === 'string'
       ? state.last_dispatched_reminder_id
       : null;
-  let remainingWork = MAX_DISPATCH_WORK_PER_RUN;
-  const pending = await dispatchPendingDeliveries(client, remainingWork);
+  const pending = await dispatchPendingDeliveries(
+    client,
+    MAX_PENDING_DELIVERIES_PER_RUN,
+  );
   let delivered = pending.delivered;
-  remainingWork -= pending.processed;
-  const postponed = await dispatchPostponed(client, now, remainingWork);
+  const postponed = await dispatchPostponed(
+    client,
+    now,
+    MAX_POSTPONED_DELIVERIES_PER_RUN,
+  );
   delivered += postponed.delivered;
-  remainingWork -= postponed.processed;
+  const remainingWork =
+    MAX_DISPATCH_WORK_PER_RUN - pending.processed - postponed.processed;
 
   let reminders: ReminderRow[] = [];
   let reminderPageTruncated = false;
