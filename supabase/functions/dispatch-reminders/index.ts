@@ -57,6 +57,7 @@ const OCCURRENCE_CONCURRENCY = 10;
 const DEVICE_SEND_CONCURRENCY = 10;
 const MAX_DEVICES_PER_DELIVERY_ATTEMPT = 10;
 const EXPO_RECEIPT_BATCH_SIZE = 1_000;
+const RECEIPT_RPC_CONCURRENCY = 25;
 const ALLOWED_PUSH_HOSTS = [
   'fcm.googleapis.com',
   'android.googleapis.com',
@@ -88,7 +89,9 @@ Deno.serve(async (request) => {
   const windowEnd = new Date(minuteStart.getTime() + 60_000);
   const { data: state, error: stateError } = await client
     .from('dispatch_state')
-    .select('last_dispatched_at,last_dispatched_reminder_id')
+    .select(
+      'last_dispatched_at,last_dispatched_owner_id,last_dispatched_reminder_id',
+    )
     .eq('id', DISPATCH_STATE_ID)
     .maybeSingle();
   if (stateError) return json({ error: 'Unable to load dispatch state' }, 500);
@@ -99,12 +102,20 @@ Deno.serve(async (request) => {
     typeof state?.last_dispatched_reminder_id === 'string'
       ? state.last_dispatched_reminder_id
       : null;
+  const windowStartOwnerId =
+    typeof state?.last_dispatched_owner_id === 'string'
+      ? state.last_dispatched_owner_id
+      : null;
   let delivered = 0;
   const remainingWork = MAX_SCHEDULED_OCCURRENCES_PER_RUN;
 
   let reminders: ReminderRow[] = [];
   let reminderPageTruncated = false;
-  let nextReminderCursor: { due: Date; id: string } | null = null;
+  let nextReminderCursor: {
+    due: Date;
+    ownerId: string;
+    id: string;
+  } | null = null;
   if (remainingWork > 0) {
     try {
       const page = await loadReminders(client, windowEnd, remainingWork);
@@ -139,7 +150,7 @@ Deno.serve(async (request) => {
     }
     let occurrences = dueResult.occurrences;
     if (!occurrences.length) {
-      exhaustedReminderIds.add(reminder.id);
+      exhaustedReminderIds.add(reminderStateKey(reminder));
       continue;
     }
 
@@ -161,7 +172,7 @@ Deno.serve(async (request) => {
       if (countError) return json({ error: 'Unable to count occurrences' }, 500);
       const remaining = reminder.schedule.occurrenceLimit - (count ?? 0);
       if (remaining <= 0) {
-        exhaustedReminderIds.add(reminder.id);
+        exhaustedReminderIds.add(reminderStateKey(reminder));
         dueResult.truncated = false;
         continue;
       }
@@ -184,7 +195,12 @@ Deno.serve(async (request) => {
           nextReminderCursor &&
           (due > nextReminderCursor.due ||
             (due.getTime() === nextReminderCursor.due.getTime() &&
-              reminder.id >= nextReminderCursor.id))
+              compareReminderIdentity(
+                reminder.owner_id,
+                reminder.id,
+                nextReminderCursor.ownerId,
+                nextReminderCursor.id,
+              ) >= 0))
         ) {
           candidateGenerationTruncated = true;
           continue;
@@ -192,7 +208,13 @@ Deno.serve(async (request) => {
         if (
           due.getTime() === windowStart.getTime() &&
           windowStartReminderId !== null &&
-          reminder.id <= windowStartReminderId
+          windowStartOwnerId !== null &&
+          compareReminderIdentity(
+            reminder.owner_id,
+            reminder.id,
+            windowStartOwnerId,
+            windowStartReminderId,
+          ) <= 0
         ) {
           continue;
         }
@@ -214,7 +236,12 @@ Deno.serve(async (request) => {
         nextReminderCursor &&
         (due > nextReminderCursor.due ||
           (due.getTime() === nextReminderCursor.due.getTime() &&
-            reminder.id >= nextReminderCursor.id))
+            compareReminderIdentity(
+              reminder.owner_id,
+              reminder.id,
+              nextReminderCursor.ownerId,
+              nextReminderCursor.id,
+            ) >= 0))
       ) {
         candidateGenerationTruncated = true;
         continue;
@@ -222,7 +249,13 @@ Deno.serve(async (request) => {
       if (
         due.getTime() === windowStart.getTime() &&
         windowStartReminderId !== null &&
-        reminder.id <= windowStartReminderId
+        windowStartOwnerId !== null &&
+        compareReminderIdentity(
+          reminder.owner_id,
+          reminder.id,
+          windowStartOwnerId,
+          windowStartReminderId,
+        ) <= 0
       ) {
         continue;
       }
@@ -234,6 +267,7 @@ Deno.serve(async (request) => {
   scheduled.sort(
     (left, right) =>
       left.due.getTime() - right.due.getTime() ||
+      left.reminder.owner_id.localeCompare(right.reminder.owner_id) ||
       left.reminder.id.localeCompare(right.reminder.id),
   );
   const selected: ScheduledOccurrence[] = [];
@@ -244,7 +278,7 @@ Deno.serve(async (request) => {
     if (!candidate) continue;
     if (candidate.recorded) {
       lastExamined = candidate;
-      cursorUpdateReminderIds.add(candidate.reminder.id);
+      cursorUpdateReminderIds.add(reminderStateKey(candidate.reminder));
       continue;
     }
     if (selected.length >= remainingWork) break;
@@ -272,7 +306,7 @@ Deno.serve(async (request) => {
       return json({ error: 'Unable to process scheduled occurrence' }, 500);
     }
     for (const candidate of chunk) {
-      cursorUpdateReminderIds.add(candidate.reminder.id);
+      cursorUpdateReminderIds.add(reminderStateKey(candidate.reminder));
       lastExamined = candidate;
     }
   }
@@ -310,22 +344,35 @@ Deno.serve(async (request) => {
       : hasUnprocessedScheduleWork
         ? windowStartReminderId
         : null;
+  const nextWindowOwnerId =
+    hasUnprocessedScheduleWork && lastSelected
+      ? lastSelected.reminder.owner_id
+      : hasUnprocessedScheduleWork
+        ? windowStartOwnerId
+        : null;
   const nextDueUpdates = reminders
     .filter(
       (reminder) =>
-        exhaustedReminderIds.has(reminder.id) ||
-        cursorUpdateReminderIds.has(reminder.id),
+        exhaustedReminderIds.has(reminderStateKey(reminder)) ||
+        cursorUpdateReminderIds.has(reminderStateKey(reminder)),
     )
     .map((reminder) => ({
       id: reminder.id,
+      owner_id: reminder.owner_id,
       revision: reminder.revision,
-      next_due_at: exhaustedReminderIds.has(reminder.id)
+      next_due_at: exhaustedReminderIds.has(reminderStateKey(reminder))
         ? null
         : nextDueAtCursor(
             reminder,
             nextWindowStart,
             nextWindowReminderId === null ||
-              reminder.id > nextWindowReminderId,
+              nextWindowOwnerId === null ||
+              compareReminderIdentity(
+                reminder.owner_id,
+                reminder.id,
+                nextWindowOwnerId,
+                nextWindowReminderId,
+              ) > 0,
           ),
     }));
   if (nextDueUpdates.length) {
@@ -338,6 +385,7 @@ Deno.serve(async (request) => {
   }
   const { error: updateStateError } = await client.rpc('advance_dispatch_state', {
     p_last_dispatched_at: nextWindowStart.toISOString(),
+    p_last_dispatched_owner_id: nextWindowOwnerId,
     p_last_dispatched_reminder_id: nextWindowReminderId,
   });
   if (updateStateError)
@@ -348,6 +396,19 @@ Deno.serve(async (request) => {
   return json({ delivered });
 });
 
+function reminderStateKey(reminder: ReminderRow): string {
+  return `${reminder.owner_id}\u0000${reminder.id}`;
+}
+
+function compareReminderIdentity(
+  leftOwnerId: string,
+  leftId: string,
+  rightOwnerId: string,
+  rightId: string,
+): number {
+  return leftOwnerId.localeCompare(rightOwnerId) || leftId.localeCompare(rightId);
+}
+
 async function loadReminders(
   client: ServiceClient,
   windowEnd: Date,
@@ -355,7 +416,7 @@ async function loadReminders(
 ): Promise<{
   reminders: ReminderRow[];
   truncated: boolean;
-  nextCursor: { due: Date; id: string } | null;
+  nextCursor: { due: Date; ownerId: string; id: string } | null;
 }> {
   const { data, error } = await client
     .from('reminders')
@@ -363,6 +424,7 @@ async function loadReminders(
     .eq('status', 'active')
     .lt('next_due_at', windowEnd.toISOString())
     .order('next_due_at')
+    .order('owner_id')
     .order('id')
     .limit(limit + 1);
   if (error) throw error;
@@ -373,7 +435,11 @@ async function loadReminders(
     truncated: page.length > limit,
     nextCursor:
       nextReminder?.next_due_at
-        ? { due: new Date(nextReminder.next_due_at), id: nextReminder.id }
+        ? {
+            due: new Date(nextReminder.next_due_at),
+            ownerId: nextReminder.owner_id,
+            id: nextReminder.id,
+          }
         : null,
   };
 }
@@ -1049,27 +1115,57 @@ async function processExpoReceiptBatch(
       ? ((payload as { data: Record<string, unknown> }).data ?? {})
       : {};
   const unresolvedTicketIds: string[] = [];
-  for (const ticket of tickets) {
-    const receipt = receipts[ticket.ticket_id];
-    if (typeof receipt !== 'object' || receipt === null) {
-      if (
-        Date.now() - Date.parse(ticket.created_at) >
-        24 * 60 * 60_000
-      ) {
-        await failExpoPushTicket(client, ticket.ticket_id, false);
-      } else {
-        unresolvedTicketIds.push(ticket.ticket_id);
+  for (
+    let offset = 0;
+    offset < tickets.length;
+    offset += RECEIPT_RPC_CONCURRENCY
+  ) {
+    const chunk = tickets.slice(offset, offset + RECEIPT_RPC_CONCURRENCY);
+    const results = await Promise.all(
+      chunk.map((ticket) =>
+        processExpoReceipt(
+          client,
+          ticket,
+          receipts[ticket.ticket_id],
+          now,
+        ),
+      ),
+    );
+    for (let index = 0; index < chunk.length; index++) {
+      if (results[index]) {
+        const ticket = chunk[index];
+        if (ticket) unresolvedTicketIds.push(ticket.ticket_id);
       }
-      continue;
+    }
+  }
+  if (unresolvedTicketIds.length) {
+    const { error: updateError } = await client
+      .from('expo_push_tickets')
+      .update({ last_checked_at: now.toISOString() })
+      .in('ticket_id', unresolvedTicketIds);
+    if (updateError) throw updateError;
+  }
+
+  async function processExpoReceipt(
+    client: ServiceClient,
+    ticket: { ticket_id: string; created_at: string },
+    receipt: unknown,
+    now: Date,
+  ): Promise<boolean> {
+    if (typeof receipt !== 'object' || receipt === null) {
+      if (now.getTime() - Date.parse(ticket.created_at) > 24 * 60 * 60_000) {
+        await failExpoPushTicket(client, ticket.ticket_id, false);
+        return false;
+      }
+      return true;
     }
     const status = (receipt as { status?: unknown }).status;
     if (status === 'ok') {
-      const { error: completeError } = await client.rpc(
-        'complete_expo_push_ticket',
-        { p_ticket_id: ticket.ticket_id },
-      );
-      if (completeError) throw completeError;
-      continue;
+      const { error } = await client.rpc('complete_expo_push_ticket', {
+        p_ticket_id: ticket.ticket_id,
+      });
+      if (error) throw error;
+      return false;
     }
     if (status === 'error') {
       const providerError = (
@@ -1080,16 +1176,9 @@ async function processExpoReceiptBatch(
         ticket.ticket_id,
         providerError === 'DeviceNotRegistered',
       );
-      continue;
+      return false;
     }
-    unresolvedTicketIds.push(ticket.ticket_id);
-  }
-  if (unresolvedTicketIds.length) {
-    const { error: updateError } = await client
-      .from('expo_push_tickets')
-      .update({ last_checked_at: now.toISOString() })
-      .in('ticket_id', unresolvedTicketIds);
-    if (updateError) throw updateError;
+    return true;
   }
 }
 

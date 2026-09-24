@@ -255,25 +255,36 @@ for each row execute procedure public.protect_reminder_tombstones();
 create table public.dispatch_state (
   id boolean primary key default true check (id),
   last_dispatched_at timestamptz not null default now(),
+  last_dispatched_owner_id uuid,
   last_dispatched_reminder_id text
 );
 insert into public.dispatch_state (id, last_dispatched_at) values (true, now());
 
 create or replace function public.advance_dispatch_state(
   p_last_dispatched_at timestamptz,
+  p_last_dispatched_owner_id uuid,
   p_last_dispatched_reminder_id text
 )
 returns void language sql security definer set search_path = '' as $$
   update public.dispatch_state
   set last_dispatched_at = p_last_dispatched_at,
+      last_dispatched_owner_id = p_last_dispatched_owner_id,
       last_dispatched_reminder_id = p_last_dispatched_reminder_id
   where id = true
     and (
       last_dispatched_at < p_last_dispatched_at
       or (
         last_dispatched_at = p_last_dispatched_at
-        and coalesce(last_dispatched_reminder_id, '') <
-          coalesce(p_last_dispatched_reminder_id, '')
+        and (
+          coalesce(last_dispatched_owner_id::text, '') <
+            coalesce(p_last_dispatched_owner_id::text, '')
+          or (
+            coalesce(last_dispatched_owner_id::text, '') =
+              coalesce(p_last_dispatched_owner_id::text, '')
+            and coalesce(last_dispatched_reminder_id, '') <
+              coalesce(p_last_dispatched_reminder_id, '')
+          )
+        )
       )
     );
 $$;
@@ -284,10 +295,12 @@ returns void language sql security definer set search_path = '' as $$
   set next_due_at = updates.next_due_at
   from jsonb_to_recordset(p_updates) as updates(
     id text,
+    owner_id uuid,
     revision integer,
     next_due_at timestamptz
   )
   where reminder.id = updates.id
+    and reminder.owner_id = updates.owner_id
     and reminder.revision = updates.revision;
 $$;
 
@@ -329,7 +342,7 @@ $$;
 
 revoke all on function public.delete_expired_history() from public, anon, authenticated;
 grant execute on function public.delete_expired_history() to service_role;
-revoke all on function public.advance_dispatch_state(timestamptz, text) from public, anon, authenticated;
-grant execute on function public.advance_dispatch_state(timestamptz, text) to service_role;
+revoke all on function public.advance_dispatch_state(timestamptz, uuid, text) from public, anon, authenticated;
+grant execute on function public.advance_dispatch_state(timestamptz, uuid, text) to service_role;
 revoke all on function public.update_reminder_next_due(jsonb) from public, anon, authenticated;
 grant execute on function public.update_reminder_next_due(jsonb) to service_role;

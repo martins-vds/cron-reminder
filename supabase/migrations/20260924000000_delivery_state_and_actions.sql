@@ -179,6 +179,7 @@ begin
           mins => least(60, power(2, delivery_attempts)::integer)
         )
       end,
+      last_failed_delivery_round_id = p_lease_id,
       delivery_lease_id = null
   where id = p_occurrence_id
     and owner_id = p_owner_id

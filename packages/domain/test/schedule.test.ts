@@ -97,6 +97,22 @@ describe("cron schedule", () => {
     ).toThrow("Schedule end must be a valid date.");
   });
 
+  it("rejects impossible calendar dates", () => {
+    expect(() =>
+      validateSchedule({
+        kind: "once",
+        at: "2026-02-30T09:00:00.000Z",
+      }),
+    ).toThrow("valid date");
+    expect(() =>
+      validateSchedule({
+        kind: "cron",
+        expression: "0 9 * * *",
+        startAt: "2026-02-30T09:00:00.000Z",
+      }),
+    ).toThrow("Schedule start");
+  });
+
   it("requires a positive integer occurrence limit", () => {
     expect(() =>
       validateSchedule({

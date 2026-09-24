@@ -179,7 +179,7 @@ export function parseCronSchedule(
 
 export function validateSchedule(schedule: Schedule): void {
   if (schedule.kind === "once") {
-    if (!Number.isFinite(Date.parse(schedule.at)))
+    if (strictScheduleTimestamp(schedule.at) === null)
       throw new Error("A valid date is required.");
     return;
   }
@@ -194,22 +194,36 @@ export function validateSchedule(schedule: Schedule): void {
   }
   if (
     schedule.startAt !== undefined &&
-    !Number.isFinite(Date.parse(schedule.startAt))
+    strictScheduleTimestamp(schedule.startAt) === null
   ) {
     throw new Error("Schedule start must be a valid date.");
   }
   if (
     schedule.endAt !== undefined &&
-    !Number.isFinite(Date.parse(schedule.endAt))
+    strictScheduleTimestamp(schedule.endAt) === null
   ) {
     throw new Error("Schedule end must be a valid date.");
   }
   if (
     schedule.startAt &&
     schedule.endAt &&
-    Date.parse(schedule.startAt) > Date.parse(schedule.endAt)
+    (strictScheduleTimestamp(schedule.startAt) ?? 0) >
+      (strictScheduleTimestamp(schedule.endAt) ?? 0)
   ) {
     throw new Error("Schedule end must follow its start.");
+  }
+
+  function strictScheduleTimestamp(value: string): number | null {
+    const match = /^(\d{4})-(\d{2})-(\d{2})T/.exec(value);
+    if (!match) return null;
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    if (month < 1 || month > 12) return null;
+    const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    if (day < 1 || day > daysInMonth) return null;
+    const timestamp = Date.parse(value);
+    return Number.isFinite(timestamp) ? timestamp : null;
   }
 }
 
