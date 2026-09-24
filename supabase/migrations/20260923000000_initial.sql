@@ -126,6 +126,15 @@ returns boolean language sql stable set search_path = '' as $$
   );
 $$;
 
+create or replace function public.is_valid_sound(value jsonb)
+returns boolean language sql immutable set search_path = '' as $$
+  select coalesce(
+    jsonb_typeof(value) = 'object'
+    and value->>'mode' in ('default', 'silent', 'vibrate'),
+    false
+  );
+$$;
+
 create table public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,
   locale text not null default 'en' check (locale in ('en', 'pt-BR')),
@@ -142,7 +151,8 @@ create table public.reminders (
   tags text[] not null default '{}',
   schedule jsonb not null check (public.is_valid_schedule(schedule)),
   timezone text not null check (public.is_valid_timezone(timezone)),
-  sound jsonb not null default '{"mode":"default"}',
+  sound jsonb not null default '{"mode":"default"}'
+    check (public.is_valid_sound(sound)),
   status public.reminder_status not null default 'active',
   revision integer not null default 1 check (revision > 0),
   created_at timestamptz not null default now(),
@@ -237,15 +247,28 @@ for each row execute procedure public.protect_reminder_tombstones();
 
 create table public.dispatch_state (
   id boolean primary key default true check (id),
-  last_dispatched_at timestamptz not null default now()
+  last_dispatched_at timestamptz not null default now(),
+  last_dispatched_reminder_id text
 );
 insert into public.dispatch_state (id, last_dispatched_at) values (true, now());
 
-create or replace function public.advance_dispatch_state(p_last_dispatched_at timestamptz)
+create or replace function public.advance_dispatch_state(
+  p_last_dispatched_at timestamptz,
+  p_last_dispatched_reminder_id text
+)
 returns void language sql security definer set search_path = '' as $$
   update public.dispatch_state
-  set last_dispatched_at = greatest(last_dispatched_at, p_last_dispatched_at)
-  where id = true;
+  set last_dispatched_at = p_last_dispatched_at,
+      last_dispatched_reminder_id = p_last_dispatched_reminder_id
+  where id = true
+    and (
+      last_dispatched_at < p_last_dispatched_at
+      or (
+        last_dispatched_at = p_last_dispatched_at
+        and coalesce(last_dispatched_reminder_id, '') <
+          coalesce(p_last_dispatched_reminder_id, '')
+      )
+    );
 $$;
 
 alter table public.profiles enable row level security;
@@ -286,5 +309,5 @@ $$;
 
 revoke all on function public.delete_expired_history() from public, anon, authenticated;
 grant execute on function public.delete_expired_history() to service_role;
-revoke all on function public.advance_dispatch_state(timestamptz) from public, anon, authenticated;
-grant execute on function public.advance_dispatch_state(timestamptz) to service_role;
+revoke all on function public.advance_dispatch_state(timestamptz, text) from public, anon, authenticated;
+grant execute on function public.advance_dispatch_state(timestamptz, text) to service_role;

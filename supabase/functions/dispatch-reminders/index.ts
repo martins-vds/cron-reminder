@@ -26,10 +26,20 @@ interface DeviceDeliveryResult {
   retryableFailures: number;
 }
 
+interface DispatchWorkResult {
+  delivered: number;
+  processed: number;
+}
+
+interface ScheduledOccurrence {
+  reminder: ReminderRow;
+  due: Date;
+}
+
 type ServiceClient = ReturnType<typeof createClient<any>>;
 
 const DISPATCH_STATE_ID = true;
-const MAX_OCCURRENCES_PER_RUN = 500;
+const MAX_DISPATCH_WORK_PER_RUN = 500;
 const REMINDER_PAGE_SIZE = 1_000;
 const DELIVERY_LEASE_MS = 5 * 60_000;
 const MAX_DELIVERY_ATTEMPTS = 5;
@@ -56,16 +66,24 @@ Deno.serve(async (request) => {
   const windowEnd = new Date(minuteStart.getTime() + 60_000);
   const { data: state, error: stateError } = await client
     .from('dispatch_state')
-    .select('last_dispatched_at')
+    .select('last_dispatched_at,last_dispatched_reminder_id')
     .eq('id', DISPATCH_STATE_ID)
     .maybeSingle();
   if (stateError) return json({ error: 'Unable to load dispatch state' }, 500);
   const windowStart = state?.last_dispatched_at
     ? new Date(state.last_dispatched_at)
     : new Date(minuteStart.getTime() - 60_000);
-  let nextWindowStart = windowEnd;
-  let delivered = await dispatchPendingDeliveries(client);
-  delivered += await dispatchPostponed(client, now);
+  const windowStartReminderId =
+    typeof state?.last_dispatched_reminder_id === 'string'
+      ? state.last_dispatched_reminder_id
+      : null;
+  let remainingWork = MAX_DISPATCH_WORK_PER_RUN;
+  const pending = await dispatchPendingDeliveries(client, remainingWork);
+  let delivered = pending.delivered;
+  remainingWork -= pending.processed;
+  const postponed = await dispatchPostponed(client, now, remainingWork);
+  delivered += postponed.delivered;
+  remainingWork -= postponed.processed;
 
   let reminders: ReminderRow[];
   try {
@@ -74,10 +92,17 @@ Deno.serve(async (request) => {
     return json({ error: 'Unable to load reminders' }, 500);
   }
 
-  for (const reminder of reminders) {
+  const scheduled: ScheduledOccurrence[] = [];
+  let candidateGenerationTruncated = false;
+  for (const reminder of remainingWork > 0 ? reminders : []) {
     let dueResult: ReturnType<typeof dueOccurrences>;
     try {
-      dueResult = dueOccurrences(reminder, windowStart, windowEnd);
+      dueResult = dueOccurrences(
+        reminder,
+        windowStart,
+        windowEnd,
+        MAX_DISPATCH_WORK_PER_RUN + 1,
+      );
     } catch {
       continue;
     }
@@ -95,63 +120,67 @@ Deno.serve(async (request) => {
       if (countError) return json({ error: 'Unable to count occurrences' }, 500);
       const remaining = reminder.schedule.occurrenceLimit - (count ?? 0);
       if (remaining <= 0) continue;
-      if (remaining < occurrences.length) dueResult.resumeAt = undefined;
+      if (remaining < occurrences.length) dueResult.truncated = false;
       occurrences = occurrences.slice(0, remaining);
     }
-    if (
-      dueResult.resumeAt &&
-      dueResult.resumeAt.getTime() < nextWindowStart.getTime()
-    ) {
-      nextWindowStart = dueResult.resumeAt;
+    candidateGenerationTruncated ||= dueResult.truncated;
+    for (const due of occurrences) {
+      if (
+        due.getTime() === windowStart.getTime() &&
+        windowStartReminderId !== null &&
+        reminder.id <= windowStartReminderId
+      ) {
+        continue;
+      }
+      scheduled.push({ reminder, due });
+    }
+  }
+
+  scheduled.sort(
+    (left, right) =>
+      left.due.getTime() - right.due.getTime() ||
+      left.reminder.id.localeCompare(right.reminder.id),
+  );
+  const selected = scheduled.slice(0, remainingWork);
+  const hasUnprocessedScheduleWork =
+    remainingWork === 0 ||
+    candidateGenerationTruncated ||
+    selected.length < scheduled.length;
+
+  for (const { reminder, due } of selected) {
+    const occurrenceId = `${reminder.id}:${due.toISOString()}`;
+    const missed = due < minuteStart;
+    if (missed) {
+      const { error: missedError } = await client.rpc(
+        'record_missed_occurrence',
+        {
+          p_occurrence_id: occurrenceId,
+          p_reminder_id: reminder.id,
+          p_owner_id: reminder.owner_id,
+          p_scheduled_at: due.toISOString(),
+        },
+      );
+      if (missedError)
+        return json({ error: 'Unable to record missed occurrence' }, 500);
+      continue;
     }
 
-    for (const due of occurrences) {
-      const occurrenceId = `${reminder.id}:${due.toISOString()}`;
-      const missed = due < minuteStart;
-      if (missed) {
-        const { error: missedError } = await client.rpc(
-          'record_missed_occurrence',
-          {
-            p_occurrence_id: occurrenceId,
-            p_reminder_id: reminder.id,
-            p_owner_id: reminder.owner_id,
-            p_scheduled_at: due.toISOString(),
-          },
-        );
-        if (missedError)
-          return json({ error: 'Unable to record missed occurrence' }, 500);
-        continue;
+    const { error: occurrenceError } = await client
+      .from('occurrences')
+      .insert({
+        id: occurrenceId,
+        reminder_id: reminder.id,
+        owner_id: reminder.owner_id,
+        scheduled_at: due.toISOString(),
+        status: 'triggered',
+      });
+    if (occurrenceError?.code === '23505') {
+      let leaseId: string | null;
+      try {
+        leaseId = await claimUndelivered(client, occurrenceId);
+      } catch {
+        return json({ error: 'Unable to claim occurrence' }, 500);
       }
-
-      const { error: occurrenceError } = await client
-        .from('occurrences')
-        .insert({
-          id: occurrenceId,
-          reminder_id: reminder.id,
-          owner_id: reminder.owner_id,
-          scheduled_at: due.toISOString(),
-          status: 'triggered',
-        });
-      if (occurrenceError?.code === '23505') {
-        let leaseId: string | null;
-        try {
-          leaseId = await claimUndelivered(client, occurrenceId);
-        } catch {
-          return json({ error: 'Unable to claim occurrence' }, 500);
-        }
-        if (leaseId)
-          delivered += await deliverOccurrence(
-            client,
-            reminder,
-            occurrenceId,
-            leaseId,
-          );
-        continue;
-      }
-      if (occurrenceError)
-        return json({ error: 'Unable to create occurrence' }, 500);
-
-      const leaseId = await claimUndelivered(client, occurrenceId);
       if (leaseId)
         delivered += await deliverOccurrence(
           client,
@@ -159,11 +188,37 @@ Deno.serve(async (request) => {
           occurrenceId,
           leaseId,
         );
+      continue;
     }
+    if (occurrenceError)
+      return json({ error: 'Unable to create occurrence' }, 500);
+
+    const leaseId = await claimUndelivered(client, occurrenceId);
+    if (leaseId)
+      delivered += await deliverOccurrence(
+        client,
+        reminder,
+        occurrenceId,
+        leaseId,
+      );
   }
 
+  const lastSelected = selected[selected.length - 1];
+  const nextWindowStart =
+    hasUnprocessedScheduleWork && lastSelected
+      ? lastSelected.due
+      : hasUnprocessedScheduleWork
+        ? windowStart
+        : windowEnd;
+  const nextWindowReminderId =
+    hasUnprocessedScheduleWork && lastSelected
+      ? lastSelected.reminder.id
+      : hasUnprocessedScheduleWork
+        ? windowStartReminderId
+        : null;
   const { error: updateStateError } = await client.rpc('advance_dispatch_state', {
     p_last_dispatched_at: nextWindowStart.toISOString(),
+    p_last_dispatched_reminder_id: nextWindowReminderId,
   });
   if (updateStateError)
     return json({ error: 'Unable to update dispatch state' }, 500);
@@ -216,17 +271,22 @@ async function claimUndelivered(
 
 async function dispatchPendingDeliveries(
   client: ServiceClient,
-): Promise<number> {
+  limit: number,
+): Promise<DispatchWorkResult> {
+  if (limit <= 0) return { delivered: 0, processed: 0 };
   const now = new Date();
   const { data, error } = await client
     .from('occurrences')
     .select('id,reminder_id')
     .is('delivered_at', null)
     .lt('delivery_attempts', MAX_DELIVERY_ATTEMPTS)
-    .or(deliverableFilter(now));
+    .or(deliverableFilter(now))
+    .limit(limit);
   if (error) throw error;
   let delivered = 0;
+  let processed = 0;
   for (const occurrence of data ?? []) {
+    processed++;
     const reminder = await loadActiveReminder(client, occurrence.reminder_id);
     if (!reminder) continue;
     const leaseId = await claimUndelivered(client, occurrence.id);
@@ -238,21 +298,26 @@ async function dispatchPendingDeliveries(
       leaseId,
     );
   }
-  return delivered;
+  return { delivered, processed };
 }
 
 async function dispatchPostponed(
   client: ServiceClient,
   now: Date,
-): Promise<number> {
+  limit: number,
+): Promise<DispatchWorkResult> {
+  if (limit <= 0) return { delivered: 0, processed: 0 };
   const { data, error } = await client
     .from('occurrences')
     .select('id,reminder_id')
     .eq('status', 'postponed')
-    .lte('snoozed_until', now.toISOString());
+    .lte('snoozed_until', now.toISOString())
+    .limit(limit);
   if (error) throw error;
   let delivered = 0;
+  let processed = 0;
   for (const occurrence of data ?? []) {
+    processed++;
     const reminder = await loadActiveReminder(client, occurrence.reminder_id);
     if (!reminder) continue;
     const leaseId = await claimUndelivered(client, occurrence.id);
@@ -264,7 +329,7 @@ async function dispatchPostponed(
       leaseId,
     );
   }
-  return delivered;
+  return { delivered, processed };
 }
 
 async function loadActiveReminder(
@@ -485,7 +550,8 @@ function dueOccurrences(
   reminder: ReminderRow,
   windowStart: Date,
   windowEnd: Date,
-): { occurrences: Date[]; resumeAt?: Date } {
+  limit: number,
+): { occurrences: Date[]; truncated: boolean } {
   const reminderCreatedAt = new Date(reminder.created_at);
   const lowerBound =
     reminderCreatedAt > windowStart ? reminderCreatedAt : windowStart;
@@ -494,6 +560,7 @@ function dueOccurrences(
     return {
       occurrences:
         date >= lowerBound && date < windowEnd ? [date] : [],
+      truncated: false,
     };
   }
   const results: Date[] = [];
@@ -503,7 +570,7 @@ function dueOccurrences(
     endDate: reminder.schedule.endAt,
     tz: reminder.timezone,
   });
-  for (let i = 0; i <= MAX_OCCURRENCES_PER_RUN; i++) {
+  for (let i = 0; i <= limit; i++) {
     let date: Date;
     try {
       date = interval.next().toDate();
@@ -514,14 +581,13 @@ function dueOccurrences(
     if (date >= windowEnd) break;
     results.push(date);
   }
-  if (results.length > MAX_OCCURRENCES_PER_RUN) {
-    const occurrences = results.slice(0, MAX_OCCURRENCES_PER_RUN);
+  if (results.length > limit) {
     return {
-      occurrences,
-      resumeAt: occurrences[occurrences.length - 1],
+      occurrences: results.slice(0, limit),
+      truncated: true,
     };
   }
-  return { occurrences: results };
+  return { occurrences: results, truncated: false };
 }
 
 async function sendExpoPush(
@@ -538,6 +604,12 @@ async function sendExpoPush(
       to: token,
       ...payload,
       sound: nativeSound,
+      channelId:
+        sound.mode === 'silent'
+          ? 'reminders-silent'
+          : sound.mode === 'vibrate'
+            ? 'reminders-vibrate'
+            : 'reminders-default',
       categoryId: 'reminder',
     }),
   });
@@ -593,29 +665,41 @@ function parseWebPushSubscription(token: string): {
   try {
     parsed = JSON.parse(token);
   } catch {
-    throw new Error('Web push subscription is not valid JSON');
+    throw new PermanentDeliveryError(
+      'Web push subscription is not valid JSON',
+    );
   }
   if (typeof parsed !== 'object' || parsed === null) {
-    throw new Error('Web push subscription is not an object');
+    throw new PermanentDeliveryError(
+      'Web push subscription is not an object',
+    );
   }
   const { endpoint, keys } = parsed as {
     endpoint?: unknown;
     keys?: { p256dh?: unknown; auth?: unknown };
   };
   if (typeof endpoint !== 'string') {
-    throw new Error('Web push subscription has no endpoint');
+    throw new PermanentDeliveryError(
+      'Web push subscription has no endpoint',
+    );
   }
   let url: URL;
   try {
     url = new URL(endpoint);
   } catch {
-    throw new Error('Web push endpoint is not a valid URL');
+    throw new PermanentDeliveryError(
+      'Web push endpoint is not a valid URL',
+    );
   }
   if (url.protocol !== 'https:' || !isAllowedPushHost(url.hostname)) {
-    throw new Error('Web push endpoint host is not allowed');
+    throw new PermanentDeliveryError(
+      'Web push endpoint host is not allowed',
+    );
   }
   if (typeof keys?.p256dh !== 'string' || typeof keys.auth !== 'string') {
-    throw new Error('Web push subscription has no keys');
+    throw new PermanentDeliveryError(
+      'Web push subscription has no keys',
+    );
   }
   return { endpoint, keys: { p256dh: keys.p256dh, auth: keys.auth } };
 }

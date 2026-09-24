@@ -17,6 +17,8 @@ export interface ReminderRepository {
   save(reminder: Reminder): Promise<void>;
   delete(id: string): Promise<void>;
   listDeletedIds?(ownerId: string): Promise<string[]>;
+  getSyncedRevision?(id: string): Promise<number | null>;
+  setSyncedRevision?(id: string, revision: number): Promise<void>;
 }
 
 export interface HistoryRepository {
@@ -180,12 +182,16 @@ export function filterReminders(
   });
 }
 
-export function detectConflict(local: Reminder, remote: Reminder): boolean {
-  return (
-    local.id === remote.id &&
-    local.revision === remote.revision &&
-    !sameReminder(local, remote)
-  );
+export function detectConflict(
+  local: Reminder,
+  remote: Reminder,
+  syncedRevision?: number,
+): boolean {
+  if (local.id !== remote.id || sameReminder(local, remote)) return false;
+  if (syncedRevision === undefined) return true;
+  const localChanged = local.revision !== syncedRevision;
+  const remoteChanged = remote.revision !== syncedRevision;
+  return (localChanged && remoteChanged) || (!localChanged && !remoteChanged);
 }
 
 function sameReminder(left: Reminder, right: Reminder): boolean {

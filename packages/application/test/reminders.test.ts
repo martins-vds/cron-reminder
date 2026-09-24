@@ -92,6 +92,20 @@ describe("ReminderService", () => {
     expect(
       detectConflict({ ...base, title: "Local" }, { ...base, title: "Remote" }),
     ).toBe(true);
+    expect(
+      detectConflict(
+        { ...base, title: "Local", revision: 2 },
+        { ...base, title: "Remote", revision: 3 },
+        1,
+      ),
+    ).toBe(true);
+    expect(
+      detectConflict(
+        { ...base, title: "Local", revision: 2 },
+        { ...base, revision: 1 },
+        1,
+      ),
+    ).toBe(false);
     expect(detectConflict(base, base)).toBe(false);
   });
 });

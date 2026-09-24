@@ -11,12 +11,15 @@ import {
 } from "../src/index";
 
 class MemoryStore implements KeyValueStore {
-  value: string | null = null;
-  async get(): Promise<string | null> {
-    return this.value;
+  readonly values = new Map<string, string>();
+  async get(key: string): Promise<string | null> {
+    return this.values.get(key) ?? null;
   }
-  async set(_key: string, value: string): Promise<void> {
-    this.value = value;
+  async set(key: string, value: string): Promise<void> {
+    this.values.set(key, value);
+  }
+  async remove(key: string): Promise<void> {
+    this.values.delete(key);
   }
 }
 
@@ -360,5 +363,42 @@ describe("synchronization", () => {
 
     expect(await local.get(staleLocal.id)).toBeNull();
     expect(fake.reminders.has(staleLocal.id)).toBe(false);
+  });
+
+  it("preserves divergent edits with unequal revision counters", async () => {
+    const local = new JsonReminderRepository(new MemoryStore());
+    const localEdit = reminder({
+      title: "Local edit",
+      revision: 2,
+      updatedAt: "2026-09-24T00:00:00.000Z",
+    });
+    await local.save(localEdit);
+    await local.setSyncedRevision(localEdit.id, 1);
+
+    const remoteEdit = reminder({
+      title: "Remote edit",
+      revision: 3,
+      updatedAt: "2026-09-24T01:00:00.000Z",
+    });
+    const fake = new FakeSupabaseClient();
+    fake.reminders.set(remoteEdit.id, toDatabaseRow(remoteEdit));
+    const remote = new SupabaseReminderRepository(
+      fake as unknown as ConstructorParameters<
+        typeof SupabaseReminderRepository
+      >[0],
+    );
+
+    const conflicts = await new OfflineSynchronizationAdapter(
+      local,
+      remote,
+    ).synchronize(localEdit.ownerId);
+
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0]).toMatchObject({
+      local: { title: "Local edit", revision: 2 },
+      remote: { title: "Remote edit", revision: 3 },
+    });
+    expect((await local.get(localEdit.id))?.title).toBe("Local edit");
+    expect(fake.reminders.get(remoteEdit.id)?.title).toBe("Remote edit");
   });
 });

@@ -19,11 +19,14 @@ export interface KeyValueStore {
 
 export class JsonReminderRepository implements ReminderRepository {
   private queue: Promise<unknown> = Promise.resolve();
+  private readonly syncKey: string;
 
   constructor(
     private readonly store: KeyValueStore,
     private readonly key = "cron-reminder:reminders",
-  ) {}
+  ) {
+    this.syncKey = `${key}:synced-revisions`;
+  }
 
   async list(ownerId: string): Promise<Reminder[]> {
     return (await this.read()).filter(
@@ -50,6 +53,22 @@ export class JsonReminderRepository implements ReminderRepository {
       await this.write(
         (await this.read()).filter((reminder) => reminder.id !== id),
       );
+      const revisions = await this.readSyncedRevisions();
+      delete revisions[id];
+      await this.writeSyncedRevisions(revisions);
+    });
+  }
+
+  async getSyncedRevision(id: string): Promise<number | null> {
+    await this.queue;
+    return (await this.readSyncedRevisions())[id] ?? null;
+  }
+
+  async setSyncedRevision(id: string, revision: number): Promise<void> {
+    await this.serialize(async () => {
+      const revisions = await this.readSyncedRevisions();
+      revisions[id] = revision;
+      await this.writeSyncedRevisions(revisions);
     });
   }
 
@@ -68,6 +87,31 @@ export class JsonReminderRepository implements ReminderRepository {
 
   private async write(reminders: readonly Reminder[]): Promise<void> {
     await this.store.set(this.key, JSON.stringify(reminders));
+  }
+
+  private async readSyncedRevisions(): Promise<Record<string, number>> {
+    const value = await this.store.get(this.syncKey);
+    if (!value) return {};
+    const parsed: unknown = JSON.parse(value);
+    if (!isRecord(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed).filter(
+        (entry): entry is [string, number] =>
+          typeof entry[1] === "number" &&
+          Number.isInteger(entry[1]) &&
+          entry[1] >= 0,
+      ),
+    );
+  }
+
+  private async writeSyncedRevisions(
+    revisions: Readonly<Record<string, number>>,
+  ): Promise<void> {
+    if (Object.keys(revisions).length || !this.store.remove) {
+      await this.store.set(this.syncKey, JSON.stringify(revisions));
+    } else {
+      await this.store.remove(this.syncKey);
+    }
   }
 }
 
@@ -325,6 +369,7 @@ export class SupabaseAuthenticationAdapter implements AuthenticationPort {
 export function mergeForSynchronization(
   local: readonly Reminder[],
   remote: readonly Reminder[],
+  syncedRevisions: ReadonlyMap<string, number> = new Map(),
 ): { merged: Reminder[]; conflicts: SyncConflict[] } {
   const merged = [...local];
   const conflicts: SyncConflict[] = [];
@@ -337,12 +382,19 @@ export function mergeForSynchronization(
 
     const localReminder = merged[index];
     if (!localReminder) continue;
-    if (detectConflict(localReminder, remoteReminder)) {
+    const syncedRevision = syncedRevisions.get(localReminder.id);
+    if (detectConflict(localReminder, remoteReminder, syncedRevision)) {
       conflicts.push({
         id: localReminder.id,
         local: localReminder,
         remote: remoteReminder,
       });
+    } else if (
+      syncedRevision !== undefined &&
+      localReminder.revision === syncedRevision &&
+      remoteReminder.revision !== syncedRevision
+    ) {
+      merged[index] = remoteReminder;
     } else if (remoteReminder.revision > localReminder.revision) {
       merged[index] = remoteReminder;
     }
@@ -363,6 +415,16 @@ export class OfflineSynchronizationAdapter implements SynchronizationPort {
       this.remote.listDeletedIds?.(ownerId) ?? Promise.resolve([]),
     ]);
     const deleted = new Set(deletedIds);
+    const syncedRevisions = new Map<string, number>();
+    if (this.local.getSyncedRevision) {
+      await Promise.all(
+        local.map(async ({ id }) => {
+          const revision = await this.local.getSyncedRevision?.(id);
+          if (revision !== null && revision !== undefined)
+            syncedRevisions.set(id, revision);
+        }),
+      );
+    }
     const survivingLocal = local.filter(({ id }) => !deleted.has(id));
     await Promise.all(
       local
@@ -372,6 +434,7 @@ export class OfflineSynchronizationAdapter implements SynchronizationPort {
     const { merged, conflicts } = mergeForSynchronization(
       survivingLocal,
       remote,
+      syncedRevisions,
     );
     const conflictedIds = new Set(conflicts.map(({ id }) => id));
     const latestDeletedIds =
@@ -385,10 +448,11 @@ export class OfflineSynchronizationAdapter implements SynchronizationPort {
     await Promise.all(
       merged
         .filter(({ id }) => !conflictedIds.has(id) && !latestDeleted.has(id))
-        .flatMap((reminder) => [
-          this.local.save(reminder),
-          this.remote.save(reminder),
-        ]),
+        .map(async (reminder) => {
+          await this.remote.save(reminder);
+          await this.local.save(reminder);
+          await this.local.setSyncedRevision?.(reminder.id, reminder.revision);
+        }),
     );
     return conflicts;
   }

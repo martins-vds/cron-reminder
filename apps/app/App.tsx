@@ -77,6 +77,7 @@ const service = new ReminderService(
 
 interface AppContextValue {
   ownerId: string;
+  syncRevision: number;
   locale: Locale;
   setLocale: (locale: Locale) => void;
   theme: ThemePreference;
@@ -109,6 +110,7 @@ export function RootNavigator() {
     normalizeLocale(getLocales()[0]?.languageTag),
   );
   const [ownerId, setOwnerId] = useState<string | null>(null);
+  const [syncRevision, setSyncRevision] = useState(0);
   const [loadingSession, setLoadingSession] = useState(true);
   const pathname = usePathname();
   const isDark = (theme === "system" ? systemTheme : theme) === "dark";
@@ -151,7 +153,9 @@ export function RootNavigator() {
   useEffect(() => {
     if (!ownerId) return;
     const retry = () => {
-      void synchronizeReminders(ownerId).catch(() => {});
+      void synchronizeReminders(ownerId)
+        .then(() => setSyncRevision((revision) => revision + 1))
+        .catch(() => {});
       void flushNotificationActions(ownerId).catch(() => {});
     };
     void flushNotificationActions(ownerId).catch(() => {});
@@ -233,6 +237,7 @@ export function RootNavigator() {
 
   const appContext: AppContextValue = {
     ownerId,
+    syncRevision,
     locale,
     setLocale,
     theme,
@@ -273,8 +278,15 @@ export function RootNavigator() {
 }
 
 export function RemindersRoute() {
-  const { ownerId, locale, colors } = useAppContext();
-  return <ReminderList ownerId={ownerId} locale={locale} colors={colors} />;
+  const { ownerId, syncRevision, locale, colors } = useAppContext();
+  return (
+    <ReminderList
+      ownerId={ownerId}
+      syncRevision={syncRevision}
+      locale={locale}
+      colors={colors}
+    />
+  );
 }
 
 export function HistoryRoute() {
@@ -441,10 +453,12 @@ function SignIn({
 
 function ReminderList({
   ownerId,
+  syncRevision,
   locale,
   colors,
 }: {
   ownerId: string;
+  syncRevision: number;
   locale: Locale;
   colors: Colors;
 }) {
@@ -461,7 +475,7 @@ function ReminderList({
     () => void localRepository.list(ownerId).then(setReminders),
     [ownerId],
   );
-  useEffect(refresh, [refresh]);
+  useEffect(refresh, [refresh, syncRevision]);
   useEffect(() => {
     void synchronizeReminders(ownerId)
       .then((conflicts) => {

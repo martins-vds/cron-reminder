@@ -24,8 +24,39 @@ Notifications.setNotificationHandler({
 const projectId =
   Constants.expoConfig?.extra?.eas?.projectId ?? Constants.easConfig?.projectId;
 
+function notificationChannelId(mode: Reminder["sound"]["mode"]): string {
+  if (mode === "silent") return "reminders-silent";
+  if (mode === "vibrate") return "reminders-vibrate";
+  return "reminders-default";
+}
+
+async function ensureAndroidChannels(): Promise<void> {
+  if (Platform.OS !== "android") return;
+  await Promise.all([
+    Notifications.setNotificationChannelAsync("reminders-default", {
+      name: "Reminders",
+      importance: Notifications.AndroidImportance.HIGH,
+      sound: "default",
+      vibrationPattern: [0, 250, 250, 250],
+    }),
+    Notifications.setNotificationChannelAsync("reminders-vibrate", {
+      name: "Vibrating reminders",
+      importance: Notifications.AndroidImportance.HIGH,
+      sound: null,
+      vibrationPattern: [0, 250, 250, 250],
+    }),
+    Notifications.setNotificationChannelAsync("reminders-silent", {
+      name: "Silent reminders",
+      importance: Notifications.AndroidImportance.HIGH,
+      sound: null,
+      enableVibrate: false,
+    }),
+  ]);
+}
+
 export class DeviceNotificationAdapter implements NotificationPort {
   async requestPermission(): Promise<"granted" | "denied"> {
+    await ensureAndroidChannels();
     const result = await Notifications.requestPermissionsAsync();
     return result.granted ? "granted" : "denied";
   }
@@ -64,6 +95,7 @@ export class DeviceNotificationAdapter implements NotificationPort {
       trigger: {
         type: Notifications.SchedulableTriggerInputTypes.DATE,
         date: new Date(occurrence.scheduledAt),
+        channelId: notificationChannelId(reminder.sound.mode),
       },
     });
   }
