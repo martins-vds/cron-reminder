@@ -315,8 +315,12 @@ Deno.serve(async (request) => {
   scheduled.sort(
     (left, right) =>
       left.due.getTime() - right.due.getTime() ||
-      left.reminder.owner_id.localeCompare(right.reminder.owner_id) ||
-      left.reminder.id.localeCompare(right.reminder.id),
+      compareReminderIdentity(
+        left.reminder.owner_id,
+        left.reminder.id,
+        right.reminder.owner_id,
+        right.reminder.id,
+      ),
   );
   let lastExamined: ScheduledOccurrence | undefined;
   let scheduledIndex = 0;
@@ -1284,6 +1288,10 @@ async function processExpoReceiptRequest(
         ticket.ticket_id,
         providerError === 'DeviceNotRegistered',
       );
+      return false;
+    }
+    if (now.getTime() - Date.parse(ticket.created_at) > 24 * 60 * 60_000) {
+      await failExpoPushTicket(client, ticket.ticket_id, false);
       return false;
     }
     return true;

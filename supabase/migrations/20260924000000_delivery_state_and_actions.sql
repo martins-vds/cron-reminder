@@ -2,7 +2,6 @@ alter table public.occurrences add column delivered_at timestamptz;
 alter table public.occurrences add column delivery_attempts integer not null default 0 check (delivery_attempts >= 0);
 alter table public.occurrences add column next_delivery_attempt_at timestamptz;
 alter table public.occurrences add column delivery_lease_id uuid;
-alter table public.occurrences add column last_failed_delivery_round_id uuid;
 alter type public.occurrence_status add value if not exists 'delivering' after 'triggered';
 create index if not exists occurrences_pending_delivery_idx
   on public.occurrences(next_delivery_attempt_at, acted_at)
@@ -42,6 +41,17 @@ create index if not exists expo_push_tickets_check_idx
 create index if not exists expo_push_tickets_occurrence_idx
   on public.expo_push_tickets(occurrence_id, owner_id);
 alter table public.expo_push_tickets enable row level security;
+
+create table if not exists public.occurrence_failed_delivery_rounds (
+  occurrence_id text not null,
+  owner_id uuid not null references auth.users(id) on delete cascade,
+  delivery_round_id uuid not null,
+  failed_at timestamptz not null default now(),
+  primary key (occurrence_id, owner_id, delivery_round_id),
+  foreign key (occurrence_id, owner_id)
+    references public.occurrences(id, owner_id) on delete cascade
+);
+alter table public.occurrence_failed_delivery_rounds enable row level security;
 
 drop policy if exists "owners manage occurrences" on public.occurrences;
 do $$
@@ -331,7 +341,6 @@ begin
           mins => least(60, power(2, delivery_attempts)::integer)
         )
       end,
-      last_failed_delivery_round_id = p_lease_id,
       delivery_lease_id = null
   where id = p_occurrence_id
     and owner_id = p_owner_id
@@ -341,6 +350,11 @@ begin
   if not found then
     return false;
   end if;
+  insert into public.occurrence_failed_delivery_rounds(
+    occurrence_id, owner_id, delivery_round_id
+  )
+  values (p_occurrence_id, p_owner_id, p_lease_id)
+  on conflict do nothing;
   insert into public.history(reminder_id, occurrence_id, owner_id, event_type)
   values (failed.reminder_id, failed.id, failed.owner_id, 'delivery-failed');
   return true;
@@ -440,6 +454,7 @@ returns boolean language plpgsql security definer set search_path = '' as $$
 declare
   ticket public.expo_push_tickets%rowtype;
   failed public.occurrences%rowtype;
+  new_failed_round boolean;
 begin
   select * into ticket
   from public.expo_push_tickets
@@ -469,8 +484,20 @@ begin
     delete from public.expo_push_tickets
     where ticket_id = p_ticket_id;
     if failed.status <> 'delivery-failed'
-      or failed.delivered_at is not null
-      or failed.last_failed_delivery_round_id = ticket.delivery_round_id then
+      or failed.delivered_at is not null then
+      return true;
+    end if;
+    insert into public.occurrence_failed_delivery_rounds(
+      occurrence_id, owner_id, delivery_round_id
+    )
+    values (
+      ticket.occurrence_id,
+      ticket.owner_id,
+      ticket.delivery_round_id
+    )
+    on conflict do nothing
+    returning true into new_failed_round;
+    if not coalesce(new_failed_round, false) then
       return true;
     end if;
     update public.occurrences
@@ -481,14 +508,11 @@ begin
           else now() + make_interval(
             mins => least(60, power(2, delivery_attempts)::integer)
           )
-        end,
-        last_failed_delivery_round_id = ticket.delivery_round_id
+        end
     where id = ticket.occurrence_id
       and owner_id = ticket.owner_id
       and status = 'delivery-failed'
       and delivered_at is null
-      and last_failed_delivery_round_id is distinct from
-        ticket.delivery_round_id
     returning * into failed;
     if found then
       insert into public.history(

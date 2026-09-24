@@ -223,7 +223,9 @@ create or replace function public.claim_device_token(
   p_deregistration_token uuid
 )
 returns boolean language plpgsql security definer set search_path = '' as $$
-declare requesting_user uuid := auth.uid();
+declare
+  requesting_user uuid := auth.uid();
+  claimed boolean;
 begin
   if requesting_user is null then
     return false;
@@ -235,8 +237,8 @@ begin
   where (
     platform = p_platform
     and token_hash = digest(p_token, 'sha256')
-  )
-  or (id = p_device_id and owner_id = requesting_user);
+    and id <> p_device_id
+  );
   insert into public.devices(
     id,
     owner_id,
@@ -256,13 +258,14 @@ begin
     now()
   )
   on conflict (id) do update
-    set owner_id = excluded.owner_id,
-        platform = excluded.platform,
+    set platform = excluded.platform,
         token = excluded.token,
         deregistration_token = excluded.deregistration_token,
         enabled = true,
-        updated_at = now();
-  return true;
+        updated_at = now()
+    where public.devices.owner_id = requesting_user
+  returning true into claimed;
+  return coalesce(claimed, false);
 end;
 $$;
 
