@@ -238,13 +238,14 @@ export function RootNavigator() {
       return;
     }
     let remove: (() => void) | undefined;
+    let cancelled = false;
     void import("expo-notifications").then((Notifications) => {
       const handleResponse = async (
         response: Awaited<
           ReturnType<typeof Notifications.getLastNotificationResponseAsync>
         >,
       ): Promise<void> => {
-        if (!response) return;
+        if (cancelled || !response) return;
         const occurrenceId =
           response.notification.request.content.data?.occurrenceId;
         const action = response.actionIdentifier;
@@ -255,7 +256,7 @@ export function RootNavigator() {
           await submitNotificationAction(occurrenceId, action, ownerId);
       };
       void Notifications.getLastNotificationResponseAsync().then((response) => {
-        if (!response) return;
+        if (cancelled || !response) return;
         void handleResponse(response)
           .then(() => Notifications.clearLastNotificationResponseAsync())
           .catch(() => {});
@@ -266,9 +267,13 @@ export function RootNavigator() {
             .then(() => Notifications.clearLastNotificationResponseAsync())
             .catch(() => {});
         });
-      remove = () => subscription.remove();
+      if (cancelled) subscription.remove();
+      else remove = () => subscription.remove();
     });
-    return () => remove?.();
+    return () => {
+      cancelled = true;
+      remove?.();
+    };
   }, [ownerId]);
 
   if (loadingSession) {
@@ -1453,7 +1458,13 @@ function Button({
       <Text
         style={[
           styles.buttonText,
-          { color: danger ? colors.danger : active ? "#fff" : colors.text },
+          {
+            color: danger
+              ? colors.danger
+              : active
+                ? colors.background
+                : colors.text,
+          },
         ]}
       >
         {label}

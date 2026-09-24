@@ -233,6 +233,7 @@ export async function flushPendingPushTokenUpdate(): Promise<void> {
       .from("devices")
       .update({
         token: pending.token,
+        enabled: true,
         updated_at: new Date().toISOString(),
       })
       .eq("id", device.id)
