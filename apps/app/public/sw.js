@@ -1,4 +1,7 @@
-/* global self, clients */
+/* global self, clients, caches, crypto, Request, URL, Response */
+const actionCacheName = "cron-reminder-actions-v1";
+const actionPathPrefix = "/__cron-reminder-action__/";
+
 self.addEventListener("push", (event) => {
   const data = event.data ? event.data.json() : {};
   const soundMode = data.data?.soundMode;
@@ -27,15 +30,27 @@ self.addEventListener("notificationclick", (event) => {
     clients
       .matchAll({ type: "window", includeUncontrolled: true })
       .then(async (windows) => {
-        const client = windows[0] || (await clients.openWindow("/"));
-        if (!client) return;
-        client.postMessage({
+        const action = {
           type: "notification-action",
           action: event.action || "open",
           occurrenceId: data.occurrenceId,
           ownerId: data.ownerId,
-        });
-        if ("focus" in client) await client.focus();
+        };
+        const client = windows[0];
+        if (client) {
+          client.postMessage(action);
+          if ("focus" in client) await client.focus();
+          return;
+        }
+        const cache = await caches.open(actionCacheName);
+        const key = `${actionPathPrefix}${Date.now()}-${crypto.randomUUID()}`;
+        await cache.put(
+          new Request(new URL(key, self.location.origin)),
+          new Response(JSON.stringify(action), {
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+        await clients.openWindow("/");
       }),
   );
 });

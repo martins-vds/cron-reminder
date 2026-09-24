@@ -227,23 +227,48 @@ export function RootNavigator() {
   useEffect(() => {
     if (!ownerId) return;
     if (Platform.OS === "web") {
-      const handleMessage = (event: MessageEvent<unknown>) => {
-        if (typeof event.data !== "object" || event.data === null) return;
-        const data = event.data as Record<string, unknown>;
+      const submitWebAction = async (data: Record<string, unknown>) => {
         if (
           data.type === "notification-action" &&
           data.ownerId === ownerId &&
           typeof data.occurrenceId === "string" &&
           (data.action === "dismiss" || data.action === "snooze")
         ) {
-          void submitNotificationAction(
+          await submitNotificationAction(
             data.occurrenceId,
             data.action,
             ownerId,
-          ).catch(() => {});
+          );
         }
       };
+      const handleMessage = (event: MessageEvent<unknown>) => {
+        if (typeof event.data !== "object" || event.data === null) return;
+        void submitWebAction(event.data as Record<string, unknown>).catch(
+          () => {},
+        );
+      };
       navigator.serviceWorker.addEventListener("message", handleMessage);
+      void caches
+        .open("cron-reminder-actions-v1")
+        .then(async (cache) => {
+          const requests = await cache.keys();
+          for (const request of requests) {
+            if (
+              new URL(request.url).pathname.startsWith(
+                "/__cron-reminder-action__/",
+              )
+            ) {
+              const response = await cache.match(request);
+              if (!response) continue;
+              const data: unknown = await response.json();
+              if (typeof data === "object" && data !== null) {
+                await submitWebAction(data as Record<string, unknown>);
+              }
+              await cache.delete(request);
+            }
+          }
+        })
+        .catch(() => {});
       return () =>
         navigator.serviceWorker.removeEventListener("message", handleMessage);
     }
