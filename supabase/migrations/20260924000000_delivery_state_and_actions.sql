@@ -416,9 +416,7 @@ create or replace function public.record_occurrence_device_delivery(
   p_lease_id uuid
 )
 returns boolean language plpgsql security definer set search_path = '' as $$
-declare
-  active_occurrence text;
-  inserted boolean;
+declare active_occurrence text;
 begin
   select id into active_occurrence
   from public.occurrences
@@ -448,7 +446,9 @@ create or replace function public.record_expo_push_ticket(
   p_lease_id uuid
 )
 returns boolean language plpgsql security definer set search_path = '' as $$
-declare active_occurrence text;
+declare
+  active_occurrence text;
+  inserted boolean;
 begin
   select id into active_occurrence
   from public.occurrences
