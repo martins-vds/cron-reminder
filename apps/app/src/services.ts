@@ -209,7 +209,7 @@ export async function deleteReminder(
   await withSynchronization(async () => {
     await withTombstones(async () => {
       const deleted = await readDeleted();
-      if (!deleted.some((item) => item.id === id))
+      if (!deleted.some((item) => item.id === id && item.ownerId === ownerId))
         deleted.push({ id, ownerId });
       await AsyncStorage.setItem(deletedKey, JSON.stringify(deleted));
     });

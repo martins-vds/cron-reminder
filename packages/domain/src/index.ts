@@ -356,12 +356,16 @@ export function nextOccurrences(
   }
   const interval = CronExpressionParser.parse(schedule.expression, {
     currentDate: after,
-    startDate: schedule.startAt,
+    startDate: inclusiveStartDate(schedule.startAt),
     endDate: schedule.endAt,
     tz: timezone,
   });
   const capped = Math.min(count, schedule.occurrenceLimit ?? count);
   return interval.take(capped).map((value) => value.toDate());
+}
+
+function inclusiveStartDate(value: string | undefined): Date | undefined {
+  return value ? new Date(Date.parse(value) - 1) : undefined;
 }
 
 export function describeSchedule(

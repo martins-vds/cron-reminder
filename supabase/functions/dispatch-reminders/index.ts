@@ -630,8 +630,8 @@ async function deliverToDevice(
     throw new LeaseLostError();
   }
   const payload = {
-    title: reminder.title,
-    body: reminder.notes,
+    title: truncateUtf8(reminder.title, 200),
+    body: truncateUtf8(reminder.notes, 2_000),
     data: {
       reminderId: reminder.id,
       occurrenceId,
@@ -805,7 +805,7 @@ function nextDueAtCursor(
   try {
     const interval = CronExpressionParser.parse(reminder.schedule.expression, {
       currentDate: new Date(boundary.getTime() - (inclusive ? 1 : 0)),
-      startDate: reminder.schedule.startAt,
+      startDate: inclusiveStartDate(reminder.schedule.startAt),
       endDate: reminder.schedule.endAt,
       tz: reminder.timezone,
     });
@@ -840,7 +840,7 @@ function dueOccurrences(
   const results: Date[] = [];
   const interval = CronExpressionParser.parse(reminder.schedule.expression, {
     currentDate: new Date(lowerBound.getTime() - 1),
-    startDate: reminder.schedule.startAt,
+    startDate: inclusiveStartDate(reminder.schedule.startAt),
     endDate: reminder.schedule.endAt,
     tz: reminder.timezone,
   });
@@ -862,6 +862,24 @@ function dueOccurrences(
     };
   }
   return { occurrences: results, truncated: false };
+}
+
+function inclusiveStartDate(value: string | undefined): Date | undefined {
+  return value ? new Date(Date.parse(value) - 1) : undefined;
+}
+
+function truncateUtf8(value: string, maximumBytes: number): string {
+  const encoder = new TextEncoder();
+  if (encoder.encode(value).length <= maximumBytes) return value;
+  let result = "";
+  let bytes = 0;
+  for (const character of value) {
+    const size = encoder.encode(character).length;
+    if (bytes + size > maximumBytes) break;
+    result += character;
+    bytes += size;
+  }
+  return result;
 }
 
 async function sendExpoPush(

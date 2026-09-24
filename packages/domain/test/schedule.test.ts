@@ -34,6 +34,20 @@ describe("cron schedule", () => {
     expect(occurrences[0]?.toISOString()).toBe("2026-09-24T12:00:00.000Z");
   });
 
+  it("includes a cron occurrence exactly at startAt", () => {
+    const [occurrence] = nextOccurrences(
+      {
+        kind: "cron",
+        expression: "0 9 * * *",
+        startAt: "2026-09-24T09:00:00.000Z",
+      },
+      "UTC",
+      new Date("2026-09-24T08:00:00.000Z"),
+      1,
+    );
+    expect(occurrence?.toISOString()).toBe("2026-09-24T09:00:00.000Z");
+  });
+
   it("describes common schedules in English and Brazilian Portuguese", () => {
     expect(
       describeSchedule({ kind: "cron", expression: "0 9 * * *" }, "en"),
