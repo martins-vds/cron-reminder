@@ -194,6 +194,18 @@ export function detectConflict(
   return (localChanged && remoteChanged) || (!localChanged && !remoteChanged);
 }
 
-function sameReminder(left: Reminder, right: Reminder): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
+export function sameReminder(left: Reminder, right: Reminder): boolean {
+  return (
+    JSON.stringify(canonicalize(left)) === JSON.stringify(canonicalize(right))
+  );
+}
+
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (typeof value !== "object" || value === null) return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => [key, canonicalize(item)]),
+  );
 }

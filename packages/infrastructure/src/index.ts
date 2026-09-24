@@ -4,7 +4,7 @@ import type {
   SyncConflict,
   SynchronizationPort,
 } from "@cron-reminder/application";
-import { detectConflict } from "@cron-reminder/application";
+import { detectConflict, sameReminder } from "@cron-reminder/application";
 import type { Reminder, Schedule } from "@cron-reminder/domain";
 import {
   nextOccurrences,
@@ -184,7 +184,7 @@ export function importBackup(
     }
     const local = merged[index];
     if (!local) continue;
-    if (JSON.stringify(local) === JSON.stringify(incoming)) {
+    if (sameReminder(local, incoming)) {
       skipped++;
     } else {
       conflicts.push({ id: incoming.id, local, remote: incoming });
@@ -300,7 +300,7 @@ export class SupabaseReminderRepository implements ReminderRepository {
       return;
     }
     if (reminder.revision === existing.revision) {
-      if (JSON.stringify(reminder) === JSON.stringify(existing)) return;
+      if (sameReminder(reminder, existing)) return;
       throw new Error(
         `Reminder ${reminder.id} has different content at revision ${reminder.revision}; resolve the conflict before saving.`,
       );

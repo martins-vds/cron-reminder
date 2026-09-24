@@ -1,4 +1,4 @@
-import { createClient } from 'npm:@supabase/supabase-js@2.117.1';
+import { createClient } from '@supabase/supabase-js';
 import { corsHeaders } from '../_shared/cors.ts';
 
 const snoozeOptions = [5, 10, 15, 30, 60];

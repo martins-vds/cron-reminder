@@ -62,7 +62,7 @@ npm run build        # Type check and export the web application
 
 - Cron uses exactly five fields: minute, hour, day, month, and weekday.
 - The shortest interval is one minute.
-- Schedules follow the device's current local timezone.
+- New reminders capture the device timezone at creation; existing reminders keep that timezone when the device travels.
 - A nonexistent daylight-saving time moves to the next valid local time.
 - A repeated daylight-saving time fires once.
 - Recurring dismissal affects only the selected occurrence.

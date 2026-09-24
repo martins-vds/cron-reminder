@@ -1,6 +1,6 @@
-import { createClient } from 'npm:@supabase/supabase-js@2.117.1';
-import { CronExpressionParser } from 'npm:cron-parser@5.10.1';
-import webpush from 'npm:web-push@3.6.7';
+import { createClient } from '@supabase/supabase-js';
+import { CronExpressionParser } from 'cron-parser';
+import webpush from 'web-push';
 
 interface ReminderRow {
   id: string;
@@ -38,6 +38,7 @@ interface ScheduledOccurrence {
   recorded: boolean;
 }
 
+// deno-lint-ignore no-explicit-any
 type ServiceClient = ReturnType<typeof createClient<any>>;
 
 const DISPATCH_STATE_ID = true;
@@ -331,7 +332,9 @@ Deno.serve(async (request) => {
   });
   if (updateStateError)
     return json({ error: 'Unable to update dispatch state' }, 500);
-  await client.rpc('delete_expired_history');
+  const { error: cleanupError } = await client.rpc('delete_expired_history');
+  if (cleanupError)
+    return json({ error: 'Unable to delete expired history' }, 500);
   return json({ delivered });
 });
 

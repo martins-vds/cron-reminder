@@ -4,6 +4,7 @@ import {
   ReminderService,
   detectConflict,
   filterReminders,
+  sameReminder,
   type Clock,
   type ReminderRepository,
 } from "../src/index";
@@ -107,5 +108,14 @@ describe("ReminderService", () => {
       ),
     ).toBe(false);
     expect(detectConflict(base, base)).toBe(false);
+    expect(
+      sameReminder(base, {
+        ...base,
+        schedule: {
+          expression: "0 9 * * *",
+          kind: "cron",
+        },
+      }),
+    ).toBe(true);
   });
 });

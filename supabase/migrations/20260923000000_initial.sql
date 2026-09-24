@@ -191,6 +191,7 @@ create table public.history (
   foreign key (occurrence_id, owner_id) references public.occurrences(id, owner_id) on delete cascade
 );
 create index history_owner_occurred_idx on public.history(owner_id, occurred_at desc);
+create index history_occurred_idx on public.history(occurred_at);
 
 create table public.devices (
   id text primary key,

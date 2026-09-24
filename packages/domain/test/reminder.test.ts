@@ -37,6 +37,23 @@ describe("reminder lifecycle", () => {
     ).toThrow("timezone");
   });
 
+  it("normalizes title, notes, and tags when updating", () => {
+    const updated = updateReminder(
+      createReminder(base),
+      {
+        title: "  Updated  ",
+        notes: "  Notes  ",
+        tags: [" home ", "", "home", "work"],
+      },
+      base.now,
+    );
+    expect(updated).toMatchObject({
+      title: "Updated",
+      notes: "Notes",
+      tags: ["home", "work"],
+    });
+  });
+
   it("disables, archives, and restores a reminder", () => {
     const reminder = createReminder(base);
     expect(setReminderEnabled(reminder, false).status).toBe("disabled");

@@ -254,13 +254,23 @@ export function updateReminder(
   >,
   now: string,
 ): Reminder {
+  const title = (changes.title ?? reminder.title).trim();
+  const notes = (changes.notes ?? reminder.notes).trim();
+  const tags = [
+    ...new Set(
+      (changes.tags ?? reminder.tags).map((tag) => tag.trim()).filter(Boolean),
+    ),
+  ];
   const updated = {
     ...reminder,
     ...changes,
+    title,
+    notes,
+    tags,
     revision: reminder.revision + 1,
     updatedAt: now,
   };
-  if (!updated.title.trim()) throw new Error("Reminder title is required.");
+  if (!updated.title) throw new Error("Reminder title is required.");
   validateSchedule(updated.schedule);
   validateTimezone(updated.timezone);
   return updated;
