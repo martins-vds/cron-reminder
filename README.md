@@ -56,7 +56,13 @@ npm run typecheck    # TypeScript project references
 npm run lint         # ESLint architecture and correctness checks
 npm run format:check # Prettier verification
 npm run build        # Type check and export the web application
+npm run test:integration # Dockerized PostgreSQL/PostgREST/Edge Function tests
 ```
+
+The integration command builds the stack in `compose.integration.yml`, applies
+the real Supabase migrations to PostgreSQL, starts PostgREST and the Deno Edge
+Functions, runs the state-transition suite, and removes the containers. Set
+`INTEGRATION_KEEP_RUNNING=1` to leave the stack running for inspection.
 
 ## Scheduling behavior
 
