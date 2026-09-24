@@ -22,15 +22,18 @@ Notifications.setNotificationHandler({
 });
 
 const projectId =
-  Constants.expoConfig?.extra?.eas?.projectId ?? Constants.easConfig?.projectId;
+  process.env.EXPO_PUBLIC_EAS_PROJECT_ID ??
+  Constants.expoConfig?.extra?.eas?.projectId ??
+  Constants.easConfig?.projectId;
 
 export function subscribeToPushTokenChanges(
   listener: (token: string) => void,
 ): () => void {
+  if (!projectId) return () => {};
   const subscription = Notifications.addPushTokenListener(() => {
-    void Notifications.getExpoPushTokenAsync(
-      projectId ? { projectId } : undefined,
-    ).then((token) => listener(token.data));
+    void Notifications.getExpoPushTokenAsync({ projectId })
+      .then((token) => listener(token.data))
+      .catch(() => {});
   });
   return () => subscription.remove();
 }
@@ -74,13 +77,12 @@ export class DeviceNotificationAdapter implements NotificationPort {
 
   async register(ownerId: string): Promise<NotificationRegistration | null> {
     if ((await this.requestPermission()) === "denied") return null;
+    if (!projectId) throw new Error("EXPO_PUBLIC_EAS_PROJECT_ID is required.");
     await Notifications.setNotificationCategoryAsync("reminder", [
       { identifier: "dismiss", buttonTitle: "Dismiss" },
       { identifier: "snooze", buttonTitle: "Snooze" },
     ]);
-    const token = await Notifications.getExpoPushTokenAsync(
-      projectId ? { projectId } : undefined,
-    );
+    const token = await Notifications.getExpoPushTokenAsync({ projectId });
     return {
       id: token.data,
       ownerId,

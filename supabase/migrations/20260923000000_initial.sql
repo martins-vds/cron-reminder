@@ -106,6 +106,7 @@ begin
     jsonb_typeof(value->'occurrenceLimit') <> 'number'
     or (value->>'occurrenceLimit')::numeric < 1
     or (value->>'occurrenceLimit')::numeric % 1 <> 0
+    or (value->>'occurrenceLimit')::numeric > 9007199254740991
   ) then return false; end if;
   if value ? 'startAt' then
     if jsonb_typeof(value->'startAt') <> 'string' then return false; end if;

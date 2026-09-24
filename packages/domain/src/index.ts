@@ -188,7 +188,7 @@ export function validateSchedule(schedule: Schedule): void {
   if (!result.valid) throw new Error(result.error);
   if (
     schedule.occurrenceLimit !== undefined &&
-    (!Number.isInteger(schedule.occurrenceLimit) ||
+    (!Number.isSafeInteger(schedule.occurrenceLimit) ||
       schedule.occurrenceLimit < 1)
   ) {
     throw new Error("Occurrence limit must be a positive integer.");

@@ -2,6 +2,8 @@ alter table public.occurrences add column delivered_at timestamptz;
 alter table public.occurrences add column delivery_attempts integer not null default 0 check (delivery_attempts >= 0);
 alter table public.occurrences add column next_delivery_attempt_at timestamptz;
 alter table public.occurrences add column delivery_lease_id uuid;
+create index if not exists occurrences_created_idx
+  on public.occurrences(created_at);
 alter type public.occurrence_status add value if not exists 'delivering' after 'triggered';
 create index if not exists occurrences_pending_delivery_idx
   on public.occurrences(next_delivery_attempt_at, acted_at)

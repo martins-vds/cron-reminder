@@ -134,6 +134,13 @@ describe("cron schedule", () => {
       validateSchedule({
         kind: "cron",
         expression: "0 9 * * *",
+        occurrenceLimit: Number.MAX_SAFE_INTEGER + 1,
+      }),
+    ).toThrow("positive integer");
+    expect(() =>
+      validateSchedule({
+        kind: "cron",
+        expression: "0 9 * * *",
         occurrenceLimit: Number.NaN,
       }),
     ).toThrow("positive integer");
