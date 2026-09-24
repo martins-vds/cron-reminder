@@ -203,7 +203,7 @@ export const synchronization = supabase
 
 export async function rememberDevice(id: string, token: string): Promise<void> {
   await AsyncStorage.setItem(deviceKey, JSON.stringify({ id, token }));
-  await clearPendingPushTokenUpdate();
+  await flushPendingPushTokenUpdate();
 }
 
 export async function getRememberedDeviceId(): Promise<string | null> {

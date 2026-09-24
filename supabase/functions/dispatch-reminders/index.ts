@@ -78,13 +78,16 @@ Deno.serve(async (request) => {
     required('SUPABASE_URL'),
     required('SUPABASE_SERVICE_ROLE_KEY'),
   );
+  const runDeadline = Date.now() + RUN_DEADLINE_MS;
   try {
-    await processExpoReceipts(client);
+    await processExpoReceipts(
+      client,
+      Math.min(runDeadline, Date.now() + 10_000),
+    );
   } catch (error) {
     console.error('Unable to process Expo push receipts', error);
   }
   const now = new Date();
-  const runDeadline = Date.now() + RUN_DEADLINE_MS;
   const windowEnd = new Date(now.getTime() + 1);
   const { data: state, error: stateError } = await client
     .from('dispatch_state')
@@ -1063,12 +1066,19 @@ async function sendExpoPush(
   return ticketId;
 }
 
-async function processExpoReceipts(client: ServiceClient): Promise<void> {
+async function processExpoReceipts(
+  client: ServiceClient,
+  deadline: number,
+): Promise<void> {
   const now = new Date();
+  const receiptReadyBefore = new Date(
+    now.getTime() - 15 * 60_000,
+  ).toISOString();
   const { data: newTickets, error: newTicketsError } = await client
     .from('expo_push_tickets')
     .select('ticket_id,created_at,last_checked_at')
     .is('last_checked_at', null)
+    .lte('created_at', receiptReadyBefore)
     .order('created_at')
     .limit(EXPO_RECEIPT_BATCH_SIZE);
   if (newTicketsError) throw newTicketsError;
@@ -1077,20 +1087,22 @@ async function processExpoReceipts(client: ServiceClient): Promise<void> {
     .select('ticket_id,created_at,last_checked_at')
     .lte(
       'last_checked_at',
-      new Date(now.getTime() - 60_000).toISOString(),
+      receiptReadyBefore,
     )
     .order('last_checked_at')
     .order('created_at')
     .limit(EXPO_RECEIPT_BATCH_SIZE);
   if (retryTicketsError) throw retryTicketsError;
-  await processExpoReceiptBatch(client, newTickets ?? [], now);
-  await processExpoReceiptBatch(client, retryTickets ?? [], now);
+  await processExpoReceiptBatch(client, newTickets ?? [], now, deadline);
+  if (Date.now() < deadline)
+    await processExpoReceiptBatch(client, retryTickets ?? [], now, deadline);
 }
 
 async function processExpoReceiptBatch(
   client: ServiceClient,
   tickets: Array<{ ticket_id: string; created_at: string }>,
   now: Date,
+  deadline: number,
 ): Promise<void> {
   if (!tickets?.length) return;
   for (
@@ -1098,6 +1110,7 @@ async function processExpoReceiptBatch(
     offset < tickets.length;
     offset += EXPO_RECEIPT_REQUEST_SIZE
   ) {
+    if (Date.now() >= deadline) break;
     await processExpoReceiptRequest(
       client,
       tickets.slice(offset, offset + EXPO_RECEIPT_REQUEST_SIZE),
