@@ -78,6 +78,7 @@ begin
     if coalesce(jsonb_typeof(value->'at') = 'string', false) = false then
       return false;
     end if;
+    if value->>'at' !~ '(Z|[+-][0-9]{2}:[0-9]{2})$' then return false; end if;
     perform (value->>'at')::timestamptz;
     return true;
   end if;
@@ -107,10 +108,12 @@ begin
   ) then return false; end if;
   if value ? 'startAt' then
     if jsonb_typeof(value->'startAt') <> 'string' then return false; end if;
+    if value->>'startAt' !~ '(Z|[+-][0-9]{2}:[0-9]{2})$' then return false; end if;
     starts_at := (value->>'startAt')::timestamptz;
   end if;
   if value ? 'endAt' then
     if jsonb_typeof(value->'endAt') <> 'string' then return false; end if;
+    if value->>'endAt' !~ '(Z|[+-][0-9]{2}:[0-9]{2})$' then return false; end if;
     ends_at := (value->>'endAt')::timestamptz;
   end if;
   return starts_at is null or ends_at is null or starts_at <= ends_at;

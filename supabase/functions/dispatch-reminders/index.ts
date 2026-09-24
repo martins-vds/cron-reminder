@@ -42,6 +42,12 @@ interface ScheduledOccurrence {
   recorded: boolean;
 }
 
+interface LimitedReminderCandidates {
+  reminder: ReminderRow;
+  dueResult: ReturnType<typeof dueOccurrences>;
+  occurrences: Date[];
+}
+
 // deno-lint-ignore no-explicit-any
 type ServiceClient = ReturnType<typeof createClient<any>>;
 
@@ -59,6 +65,7 @@ const MAX_DEVICES_PER_DELIVERY_ATTEMPT = 10;
 const EXPO_RECEIPT_BATCH_SIZE = 1_000;
 const EXPO_RECEIPT_REQUEST_SIZE = 300;
 const RECEIPT_RPC_CONCURRENCY = 25;
+const DATABASE_QUERY_CONCURRENCY = 25;
 const ALLOWED_PUSH_HOSTS = [
   'fcm.googleapis.com',
   'android.googleapis.com',
@@ -130,6 +137,7 @@ Deno.serve(async (request) => {
   }
 
   const scheduled: ScheduledOccurrence[] = [];
+  const limitedCandidates: LimitedReminderCandidates[] = [];
   const exhaustedReminderIds = new Set<string>();
   const cursorUpdateReminderIds = new Set<string>();
   let candidateGenerationTruncated = false;
@@ -150,7 +158,7 @@ Deno.serve(async (request) => {
     } catch {
       continue;
     }
-    let occurrences = dueResult.occurrences;
+    const occurrences = dueResult.occurrences;
     if (!occurrences.length) {
       exhaustedReminderIds.add(reminderStateKey(reminder));
       continue;
@@ -160,75 +168,7 @@ Deno.serve(async (request) => {
       reminder.schedule.kind === 'cron' &&
       reminder.schedule.occurrenceLimit !== undefined
     ) {
-      const recordedIds = await loadRecordedOccurrenceIds(
-        client,
-        reminder.id,
-        reminder.owner_id,
-        occurrences,
-      );
-      const { count, error: countError } = await client
-        .from('occurrences')
-        .select('id', { count: 'exact', head: true })
-        .eq('reminder_id', reminder.id)
-        .eq('owner_id', reminder.owner_id);
-      if (countError) return json({ error: 'Unable to count occurrences' }, 500);
-      const remaining = reminder.schedule.occurrenceLimit - (count ?? 0);
-      if (remaining <= 0) {
-        exhaustedReminderIds.add(reminderStateKey(reminder));
-        dueResult.truncated = false;
-        continue;
-      }
-      const unrecorded = occurrences.filter(
-        (due) =>
-          !recordedIds.has(`${reminder.id}:${due.toISOString()}`),
-      );
-      if (remaining < unrecorded.length) dueResult.truncated = false;
-      const allowedUnrecorded = new Set(
-        unrecorded
-          .slice(0, remaining)
-          .map((due) => `${reminder.id}:${due.toISOString()}`),
-      );
-      occurrences = occurrences.filter((due) => {
-        const id = `${reminder.id}:${due.toISOString()}`;
-        return recordedIds.has(id) || allowedUnrecorded.has(id);
-      });
-      for (const due of occurrences) {
-        if (
-          nextReminderCursor &&
-          (due > nextReminderCursor.due ||
-            (due.getTime() === nextReminderCursor.due.getTime() &&
-              compareReminderIdentity(
-                reminder.owner_id,
-                reminder.id,
-                nextReminderCursor.ownerId,
-                nextReminderCursor.id,
-              ) >= 0))
-        ) {
-          candidateGenerationTruncated = true;
-          continue;
-        }
-        if (
-          due.getTime() === windowStart.getTime() &&
-          windowStartReminderId !== null &&
-          windowStartOwnerId !== null &&
-          compareReminderIdentity(
-            reminder.owner_id,
-            reminder.id,
-            windowStartOwnerId,
-            windowStartReminderId,
-          ) <= 0
-        ) {
-          continue;
-        }
-        scheduled.push({
-          reminder,
-          due,
-          recorded: recordedIds.has(
-            `${reminder.id}:${due.toISOString()}`,
-          ),
-        });
-      }
-      candidateGenerationTruncated ||= dueResult.truncated;
+      limitedCandidates.push({ reminder, dueResult, occurrences });
       candidateCapacity -= occurrences.length;
       continue;
     }
@@ -266,37 +206,131 @@ Deno.serve(async (request) => {
     candidateCapacity -= occurrences.length;
   }
 
+  for (
+    let offset = 0;
+    offset < limitedCandidates.length;
+    offset += DATABASE_QUERY_CONCURRENCY
+  ) {
+    const chunk = limitedCandidates.slice(
+      offset,
+      offset + DATABASE_QUERY_CONCURRENCY,
+    );
+    let states: Array<{ recordedIds: Set<string>; count: number }>;
+    try {
+      states = await Promise.all(
+        chunk.map(async ({ reminder, occurrences }) => {
+          const [recordedIds, countResult] = await Promise.all([
+            loadRecordedOccurrenceIds(
+              client,
+              reminder.id,
+              reminder.owner_id,
+              occurrences,
+            ),
+            client
+              .from('occurrences')
+              .select('id', { count: 'exact', head: true })
+              .eq('reminder_id', reminder.id)
+              .eq('owner_id', reminder.owner_id),
+          ]);
+          if (countResult.error) throw countResult.error;
+          return { recordedIds, count: countResult.count ?? 0 };
+        }),
+      );
+    } catch {
+      return json({ error: 'Unable to load occurrence limits' }, 500);
+    }
+    for (let index = 0; index < chunk.length; index++) {
+      const candidate = chunk[index];
+      const state = states[index];
+      if (!candidate || !state) continue;
+      const { reminder, dueResult } = candidate;
+      let occurrences = candidate.occurrences;
+      const occurrenceLimit =
+        reminder.schedule.kind === 'cron'
+          ? reminder.schedule.occurrenceLimit
+          : undefined;
+      if (occurrenceLimit === undefined) continue;
+      const remaining = occurrenceLimit - state.count;
+      if (remaining <= 0) {
+        exhaustedReminderIds.add(reminderStateKey(reminder));
+        dueResult.truncated = false;
+        continue;
+      }
+      const unrecorded = occurrences.filter(
+        (due) =>
+          !state.recordedIds.has(
+            `${reminder.id}:${due.toISOString()}`,
+          ),
+      );
+      if (remaining < unrecorded.length) dueResult.truncated = false;
+      const allowedUnrecorded = new Set(
+        unrecorded
+          .slice(0, remaining)
+          .map((due) => `${reminder.id}:${due.toISOString()}`),
+      );
+      occurrences = occurrences.filter((due) => {
+        const id = `${reminder.id}:${due.toISOString()}`;
+        return state.recordedIds.has(id) || allowedUnrecorded.has(id);
+      });
+      for (const due of occurrences) {
+        if (
+          nextReminderCursor &&
+          (due > nextReminderCursor.due ||
+            (due.getTime() === nextReminderCursor.due.getTime() &&
+              compareReminderIdentity(
+                reminder.owner_id,
+                reminder.id,
+                nextReminderCursor.ownerId,
+                nextReminderCursor.id,
+              ) >= 0))
+        ) {
+          candidateGenerationTruncated = true;
+          continue;
+        }
+        if (
+          due.getTime() === windowStart.getTime() &&
+          windowStartReminderId !== null &&
+          windowStartOwnerId !== null &&
+          compareReminderIdentity(
+            reminder.owner_id,
+            reminder.id,
+            windowStartOwnerId,
+            windowStartReminderId,
+          ) <= 0
+        ) {
+          continue;
+        }
+        scheduled.push({
+          reminder,
+          due,
+          recorded: state.recordedIds.has(
+            `${reminder.id}:${due.toISOString()}`,
+          ),
+        });
+      }
+      candidateGenerationTruncated ||= dueResult.truncated;
+    }
+  }
+
   scheduled.sort(
     (left, right) =>
       left.due.getTime() - right.due.getTime() ||
       left.reminder.owner_id.localeCompare(right.reminder.owner_id) ||
       left.reminder.id.localeCompare(right.reminder.id),
   );
-  const selected: ScheduledOccurrence[] = [];
   let lastExamined: ScheduledOccurrence | undefined;
   let scheduledIndex = 0;
-  for (; scheduledIndex < scheduled.length; scheduledIndex++) {
-    const candidate = scheduled[scheduledIndex];
-    if (!candidate) continue;
-    if (candidate.recorded) {
-      lastExamined = candidate;
-      cursorUpdateReminderIds.add(reminderStateKey(candidate.reminder));
-      continue;
-    }
-    if (selected.length >= remainingWork) break;
-    selected.push(candidate);
-  }
+  let unrecordedSelected = 0;
   let deadlineTruncated = false;
-  for (
-    let offset = 0;
-    offset < selected.length;
-    offset += OCCURRENCE_CONCURRENCY
-  ) {
+  let pendingChunk: ScheduledOccurrence[] = [];
+  const processPendingChunk = async (): Promise<boolean> => {
+    if (!pendingChunk.length) return true;
     if (Date.now() >= runDeadline) {
       deadlineTruncated = true;
-      break;
+      return false;
     }
-    const chunk = selected.slice(offset, offset + OCCURRENCE_CONCURRENCY);
+    const chunk = pendingChunk;
+    pendingChunk = [];
     try {
       const results = await Promise.all(
         chunk.map(({ reminder, due }) =>
@@ -305,11 +339,43 @@ Deno.serve(async (request) => {
       );
       delivered += results.reduce((total, value) => total + value, 0);
     } catch {
-      return json({ error: 'Unable to process scheduled occurrence' }, 500);
+      throw new Error('Unable to process scheduled occurrence');
     }
     for (const candidate of chunk) {
       cursorUpdateReminderIds.add(reminderStateKey(candidate.reminder));
       lastExamined = candidate;
+    }
+    return true;
+  };
+  for (; scheduledIndex < scheduled.length; scheduledIndex++) {
+    const candidate = scheduled[scheduledIndex];
+    if (!candidate) continue;
+    if (candidate.recorded) {
+      try {
+        if (!(await processPendingChunk())) break;
+      } catch {
+        return json({ error: 'Unable to process scheduled occurrence' }, 500);
+      }
+      lastExamined = candidate;
+      cursorUpdateReminderIds.add(reminderStateKey(candidate.reminder));
+      continue;
+    }
+    if (unrecordedSelected >= remainingWork) break;
+    pendingChunk.push(candidate);
+    unrecordedSelected++;
+    if (pendingChunk.length >= OCCURRENCE_CONCURRENCY) {
+      try {
+        if (!(await processPendingChunk())) break;
+      } catch {
+        return json({ error: 'Unable to process scheduled occurrence' }, 500);
+      }
+    }
+  }
+  if (!deadlineTruncated) {
+    try {
+      await processPendingChunk();
+    } catch {
+      return json({ error: 'Unable to process scheduled occurrence' }, 500);
     }
   }
   const hasUnprocessedScheduleWork =

@@ -39,6 +39,7 @@ import {
   describeSchedule,
   nextOccurrences,
   validateCronExpression,
+  validateSchedule,
   type Reminder,
   type ReminderSound,
   type Schedule,
@@ -903,7 +904,14 @@ function ReminderEditor({
   const validation =
     schedule.kind === "cron"
       ? validateCronExpression(schedule.expression)
-      : { valid: Number.isFinite(Date.parse(onceAt)) };
+      : (() => {
+          try {
+            validateSchedule(schedule);
+            return { valid: true };
+          } catch {
+            return { valid: false };
+          }
+        })();
   let preview: Date[] = [];
   if (validation.valid) {
     try {

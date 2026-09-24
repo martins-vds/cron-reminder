@@ -115,6 +115,10 @@ begin
   update public.occurrences
   set status = 'delivering',
       acted_at = p_now,
+      reminder_revision = case
+        when status = 'postponed' then p_reminder_revision
+        else reminder_revision
+      end,
       delivery_lease_id = p_lease_id
   where id = p_occurrence_id
     and owner_id = p_owner_id

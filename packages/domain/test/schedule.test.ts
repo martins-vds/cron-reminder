@@ -113,6 +113,15 @@ describe("cron schedule", () => {
     ).toThrow("Schedule start");
   });
 
+  it("requires an explicit timezone designator", () => {
+    expect(() =>
+      validateSchedule({
+        kind: "once",
+        at: "2026-09-24T09:00:00",
+      }),
+    ).toThrow("valid date");
+  });
+
   it("requires a positive integer occurrence limit", () => {
     expect(() =>
       validateSchedule({
