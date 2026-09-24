@@ -24,6 +24,10 @@ interface ReminderRow {
 const DISPATCH_STATE_ID = true;
 const MAX_OCCURRENCES_PER_RUN = 500;
 const REMINDER_PAGE_SIZE = 1_000;
+const DELIVERY_LEASE_MS = 5 * 60_000;
+const MAX_DELIVERY_ATTEMPTS = 5;
+const BASE_RETRY_DELAY_MS = 60_000;
+const MAX_RETRY_DELAY_MS = 60 * 60_000;
 const ALLOWED_PUSH_HOSTS = [
   'fcm.googleapis.com',
   'android.googleapis.com',
@@ -175,12 +179,15 @@ async function claimUndelivered(
   client: ReturnType<typeof createClient>,
   occurrenceId: string,
 ): Promise<boolean> {
+  const now = new Date();
   const { data, error } = await client
     .from('occurrences')
-    .update({ status: 'delivering', acted_at: new Date().toISOString() })
+    .update({ status: 'delivering', acted_at: now.toISOString() })
     .eq('id', occurrenceId)
     .is('delivered_at', null)
-    .in('status', ['triggered', 'delivery-failed'])
+    .lt('delivery_attempts', MAX_DELIVERY_ATTEMPTS)
+    .or(deliveryAttemptDueFilter(now))
+    .or(deliverableStatusFilter(now))
     .select('id')
     .maybeSingle();
   if (error) throw error;
@@ -190,11 +197,14 @@ async function claimUndelivered(
 async function dispatchPendingDeliveries(
   client: ReturnType<typeof createClient>,
 ): Promise<number> {
+  const now = new Date();
   const { data, error } = await client
     .from('occurrences')
     .select('id,reminder_id')
     .is('delivered_at', null)
-    .in('status', ['triggered', 'delivery-failed']);
+    .lt('delivery_attempts', MAX_DELIVERY_ATTEMPTS)
+    .or(deliveryAttemptDueFilter(now))
+    .or(deliverableStatusFilter(now));
   if (error) throw error;
   let delivered = 0;
   for (const occurrence of data ?? []) {
@@ -274,10 +284,29 @@ async function markDeliveryFailed(
   reminder: ReminderRow,
   occurrenceId: string,
 ) {
+  const { data: occurrence, error: loadError } = await client
+    .from('occurrences')
+    .select('delivery_attempts')
+    .eq('id', occurrenceId)
+    .maybeSingle();
+  if (loadError) throw loadError;
+  const attempts =
+    typeof occurrence?.delivery_attempts === 'number'
+      ? occurrence.delivery_attempts + 1
+      : 1;
+  const retryAt =
+    attempts >= MAX_DELIVERY_ATTEMPTS
+      ? null
+      : new Date(Date.now() + retryDelayMs(attempts)).toISOString();
   const { error: updateError } = await client
     .from('occurrences')
-    .update({ status: 'delivery-failed' })
-    .eq('id', occurrenceId);
+    .update({
+      status: 'delivery-failed',
+      delivery_attempts: attempts,
+      next_delivery_attempt_at: retryAt,
+    })
+    .eq('id', occurrenceId)
+    .eq('status', 'delivering');
   if (updateError) throw updateError;
   await recordHistory(client, reminder, occurrenceId, 'delivery-failed');
 }
@@ -289,7 +318,7 @@ async function deliverToDevices(
 ): Promise<number> {
   const { data: devices, error } = await client
     .from('devices')
-    .select('platform,token')
+    .select('id,platform,token')
     .eq('owner_id', reminder.owner_id)
     .eq('enabled', true);
   if (error) throw error;
@@ -308,15 +337,72 @@ async function deliverToDevices(
         await sendExpoPush(device.token, payload, reminder.sound);
       }
       delivered++;
-    } catch {
+    } catch (error) {
       failed++;
-      await recordHistory(client, reminder, occurrenceId, 'delivery-failed');
+      if (isPermanentDeliveryFailure(error)) {
+        await disableDevice(client, device.id);
+      }
     }
   }
   if ((devices?.length ?? 0) > 0 && delivered === 0 && failed > 0) {
     throw new Error('All device deliveries failed');
   }
   return delivered;
+}
+
+function deliveryAttemptDueFilter(now: Date): string {
+  return `next_delivery_attempt_at.is.null,next_delivery_attempt_at.lte.${now.toISOString()}`;
+}
+
+function deliverableStatusFilter(now: Date): string {
+  const staleBefore = new Date(now.getTime() - DELIVERY_LEASE_MS).toISOString();
+  return [
+    'status.eq.triggered',
+    'status.eq.delivery-failed',
+    `and(status.eq.delivering,acted_at.lt.${staleBefore})`,
+    'and(status.eq.delivering,acted_at.is.null)',
+  ].join(',');
+}
+
+function retryDelayMs(attempts: number): number {
+  return Math.min(
+    BASE_RETRY_DELAY_MS * 2 ** Math.max(0, attempts - 1),
+    MAX_RETRY_DELAY_MS,
+  );
+}
+
+async function disableDevice(
+  client: ReturnType<typeof createClient>,
+  deviceId: string,
+) {
+  const { error } = await client
+    .from('devices')
+    .update({ enabled: false, updated_at: new Date().toISOString() })
+    .eq('id', deviceId);
+  if (error) throw error;
+}
+
+function isPermanentDeliveryFailure(error: unknown): boolean {
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'permanent' in error &&
+    (error as { permanent?: unknown }).permanent === true
+  ) {
+    return true;
+  }
+  if (typeof error !== 'object' || error === null || !('statusCode' in error)) {
+    return false;
+  }
+  const statusCode = (error as { statusCode?: unknown }).statusCode;
+  return (
+    typeof statusCode === 'number' &&
+    (statusCode === 400 || statusCode === 404 || statusCode === 410)
+  );
+}
+
+class PermanentDeliveryError extends Error {
+  permanent = true;
 }
 
 async function recordHistory(
@@ -394,13 +480,30 @@ async function sendExpoPush(
       categoryId: 'reminder',
     }),
   });
-  if (!response.ok) throw new Error('Expo push failed');
+  if (!response.ok) {
+    if ([400, 404, 410].includes(response.status)) {
+      throw new PermanentDeliveryError('Expo push failed permanently');
+    }
+    throw new Error('Expo push failed');
+  }
   const ticket: unknown = await response.json();
+  const data =
+    typeof ticket === 'object' && ticket !== null
+      ? (ticket as { data?: unknown }).data
+      : undefined;
   if (
-    typeof ticket !== 'object' ||
-    ticket === null ||
-    typeof (ticket as { data?: unknown }).data !== 'object' ||
-    (ticket as { data: { status?: unknown } }).data.status !== 'ok'
+    typeof data === 'object' &&
+    data !== null &&
+    (data as { status?: unknown }).status === 'error' &&
+    (data as { details?: { error?: unknown } }).details?.error ===
+      'DeviceNotRegistered'
+  ) {
+    throw new PermanentDeliveryError('Expo device is not registered');
+  }
+  if (
+    typeof data !== 'object' ||
+    data === null ||
+    (data as { status?: unknown }).status !== 'ok'
   ) {
     throw new Error('Expo rejected the push notification');
   }

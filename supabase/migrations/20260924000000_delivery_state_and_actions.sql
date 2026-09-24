@@ -1,4 +1,6 @@
 alter table public.occurrences add column delivered_at timestamptz;
+alter table public.occurrences add column delivery_attempts integer not null default 0 check (delivery_attempts >= 0);
+alter table public.occurrences add column next_delivery_attempt_at timestamptz;
 alter type public.occurrence_status add value if not exists 'delivering' after 'triggered';
 
 drop policy if exists "owners manage occurrences" on public.occurrences;
@@ -44,9 +46,14 @@ create or replace function public.act_on_occurrence(
   p_event text,
   p_snoozed_until timestamptz
 )
-returns boolean language plpgsql security invoker set search_path = '' as $$
-declare acted public.occurrences%rowtype;
+returns boolean language plpgsql security definer set search_path = '' as $$
+declare
+  acted public.occurrences%rowtype;
+  requesting_user uuid := auth.uid();
 begin
+  if requesting_user is null then
+    return false;
+  end if;
   if p_event not in ('dismissed', 'postponed') then
     raise exception 'Unsupported occurrence action %', p_event;
   end if;
@@ -57,7 +64,7 @@ begin
   set status = p_event::public.occurrence_status,
       acted_at = now(),
       snoozed_until = case when p_event = 'postponed' then p_snoozed_until else null end
-  where id = p_occurrence_id and status = 'triggered'
+  where id = p_occurrence_id and owner_id = requesting_user and status = 'triggered'
   returning * into acted;
   if not found then
     return false;
