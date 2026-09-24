@@ -1,6 +1,7 @@
 import { StatusBar } from "expo-status-bar";
 import { Stack, router, usePathname } from "expo-router";
 import { getLocales } from "expo-localization";
+import * as Crypto from "expo-crypto";
 import {
   createContext,
   useCallback,
@@ -49,10 +50,12 @@ import {
 import {
   authentication,
   deleteReminder,
+  flushPendingDeviceDeregistrations,
   flushNotificationActions,
   localRepository,
   rememberDevice,
   resolveSynchronizationConflict,
+  runReminderMutation,
   submitNotificationAction,
   supabase,
   synchronizeReminders,
@@ -118,6 +121,7 @@ export function RootNavigator() {
   const t = createTranslator(locale);
 
   useEffect(() => {
+    void flushPendingDeviceDeregistrations().catch(() => {});
     if (!supabase) {
       setLoadingSession(false);
       return;
@@ -514,8 +518,12 @@ function ReminderList({
     );
   }
 
-  async function mutate(action: () => Promise<unknown>) {
-    await action();
+  async function mutate(
+    action: () => Promise<unknown>,
+    alreadySerialized = false,
+  ) {
+    if (alreadySerialized) await action();
+    else await runReminderMutation(action);
     try {
       setSyncConflicts(await synchronizeReminders(ownerId));
     } catch {
@@ -532,7 +540,8 @@ function ReminderList({
       {
         text: t("delete"),
         style: "destructive",
-        onPress: () => void mutate(() => deleteReminder(reminder.id, ownerId)),
+        onPress: () =>
+          void mutate(() => deleteReminder(reminder.id, ownerId), true),
       },
     ]);
   }
@@ -788,8 +797,11 @@ function ReminderEditor({
         timezone,
         sound,
       };
-      if (reminder) await service.update(reminder.id, changes);
-      else await service.create({ ...changes, ownerId });
+      await runReminderMutation(() =>
+        reminder
+          ? service.update(reminder.id, changes)
+          : service.create({ ...changes, ownerId }),
+      );
       await synchronizeReminders(ownerId).catch(() => []);
       onSaved();
     } catch (reason) {
@@ -1002,11 +1014,15 @@ function Settings({
 
   async function importJson() {
     try {
-      const current = await localRepository.list(ownerId);
-      const result = importBackup(backupText, current, ownerId);
-      await Promise.all(
-        result.merged.map((item) => localRepository.save(item)),
-      );
+      const result = await runReminderMutation(async () => {
+        const current = await localRepository.list(ownerId);
+        const imported = importBackup(backupText, current, ownerId);
+        await Promise.all(
+          imported.merged.map((item) => localRepository.save(item)),
+        );
+        return imported;
+      });
+      await synchronizeReminders(ownerId).catch(() => []);
       setImportConflicts(result.conflicts);
       setBackupMessage(
         `${result.imported} imported, ${result.skipped} skipped, ${result.conflicts.length} conflict(s) require manual resolution.`,
@@ -1050,17 +1066,21 @@ function Settings({
     }
 
     if (supabase) {
+      const deregistrationToken = Crypto.randomUUID();
       const { error } = await supabase.from("devices").upsert({
         id: registration.id,
         owner_id: registration.ownerId,
         platform: registration.platform,
         token: registration.token,
+        deregistration_token: deregistrationToken,
         enabled: true,
         updated_at: new Date().toISOString(),
       });
       if (error) throw error;
+      await rememberDevice(registration.id, deregistrationToken);
+    } else {
+      return;
     }
-    await rememberDevice(registration.id);
     Alert.alert("Notifications", "This device is registered.");
   }
   return (
@@ -1138,12 +1158,18 @@ function Settings({
                 label={`Keep ${choice === "local" ? "existing" : "imported"}`}
                 colors={colors}
                 onPress={() =>
-                  void localRepository
-                    .save({
+                  void runReminderMutation(() =>
+                    localRepository.save({
                       ...conflict[choice],
-                      revision: conflict[choice].revision + 1,
+                      revision:
+                        Math.max(
+                          conflict.local.revision,
+                          conflict.remote.revision,
+                        ) + 1,
                       updatedAt: new Date().toISOString(),
-                    })
+                    }),
+                  )
+                    .then(() => synchronizeReminders(ownerId).catch(() => []))
                     .then(() =>
                       setImportConflicts((items) =>
                         items.filter(({ id }) => id !== conflict.id),

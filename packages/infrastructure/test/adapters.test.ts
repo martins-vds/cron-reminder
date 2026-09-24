@@ -401,4 +401,30 @@ describe("synchronization", () => {
     expect((await local.get(localEdit.id))?.title).toBe("Local edit");
     expect(fake.reminders.get(remoteEdit.id)?.title).toBe("Remote edit");
   });
+
+  it("resolves conflicts above both branch revisions", async () => {
+    const local = new JsonReminderRepository(new MemoryStore());
+    const localEdit = reminder({ title: "Local edit", revision: 2 });
+    const remoteEdit = reminder({ title: "Remote edit", revision: 3 });
+    await local.save(localEdit);
+    await local.setSyncedRevision(localEdit.id, 1);
+
+    const fake = new FakeSupabaseClient();
+    fake.reminders.set(remoteEdit.id, toDatabaseRow(remoteEdit));
+    const remote = new SupabaseReminderRepository(
+      fake as unknown as ConstructorParameters<
+        typeof SupabaseReminderRepository
+      >[0],
+    );
+    const adapter = new OfflineSynchronizationAdapter(local, remote);
+
+    await adapter.resolve(
+      { id: localEdit.id, local: localEdit, remote: remoteEdit },
+      localEdit,
+    );
+
+    expect((await local.get(localEdit.id))?.revision).toBe(4);
+    expect(fake.reminders.get(remoteEdit.id)?.revision).toBe(4);
+    expect(await local.getSyncedRevision(localEdit.id)).toBe(4);
+  });
 });

@@ -34,6 +34,7 @@ interface DispatchWorkResult {
 interface ScheduledOccurrence {
   reminder: ReminderRow;
   due: Date;
+  recorded: boolean;
 }
 
 type ServiceClient = ReturnType<typeof createClient<any>>;
@@ -113,15 +114,53 @@ Deno.serve(async (request) => {
       reminder.schedule.kind === 'cron' &&
       reminder.schedule.occurrenceLimit !== undefined
     ) {
+      const recordedIds = await loadRecordedOccurrenceIds(
+        client,
+        reminder.id,
+        occurrences,
+      );
       const { count, error: countError } = await client
         .from('occurrences')
         .select('id', { count: 'exact', head: true })
         .eq('reminder_id', reminder.id);
       if (countError) return json({ error: 'Unable to count occurrences' }, 500);
       const remaining = reminder.schedule.occurrenceLimit - (count ?? 0);
-      if (remaining <= 0) continue;
-      if (remaining < occurrences.length) dueResult.truncated = false;
-      occurrences = occurrences.slice(0, remaining);
+      if (remaining <= 0) {
+        dueResult.truncated = false;
+        continue;
+      }
+      const unrecorded = occurrences.filter(
+        (due) =>
+          !recordedIds.has(`${reminder.id}:${due.toISOString()}`),
+      );
+      if (remaining < unrecorded.length) dueResult.truncated = false;
+      const allowedUnrecorded = new Set(
+        unrecorded
+          .slice(0, remaining)
+          .map((due) => `${reminder.id}:${due.toISOString()}`),
+      );
+      occurrences = occurrences.filter((due) => {
+        const id = `${reminder.id}:${due.toISOString()}`;
+        return recordedIds.has(id) || allowedUnrecorded.has(id);
+      });
+      for (const due of occurrences) {
+        if (
+          due.getTime() === windowStart.getTime() &&
+          windowStartReminderId !== null &&
+          reminder.id <= windowStartReminderId
+        ) {
+          continue;
+        }
+        scheduled.push({
+          reminder,
+          due,
+          recorded: recordedIds.has(
+            `${reminder.id}:${due.toISOString()}`,
+          ),
+        });
+      }
+      candidateGenerationTruncated ||= dueResult.truncated;
+      continue;
     }
     candidateGenerationTruncated ||= dueResult.truncated;
     for (const due of occurrences) {
@@ -132,7 +171,7 @@ Deno.serve(async (request) => {
       ) {
         continue;
       }
-      scheduled.push({ reminder, due });
+      scheduled.push({ reminder, due, recorded: false });
     }
   }
 
@@ -141,11 +180,24 @@ Deno.serve(async (request) => {
       left.due.getTime() - right.due.getTime() ||
       left.reminder.id.localeCompare(right.reminder.id),
   );
-  const selected = scheduled.slice(0, remainingWork);
+  const selected: ScheduledOccurrence[] = [];
+  let lastExamined: ScheduledOccurrence | undefined;
+  let scheduledIndex = 0;
+  for (; scheduledIndex < scheduled.length; scheduledIndex++) {
+    const candidate = scheduled[scheduledIndex];
+    if (!candidate) continue;
+    if (candidate.recorded) {
+      lastExamined = candidate;
+      continue;
+    }
+    if (selected.length >= remainingWork) break;
+    selected.push(candidate);
+    lastExamined = candidate;
+  }
   const hasUnprocessedScheduleWork =
     remainingWork === 0 ||
     candidateGenerationTruncated ||
-    selected.length < scheduled.length;
+    scheduledIndex < scheduled.length;
 
   for (const { reminder, due } of selected) {
     const occurrenceId = `${reminder.id}:${due.toISOString()}`;
@@ -203,7 +255,7 @@ Deno.serve(async (request) => {
       );
   }
 
-  const lastSelected = selected[selected.length - 1];
+  const lastSelected = lastExamined;
   const nextWindowStart =
     hasUnprocessedScheduleWork && lastSelected
       ? lastSelected.due
@@ -251,6 +303,23 @@ async function loadReminders(
   }
 }
 
+async function loadRecordedOccurrenceIds(
+  client: ServiceClient,
+  reminderId: string,
+  occurrences: readonly Date[],
+): Promise<Set<string>> {
+  const ids = occurrences.map(
+    (due) => `${reminderId}:${due.toISOString()}`,
+  );
+  if (!ids.length) return new Set();
+  const { data, error } = await client
+    .from('occurrences')
+    .select('id')
+    .in('id', ids);
+  if (error) throw error;
+  return new Set((data ?? []).map(({ id }) => String(id)));
+}
+
 async function claimUndelivered(
   client: ServiceClient,
   occurrenceId: string,
@@ -277,7 +346,8 @@ async function dispatchPendingDeliveries(
   const now = new Date();
   const { data, error } = await client
     .from('occurrences')
-    .select('id,reminder_id')
+    .select('id,reminder_id,reminders!inner(status)')
+    .eq('reminders.status', 'active')
     .is('delivered_at', null)
     .lt('delivery_attempts', MAX_DELIVERY_ATTEMPTS)
     .or(deliverableFilter(now))
@@ -309,7 +379,8 @@ async function dispatchPostponed(
   if (limit <= 0) return { delivered: 0, processed: 0 };
   const { data, error } = await client
     .from('occurrences')
-    .select('id,reminder_id')
+    .select('id,reminder_id,reminders!inner(status)')
+    .eq('reminders.status', 'active')
     .eq('status', 'postponed')
     .lte('snoozed_until', now.toISOString())
     .limit(limit);

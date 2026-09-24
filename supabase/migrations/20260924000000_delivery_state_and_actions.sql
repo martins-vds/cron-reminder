@@ -3,6 +3,14 @@ alter table public.occurrences add column delivery_attempts integer not null def
 alter table public.occurrences add column next_delivery_attempt_at timestamptz;
 alter table public.occurrences add column delivery_lease_id uuid;
 alter type public.occurrence_status add value if not exists 'delivering' after 'triggered';
+create index if not exists occurrences_pending_delivery_idx
+  on public.occurrences(next_delivery_attempt_at, acted_at)
+  where delivered_at is null
+    and delivery_attempts < 5
+    and status in ('triggered', 'delivering', 'delivery-failed');
+create index if not exists occurrences_postponed_due_idx
+  on public.occurrences(snoozed_until)
+  where status = 'postponed';
 
 create table if not exists public.occurrence_device_deliveries (
   occurrence_id text not null,

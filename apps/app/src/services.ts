@@ -54,15 +54,28 @@ const redirectTo = makeRedirectUri({
 const deviceKey = "cron-reminder:device-id";
 const deletedKey = "cron-reminder:deleted";
 const notificationActionsKey = "cron-reminder:notification-actions";
+const pendingDeviceDeregistrationsKey =
+  "cron-reminder:pending-device-deregistrations";
 let tombstoneQueue = Promise.resolve();
 let synchronizationQueue = Promise.resolve();
 let notificationActionQueue = Promise.resolve();
 let notificationActionFlushQueue = Promise.resolve();
+let deviceDeregistrationQueue = Promise.resolve();
 
 interface PendingNotificationAction {
   occurrenceId: string;
   action: "dismiss" | "snooze";
   ownerId: string;
+}
+
+interface DeviceRegistrationRecord {
+  id: string;
+  token: string;
+}
+
+interface StoredDeviceRegistration {
+  id: string;
+  token?: string;
 }
 
 export const authentication: AuthenticationPort | null = supabase
@@ -93,21 +106,29 @@ export const authentication: AuthenticationPort | null = supabase
         }
       },
       async signOut() {
-        const deviceId = await AsyncStorage.getItem(deviceKey);
-        if (deviceId) {
-          const { error: deviceError } = await supabase
-            .from("devices")
-            .delete()
-            .eq("id", deviceId);
-          if (deviceError) throw deviceError;
-          await AsyncStorage.removeItem(deviceKey);
+        const device = await readDeviceRegistration();
+        if (device?.token) {
+          await queueDeviceDeregistration({
+            id: device.id,
+            token: device.token,
+          });
+          await flushPendingDeviceDeregistrations();
+        } else if (device) {
+          await supabase.from("devices").delete().eq("id", device.id);
         }
+        await AsyncStorage.removeItem(deviceKey);
         const { error } = await supabase.auth.signOut();
-        if (error) throw error;
+        if (error) {
+          const { error: localError } = await supabase.auth.signOut({
+            scope: "local",
+          });
+          if (localError) throw localError;
+        }
       },
       async deleteAccount() {
         const { data: userData } = await supabase.auth.getUser();
         const ownerId = userData.user?.id;
+        const device = await readDeviceRegistration();
         await withSynchronization(async () => {
           const { error } = await supabase.functions.invoke("delete-account");
           if (error) throw error;
@@ -138,6 +159,7 @@ export const authentication: AuthenticationPort | null = supabase
             });
           }
           await AsyncStorage.removeItem(deviceKey);
+          await removePendingDeviceDeregistration(device?.id);
           await supabase.auth.signOut();
         });
       },
@@ -155,8 +177,23 @@ export const synchronization = supabase
     )
   : null;
 
-export async function rememberDevice(id: string): Promise<void> {
-  await AsyncStorage.setItem(deviceKey, id);
+export async function rememberDevice(id: string, token: string): Promise<void> {
+  await AsyncStorage.setItem(deviceKey, JSON.stringify({ id, token }));
+}
+
+export async function flushPendingDeviceDeregistrations(): Promise<void> {
+  if (!supabase) return;
+  await withDeviceDeregistrations(async () => {
+    let pending = await readPendingDeviceDeregistrations();
+    for (const device of pending) {
+      const { error } = await supabase.functions.invoke("deregister-device", {
+        body: device,
+      });
+      if (error) return;
+      pending = pending.filter((item) => item.id !== device.id);
+      await writePendingDeviceDeregistrations(pending);
+    }
+  });
 }
 
 export async function deleteReminder(
@@ -268,6 +305,12 @@ export async function synchronizeReminders(
   });
 }
 
+export function runReminderMutation<T>(
+  operation: () => Promise<T>,
+): Promise<T> {
+  return withSynchronization(operation);
+}
+
 export async function resolveSynchronizationConflict(
   conflict: SyncConflict,
   resolution: Reminder,
@@ -318,6 +361,77 @@ async function writeNotificationActions(
   }
 }
 
+async function readDeviceRegistration(): Promise<StoredDeviceRegistration | null> {
+  const value = await AsyncStorage.getItem(deviceKey);
+  if (!value) return null;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      typeof (parsed as Record<string, unknown>).id === "string" &&
+      typeof (parsed as Record<string, unknown>).token === "string"
+    ) {
+      return parsed as DeviceRegistrationRecord;
+    }
+  } catch {
+    return { id: value };
+  }
+  return { id: value };
+}
+
+async function queueDeviceDeregistration(
+  device: DeviceRegistrationRecord,
+): Promise<void> {
+  await withDeviceDeregistrations(async () => {
+    const pending = await readPendingDeviceDeregistrations();
+    if (!pending.some(({ id }) => id === device.id)) pending.push(device);
+    await writePendingDeviceDeregistrations(pending);
+  });
+}
+
+async function removePendingDeviceDeregistration(
+  id: string | undefined,
+): Promise<void> {
+  if (!id) return;
+  await withDeviceDeregistrations(async () => {
+    await writePendingDeviceDeregistrations(
+      (await readPendingDeviceDeregistrations()).filter(
+        (item) => item.id !== id,
+      ),
+    );
+  });
+}
+
+async function readPendingDeviceDeregistrations(): Promise<
+  DeviceRegistrationRecord[]
+> {
+  const value = await AsyncStorage.getItem(pendingDeviceDeregistrationsKey);
+  if (!value) return [];
+  const parsed: unknown = JSON.parse(value);
+  if (!Array.isArray(parsed)) return [];
+  return parsed.filter(
+    (item): item is DeviceRegistrationRecord =>
+      typeof item === "object" &&
+      item !== null &&
+      typeof (item as Record<string, unknown>).id === "string" &&
+      typeof (item as Record<string, unknown>).token === "string",
+  );
+}
+
+async function writePendingDeviceDeregistrations(
+  devices: readonly DeviceRegistrationRecord[],
+): Promise<void> {
+  if (devices.length) {
+    await AsyncStorage.setItem(
+      pendingDeviceDeregistrationsKey,
+      JSON.stringify(devices),
+    );
+  } else {
+    await AsyncStorage.removeItem(pendingDeviceDeregistrationsKey);
+  }
+}
+
 function isTerminalNotificationActionError(error: unknown): boolean {
   if (typeof error !== "object" || error === null || !("context" in error))
     return false;
@@ -365,6 +479,15 @@ function withNotificationActionFlush<T>(
 ): Promise<T> {
   const result = notificationActionFlushQueue.then(operation, operation);
   notificationActionFlushQueue = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
+
+function withDeviceDeregistrations<T>(operation: () => Promise<T>): Promise<T> {
+  const result = deviceDeregistrationQueue.then(operation, operation);
+  deviceDeregistrationQueue = result.then(
     () => undefined,
     () => undefined,
   );

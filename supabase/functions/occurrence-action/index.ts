@@ -5,12 +5,19 @@ const snoozeOptions = [5, 10, 15, 30, 60];
 
 Deno.serve(async (request) => {
   if (request.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
+  if (request.method !== 'POST')
+    return response({ error: 'Method not allowed' }, 405);
   const authorization = request.headers.get('Authorization');
   const url = Deno.env.get('SUPABASE_URL');
   const anonKey = Deno.env.get('SUPABASE_ANON_KEY');
   if (!authorization || !url || !anonKey) return response({ error: 'Unauthorized' }, 401);
   const client = createClient(url, anonKey, { global: { headers: { Authorization: authorization } } });
-  const input: unknown = await request.json();
+  let input: unknown;
+  try {
+    input = await request.json();
+  } catch {
+    return response({ error: 'Invalid action payload' }, 400);
+  }
   if (!isAction(input)) return response({ error: 'Invalid action payload' }, 400);
 
   const now = new Date();

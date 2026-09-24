@@ -194,6 +194,7 @@ create table public.devices (
   owner_id uuid not null references auth.users(id) on delete cascade,
   platform text not null check (platform in ('android', 'ios', 'web')),
   token text not null,
+  deregistration_token uuid not null default gen_random_uuid(),
   enabled boolean not null default true,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()

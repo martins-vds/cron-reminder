@@ -12,3 +12,6 @@ verify_jwt = true
 
 [functions.occurrence-action]
 verify_jwt = true
+
+[functions.deregister-device]
+verify_jwt = false

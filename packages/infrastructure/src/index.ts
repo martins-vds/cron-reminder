@@ -457,13 +457,15 @@ export class OfflineSynchronizationAdapter implements SynchronizationPort {
     return conflicts;
   }
 
-  async resolve(_conflict: SyncConflict, resolution: Reminder): Promise<void> {
+  async resolve(conflict: SyncConflict, resolution: Reminder): Promise<void> {
     const resolved = {
       ...resolution,
-      revision: resolution.revision + 1,
+      revision: Math.max(conflict.local.revision, conflict.remote.revision) + 1,
       updatedAt: new Date().toISOString(),
     };
-    await Promise.all([this.local.save(resolved), this.remote.save(resolved)]);
+    await this.remote.save(resolved);
+    await this.local.save(resolved);
+    await this.local.setSyncedRevision?.(resolved.id, resolved.revision);
   }
 }
 

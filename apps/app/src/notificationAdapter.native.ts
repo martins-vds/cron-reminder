@@ -84,7 +84,7 @@ export class DeviceNotificationAdapter implements NotificationPort {
       content: {
         title: reminder.title,
         body: reminder.notes || undefined,
-        sound: reminder.sound.mode === "silent" ? undefined : "default",
+        sound: reminder.sound.mode === "default" ? "default" : undefined,
         categoryIdentifier: "reminder",
         data: {
           occurrenceId: occurrence.id,
