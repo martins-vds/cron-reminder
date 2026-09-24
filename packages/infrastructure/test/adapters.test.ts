@@ -175,6 +175,14 @@ describe("versioned JSON backup", () => {
       overrides: { updatedAt: "not-a-date" },
       label: "invalid update timestamp",
     },
+    {
+      overrides: { createdAt: "2026-02-30T09:00:00.000Z" },
+      label: "impossible creation timestamp",
+    },
+    {
+      overrides: { updatedAt: "2026-09-24T09:00:00" },
+      label: "timezone-free update timestamp",
+    },
   ])("rejects reminders with a $label", ({ overrides }) => {
     const backup = JSON.stringify({
       version: 1,

@@ -12,6 +12,7 @@ import {
 import type { Reminder, Schedule } from "@cron-reminder/domain";
 import {
   nextOccurrences,
+  isValidScheduleTimestamp,
   isValidReminderId,
   validateSchedule,
   validateTimezone,
@@ -223,6 +224,7 @@ function isBackup(value: unknown): value is Backup {
   return (
     value.version === 1 &&
     typeof value.exportedAt === "string" &&
+    isValidScheduleTimestamp(value.exportedAt) &&
     Array.isArray(value.reminders)
   );
 }
@@ -269,9 +271,9 @@ function isReminder(value: unknown): value is Reminder {
     !Number.isInteger(value.revision) ||
     value.revision < 1 ||
     typeof value.createdAt !== "string" ||
-    !Number.isFinite(Date.parse(value.createdAt)) ||
+    !isValidScheduleTimestamp(value.createdAt) ||
     typeof value.updatedAt !== "string" ||
-    !Number.isFinite(Date.parse(value.updatedAt)) ||
+    !isValidScheduleTimestamp(value.updatedAt) ||
     (value.status !== "active" &&
       value.status !== "disabled" &&
       value.status !== "archived") ||

@@ -213,19 +213,23 @@ export function validateSchedule(schedule: Schedule): void {
   ) {
     throw new Error("Schedule end must follow its start.");
   }
+}
 
-  function strictScheduleTimestamp(value: string): number | null {
-    const match = /^(\d{4})-(\d{2})-(\d{2})T/.exec(value);
-    if (!match || !/(?:Z|[+-]\d{2}:\d{2})$/.test(value)) return null;
-    const year = Number(match[1]);
-    const month = Number(match[2]);
-    const day = Number(match[3]);
-    if (month < 1 || month > 12) return null;
-    const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
-    if (day < 1 || day > daysInMonth) return null;
-    const timestamp = Date.parse(value);
-    return Number.isFinite(timestamp) ? timestamp : null;
-  }
+function strictScheduleTimestamp(value: string): number | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T/.exec(value);
+  if (!match || !/(?:Z|[+-]\d{2}:\d{2})$/.test(value)) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (month < 1 || month > 12) return null;
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  if (day < 1 || day > daysInMonth) return null;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+export function isValidScheduleTimestamp(value: string): boolean {
+  return strictScheduleTimestamp(value) !== null;
 }
 
 export function validateTimezone(timezone: string): void {

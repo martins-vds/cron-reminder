@@ -416,7 +416,9 @@ create or replace function public.record_occurrence_device_delivery(
   p_lease_id uuid
 )
 returns boolean language plpgsql security definer set search_path = '' as $$
-declare active_occurrence text;
+declare
+  active_occurrence text;
+  inserted boolean;
 begin
   select id into active_occurrence
   from public.occurrences
@@ -468,8 +470,19 @@ begin
     p_device_id,
     p_lease_id
   )
-  on conflict (ticket_id) do nothing;
-  return true;
+  on conflict (ticket_id) do nothing
+  returning true into inserted;
+  if coalesce(inserted, false) then
+    return true;
+  end if;
+  return exists (
+    select 1 from public.expo_push_tickets
+    where ticket_id = p_ticket_id
+      and occurrence_id = p_occurrence_id
+      and owner_id = p_owner_id
+      and device_id = p_device_id
+      and delivery_round_id = p_lease_id
+  );
 end;
 $$;
 
