@@ -74,8 +74,8 @@ Deno.serve(async (request) => {
   );
   try {
     await processExpoReceipts(client);
-  } catch {
-    return json({ error: 'Unable to process Expo push receipts' }, 500);
+  } catch (error) {
+    console.error('Unable to process Expo push receipts', error);
   }
   const now = new Date();
   const minuteStart = new Date(now);
@@ -378,7 +378,7 @@ async function loadReminders(
     .from('reminders')
     .select(REMINDER_SELECT)
     .eq('status', 'active')
-    .lte('next_due_at', windowEnd.toISOString())
+    .lt('next_due_at', windowEnd.toISOString())
     .order('next_due_at')
     .order('id')
     .limit(limit + 1);

@@ -2,6 +2,7 @@ alter table public.occurrences add column delivered_at timestamptz;
 alter table public.occurrences add column delivery_attempts integer not null default 0 check (delivery_attempts >= 0);
 alter table public.occurrences add column next_delivery_attempt_at timestamptz;
 alter table public.occurrences add column delivery_lease_id uuid;
+alter table public.occurrences add column last_failed_delivery_round_id uuid;
 alter type public.occurrence_status add value if not exists 'delivering' after 'triggered';
 create index if not exists occurrences_pending_delivery_idx
   on public.occurrences(next_delivery_attempt_at, acted_at)
@@ -16,6 +17,7 @@ create table if not exists public.occurrence_device_deliveries (
   occurrence_id text not null,
   owner_id uuid not null references auth.users(id) on delete cascade,
   device_id text not null references public.devices(id) on delete cascade,
+  delivery_round_id uuid not null,
   delivered_at timestamptz not null default now(),
   primary key (occurrence_id, device_id),
   foreign key (occurrence_id, owner_id) references public.occurrences(id, owner_id) on delete cascade
@@ -232,9 +234,15 @@ begin
     return false;
   end if;
   insert into public.expo_push_tickets(
-    ticket_id, occurrence_id, owner_id, device_id
+    ticket_id, occurrence_id, owner_id, device_id, delivery_round_id
   )
-  values (p_ticket_id, p_occurrence_id, p_owner_id, p_device_id)
+  values (
+    p_ticket_id,
+    p_occurrence_id,
+    p_owner_id,
+    p_device_id,
+    p_lease_id
+  )
   on conflict (ticket_id) do nothing;
   return true;
 end;
@@ -289,9 +297,13 @@ begin
           else now() + make_interval(
             mins => least(60, power(2, delivery_attempts)::integer)
           )
-        end
+        end,
+        last_failed_delivery_round_id = ticket.delivery_round_id
     where id = ticket.occurrence_id
+      and status = 'delivery-failed'
       and delivered_at is null
+      and last_failed_delivery_round_id is distinct from
+        ticket.delivery_round_id
     returning * into failed;
     if found then
       insert into public.history(
@@ -374,6 +386,8 @@ begin
   if p_event = 'postponed' then
     delete from public.occurrence_device_deliveries
     where occurrence_id = acted.id and owner_id = acted.owner_id;
+  end if;
+  if p_event in ('dismissed', 'postponed') then
     delete from public.expo_push_tickets
     where occurrence_id = acted.id and owner_id = acted.owner_id;
   end if;

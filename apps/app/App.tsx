@@ -543,7 +543,13 @@ function ReminderList({
         locale={locale}
         colors={colors}
         onCancel={() => setEditing(null)}
-        onSaved={() => {
+        onSaved={(conflicts) => {
+          setSyncConflicts(conflicts);
+          setSyncMessage(
+            conflicts.length
+              ? `${conflicts.length} concurrent edit(s) need manual resolution. Local versions are preserved.`
+              : "",
+          );
           setEditing(null);
           refresh();
         }}
@@ -756,7 +762,7 @@ function ReminderEditor({
   locale: Locale;
   colors: Colors;
   onCancel: () => void;
-  onSaved: () => void;
+  onSaved: (conflicts: readonly SyncConflict[]) => void;
 }) {
   const t = createTranslator(locale);
   const [title, setTitle] = useState(reminder?.title ?? "");
@@ -833,8 +839,8 @@ function ReminderEditor({
           ? service.update(reminder.id, changes)
           : service.create({ ...changes, ownerId }),
       );
-      await synchronizeReminders(ownerId).catch(() => []);
-      onSaved();
+      const conflicts = await synchronizeReminders(ownerId).catch(() => []);
+      onSaved(conflicts);
     } catch (reason) {
       setError(
         reason instanceof Error ? reason.message : "Unable to save reminder.",
