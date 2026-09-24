@@ -209,7 +209,7 @@ async function dispatchPendingDeliveries(
     .lt('delivery_attempts', MAX_DELIVERY_ATTEMPTS)
     .or(deliverableFilter(now));
   if (error) throw error;
-  let delivered = 0;
+  let delivered = alreadyDelivered.size;
   for (const occurrence of data ?? []) {
     const reminder = await loadActiveReminder(client, occurrence.reminder_id);
     if (!reminder) continue;
