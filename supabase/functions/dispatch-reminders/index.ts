@@ -55,7 +55,8 @@ Deno.serve(async (request) => {
     ? new Date(state.last_dispatched_at)
     : new Date(minuteStart.getTime() - 60_000);
   let nextWindowStart = windowEnd;
-  let delivered = await dispatchPostponed(client, now);
+  let delivered = await dispatchPendingDeliveries(client);
+  delivered += await dispatchPostponed(client, now);
 
   let reminders: ReminderRow[];
   try {
@@ -98,6 +99,21 @@ Deno.serve(async (request) => {
     for (const due of occurrences) {
       const occurrenceId = `${reminder.id}:${due.toISOString()}`;
       const missed = due < minuteStart;
+      if (missed) {
+        const { error: missedError } = await client.rpc(
+          'record_missed_occurrence',
+          {
+            p_occurrence_id: occurrenceId,
+            p_reminder_id: reminder.id,
+            p_owner_id: reminder.owner_id,
+            p_scheduled_at: due.toISOString(),
+          },
+        );
+        if (missedError)
+          return json({ error: 'Unable to record missed occurrence' }, 500);
+        continue;
+      }
+
       const { error: occurrenceError } = await client
         .from('occurrences')
         .insert({
@@ -105,7 +121,7 @@ Deno.serve(async (request) => {
           reminder_id: reminder.id,
           owner_id: reminder.owner_id,
           scheduled_at: due.toISOString(),
-          status: missed ? 'missed' : 'triggered',
+          status: 'triggered',
         });
       if (occurrenceError?.code === '23505') {
         let claimed: boolean;
@@ -121,17 +137,8 @@ Deno.serve(async (request) => {
       if (occurrenceError)
         return json({ error: 'Unable to create occurrence' }, 500);
 
-      if (missed) {
-        await client.from('history').insert({
-          reminder_id: reminder.id,
-          occurrence_id: occurrenceId,
-          owner_id: reminder.owner_id,
-          event_type: 'missed',
-        });
-        continue;
-      }
-
-      delivered += await deliverOccurrence(client, reminder, occurrenceId);
+      if (await claimUndelivered(client, occurrenceId))
+        delivered += await deliverOccurrence(client, reminder, occurrenceId);
     }
   }
 
@@ -170,7 +177,7 @@ async function claimUndelivered(
 ): Promise<boolean> {
   const { data, error } = await client
     .from('occurrences')
-    .update({ status: 'triggered' })
+    .update({ status: 'delivering', acted_at: new Date().toISOString() })
     .eq('id', occurrenceId)
     .is('delivered_at', null)
     .in('status', ['triggered', 'delivery-failed'])
@@ -180,39 +187,65 @@ async function claimUndelivered(
   return Boolean(data);
 }
 
+async function dispatchPendingDeliveries(
+  client: ReturnType<typeof createClient>,
+): Promise<number> {
+  const { data, error } = await client
+    .from('occurrences')
+    .select('id,reminder_id')
+    .is('delivered_at', null)
+    .in('status', ['triggered', 'delivery-failed']);
+  if (error) throw error;
+  let delivered = 0;
+  for (const occurrence of data ?? []) {
+    const reminder = await loadActiveReminder(client, occurrence.reminder_id);
+    if (!reminder) continue;
+    if (!(await claimUndelivered(client, occurrence.id))) continue;
+    delivered += await deliverOccurrence(client, reminder, occurrence.id);
+  }
+  return delivered;
+}
+
 async function dispatchPostponed(
   client: ReturnType<typeof createClient>,
   now: Date,
 ): Promise<number> {
-  const { data } = await client
+  const { data, error } = await client
     .from('occurrences')
     .select('id,reminder_id')
     .eq('status', 'postponed')
     .lte('snoozed_until', now.toISOString());
+  if (error) throw error;
   let delivered = 0;
   for (const occurrence of data ?? []) {
-    const { data: reminder } = await client
-      .from('reminders')
-      .select('id,owner_id,title,notes,schedule,timezone,sound,created_at')
-      .eq('id', occurrence.reminder_id)
-      .eq('status', 'active')
-      .maybeSingle();
+    const reminder = await loadActiveReminder(client, occurrence.reminder_id);
     if (!reminder) continue;
-    const { data: claimed } = await client
+    const { data: claimed, error: claimError } = await client
       .from('occurrences')
-      .update({ status: 'triggered', acted_at: now.toISOString() })
+      .update({ status: 'delivering', acted_at: now.toISOString() })
       .eq('id', occurrence.id)
       .eq('status', 'postponed')
       .select('id')
       .maybeSingle();
+    if (claimError) throw claimError;
     if (!claimed) continue;
-    delivered += await deliverOccurrence(
-      client,
-      reminder as ReminderRow,
-      occurrence.id,
-    );
+    delivered += await deliverOccurrence(client, reminder, occurrence.id);
   }
   return delivered;
+}
+
+async function loadActiveReminder(
+  client: ReturnType<typeof createClient>,
+  reminderId: string,
+): Promise<ReminderRow | null> {
+  const { data, error } = await client
+    .from('reminders')
+    .select('id,owner_id,title,notes,schedule,timezone,sound,created_at')
+    .eq('id', reminderId)
+    .eq('status', 'active')
+    .maybeSingle();
+  if (error) throw error;
+  return data as ReminderRow | null;
 }
 
 async function deliverOccurrence(
@@ -223,24 +256,30 @@ async function deliverOccurrence(
   try {
     const delivered = await deliverToDevices(client, reminder, occurrenceId);
     await recordHistory(client, reminder, occurrenceId);
-    await client
+    const { error } = await client
       .from('occurrences')
-      .update({ delivered_at: new Date().toISOString() })
-      .eq('id', occurrenceId);
+      .update({ status: 'triggered', delivered_at: new Date().toISOString() })
+      .eq('id', occurrenceId)
+      .eq('status', 'delivering');
+    if (error) throw error;
     return delivered;
   } catch {
-    await client
-      .from('occurrences')
-      .update({ status: 'delivery-failed' })
-      .eq('id', occurrenceId);
-    await client.from('history').insert({
-      reminder_id: reminder.id,
-      occurrence_id: occurrenceId,
-      owner_id: reminder.owner_id,
-      event_type: 'delivery-failed',
-    });
+    await markDeliveryFailed(client, reminder, occurrenceId);
     return 0;
   }
+}
+
+async function markDeliveryFailed(
+  client: ReturnType<typeof createClient>,
+  reminder: ReminderRow,
+  occurrenceId: string,
+) {
+  const { error: updateError } = await client
+    .from('occurrences')
+    .update({ status: 'delivery-failed' })
+    .eq('id', occurrenceId);
+  if (updateError) throw updateError;
+  await recordHistory(client, reminder, occurrenceId, 'delivery-failed');
 }
 
 async function deliverToDevices(
@@ -255,6 +294,7 @@ async function deliverToDevices(
     .eq('enabled', true);
   if (error) throw error;
   let delivered = 0;
+  let failed = 0;
   for (const device of devices ?? []) {
     const payload = {
       title: reminder.title,
@@ -269,13 +309,12 @@ async function deliverToDevices(
       }
       delivered++;
     } catch {
-      await client.from('history').insert({
-        reminder_id: reminder.id,
-        occurrence_id: occurrenceId,
-        owner_id: reminder.owner_id,
-        event_type: 'delivery-failed',
-      });
+      failed++;
+      await recordHistory(client, reminder, occurrenceId, 'delivery-failed');
     }
+  }
+  if ((devices?.length ?? 0) > 0 && delivered === 0 && failed > 0) {
+    throw new Error('All device deliveries failed');
   }
   return delivered;
 }
@@ -284,13 +323,15 @@ async function recordHistory(
   client: ReturnType<typeof createClient>,
   reminder: ReminderRow,
   occurrenceId: string,
+  eventType: 'triggered' | 'delivery-failed' = 'triggered',
 ) {
-  await client.from('history').insert({
+  const { error } = await client.from('history').insert({
     reminder_id: reminder.id,
     occurrence_id: occurrenceId,
     owner_id: reminder.owner_id,
-    event_type: 'triggered',
+    event_type: eventType,
   });
+  if (error) throw error;
 }
 
 function dueOccurrences(

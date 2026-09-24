@@ -723,10 +723,12 @@ function ReminderEditor({
     if (expressions[next]) setCron(expressions[next] ?? cron);
   }
 
+  const existingCronSchedule =
+    reminder?.schedule.kind === "cron" ? reminder.schedule : undefined;
   const schedule: Schedule =
     kind === "once"
       ? { kind: "once", at: onceAt }
-      : { kind: "cron", expression: cron };
+      : { ...existingCronSchedule, kind: "cron", expression: cron };
   const validation =
     schedule.kind === "cron"
       ? validateCronExpression(schedule.expression)

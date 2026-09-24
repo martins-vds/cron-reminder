@@ -133,6 +133,8 @@ class FakeSupabaseClient {
   reminders = new Map<string, Record<string, unknown>>();
   tombstones: Array<{ id: string; owner_id: string }> = [];
   operations: string[] = [];
+  tombstoneListReads = 0;
+  afterFirstTombstoneList?: () => void;
 
   from(table: string) {
     if (table === "reminders") return this.remindersTable();
@@ -194,11 +196,17 @@ class FakeSupabaseClient {
   private tombstonesTable() {
     return {
       select: () => ({
-        eq: (_column: string, ownerId: string) =>
-          Promise.resolve({
-            data: this.tombstones.filter((item) => item.owner_id === ownerId),
+        eq: (_column: string, ownerId: string) => {
+          const data = this.tombstones.filter(
+            (item) => item.owner_id === ownerId,
+          );
+          this.tombstoneListReads++;
+          if (this.tombstoneListReads === 1) this.afterFirstTombstoneList?.();
+          return Promise.resolve({
+            data,
             error: null,
-          }),
+          });
+        },
       }),
       upsert: async (row: { id: string; owner_id: string }) => {
         this.operations.push("tombstone");
@@ -296,5 +304,27 @@ describe("synchronization", () => {
     await adapter.synchronize(staleLocal.ownerId);
 
     expect(await local.get(staleLocal.id)).toBeNull();
+  });
+
+  it("rechecks tombstones before uploading merged reminders", async () => {
+    const local = new JsonReminderRepository(new MemoryStore());
+    const staleLocal = reminder({ title: "Deleted during sync" });
+    await local.save(staleLocal);
+
+    const fake = new FakeSupabaseClient();
+    fake.afterFirstTombstoneList = () => {
+      fake.tombstones.push({ id: staleLocal.id, owner_id: staleLocal.ownerId });
+    };
+    const remote = new SupabaseReminderRepository(
+      fake as unknown as ConstructorParameters<
+        typeof SupabaseReminderRepository
+      >[0],
+    );
+
+    const adapter = new OfflineSynchronizationAdapter(local, remote);
+    await adapter.synchronize(staleLocal.ownerId);
+
+    expect(await local.get(staleLocal.id)).toBeNull();
+    expect(fake.reminders.has(staleLocal.id)).toBe(false);
   });
 });

@@ -98,7 +98,18 @@ export const authentication: AuthenticationPort | null = supabase
             await localRepository.delete(reminder.id);
           }
         }
-        await AsyncStorage.removeItem(deletedKey);
+        if (ownerId) {
+          await withTombstones(async () => {
+            const remaining = (await readDeleted()).filter(
+              (item) => item.ownerId !== ownerId,
+            );
+            if (remaining.length) {
+              await AsyncStorage.setItem(deletedKey, JSON.stringify(remaining));
+            } else {
+              await AsyncStorage.removeItem(deletedKey);
+            }
+          });
+        }
         await AsyncStorage.removeItem(deviceKey);
         await supabase.auth.signOut();
       },

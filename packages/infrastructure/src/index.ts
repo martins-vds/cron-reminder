@@ -367,9 +367,17 @@ export class OfflineSynchronizationAdapter implements SynchronizationPort {
       remote,
     );
     const conflictedIds = new Set(conflicts.map(({ id }) => id));
+    const latestDeletedIds =
+      (await this.remote.listDeletedIds?.(ownerId)) ?? [];
+    const latestDeleted = new Set([...deletedIds, ...latestDeletedIds]);
+    await Promise.all(
+      local
+        .filter(({ id }) => latestDeleted.has(id))
+        .map(({ id }) => this.local.delete(id)),
+    );
     await Promise.all(
       merged
-        .filter(({ id }) => !conflictedIds.has(id) && !deleted.has(id))
+        .filter(({ id }) => !conflictedIds.has(id) && !latestDeleted.has(id))
         .flatMap((reminder) => [
           this.local.save(reminder),
           this.remote.save(reminder),

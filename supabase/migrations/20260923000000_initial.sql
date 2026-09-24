@@ -1,7 +1,7 @@
 create extension if not exists pgcrypto;
 
 create type public.reminder_status as enum ('active', 'disabled', 'archived');
-create type public.occurrence_status as enum ('scheduled', 'triggered', 'dismissed', 'postponed', 'missed', 'delivery-failed');
+create type public.occurrence_status as enum ('scheduled', 'triggered', 'delivering', 'dismissed', 'postponed', 'missed', 'delivery-failed');
 
 create table public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,
@@ -112,7 +112,7 @@ alter table public.dispatch_state enable row level security;
 
 create policy "owners manage profile" on public.profiles for all using (id = auth.uid()) with check (id = auth.uid());
 create policy "owners manage reminders" on public.reminders for all using (owner_id = auth.uid()) with check (owner_id = auth.uid());
-create policy "owners manage occurrences" on public.occurrences for all using (owner_id = auth.uid()) with check (owner_id = auth.uid());
+create policy "owners read occurrences" on public.occurrences for select using (owner_id = auth.uid());
 create policy "owners read history" on public.history for select using (owner_id = auth.uid());
 create policy "owners append history" on public.history for insert with check (owner_id = auth.uid());
 create policy "owners register devices" on public.devices for all using (owner_id = auth.uid()) with check (owner_id = auth.uid());

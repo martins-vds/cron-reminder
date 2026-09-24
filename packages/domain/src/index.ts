@@ -2,7 +2,13 @@ import { CronExpressionParser } from "cron-parser";
 
 export type ReminderStatus = "active" | "disabled" | "archived";
 export type OccurrenceStatus =
-  "scheduled" | "triggered" | "dismissed" | "postponed" | "missed";
+  | "scheduled"
+  | "triggered"
+  | "delivering"
+  | "dismissed"
+  | "postponed"
+  | "missed"
+  | "delivery-failed";
 export type HistoryEventType =
   "triggered" | "dismissed" | "postponed" | "missed" | "delivery-failed";
 
