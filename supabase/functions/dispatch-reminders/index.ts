@@ -24,6 +24,13 @@ interface ReminderRow {
 const DISPATCH_STATE_ID = true;
 const MAX_OCCURRENCES_PER_RUN = 500;
 const REMINDER_PAGE_SIZE = 1_000;
+const ALLOWED_PUSH_HOSTS = [
+  'fcm.googleapis.com',
+  'android.googleapis.com',
+  'push.services.mozilla.com',
+  'notify.windows.com',
+  'push.apple.com',
+];
 
 Deno.serve(async (request) => {
   const cronSecret = Deno.env.get('CRON_SECRET');
@@ -100,7 +107,17 @@ Deno.serve(async (request) => {
           scheduled_at: due.toISOString(),
           status: missed ? 'missed' : 'triggered',
         });
-      if (occurrenceError?.code === '23505') continue;
+      if (occurrenceError?.code === '23505') {
+        let claimed: boolean;
+        try {
+          claimed = await claimUndelivered(client, occurrenceId);
+        } catch {
+          return json({ error: 'Unable to claim occurrence' }, 500);
+        }
+        if (claimed)
+          delivered += await deliverOccurrence(client, reminder, occurrenceId);
+        continue;
+      }
       if (occurrenceError)
         return json({ error: 'Unable to create occurrence' }, 500);
 
@@ -147,6 +164,22 @@ async function loadReminders(
   }
 }
 
+async function claimUndelivered(
+  client: ReturnType<typeof createClient>,
+  occurrenceId: string,
+): Promise<boolean> {
+  const { data, error } = await client
+    .from('occurrences')
+    .update({ status: 'triggered' })
+    .eq('id', occurrenceId)
+    .is('delivered_at', null)
+    .in('status', ['triggered', 'delivery-failed'])
+    .select('id')
+    .maybeSingle();
+  if (error) throw error;
+  return Boolean(data);
+}
+
 async function dispatchPostponed(
   client: ReturnType<typeof createClient>,
   now: Date,
@@ -190,6 +223,10 @@ async function deliverOccurrence(
   try {
     const delivered = await deliverToDevices(client, reminder, occurrenceId);
     await recordHistory(client, reminder, occurrenceId);
+    await client
+      .from('occurrences')
+      .update({ delivered_at: new Date().toISOString() })
+      .eq('id', occurrenceId);
     return delivered;
   } catch {
     await client
@@ -337,7 +374,51 @@ async function sendWebPush(
     required('VAPID_PUBLIC_KEY'),
     required('VAPID_PRIVATE_KEY'),
   );
-  await webpush.sendNotification(JSON.parse(token), JSON.stringify(payload));
+  await webpush.sendNotification(
+    parseWebPushSubscription(token),
+    JSON.stringify(payload),
+  );
+}
+
+function parseWebPushSubscription(token: string): {
+  endpoint: string;
+  keys: { p256dh: string; auth: string };
+} {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(token);
+  } catch {
+    throw new Error('Web push subscription is not valid JSON');
+  }
+  if (typeof parsed !== 'object' || parsed === null) {
+    throw new Error('Web push subscription is not an object');
+  }
+  const { endpoint, keys } = parsed as {
+    endpoint?: unknown;
+    keys?: { p256dh?: unknown; auth?: unknown };
+  };
+  if (typeof endpoint !== 'string') {
+    throw new Error('Web push subscription has no endpoint');
+  }
+  let url: URL;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    throw new Error('Web push endpoint is not a valid URL');
+  }
+  if (url.protocol !== 'https:' || !isAllowedPushHost(url.hostname)) {
+    throw new Error('Web push endpoint host is not allowed');
+  }
+  if (typeof keys?.p256dh !== 'string' || typeof keys.auth !== 'string') {
+    throw new Error('Web push subscription has no keys');
+  }
+  return { endpoint, keys: { p256dh: keys.p256dh, auth: keys.auth } };
+}
+
+function isAllowedPushHost(hostname: string): boolean {
+  return ALLOWED_PUSH_HOSTS.some(
+    (host) => hostname === host || hostname.endsWith(`.${host}`),
+  );
 }
 
 function required(name: string): string {

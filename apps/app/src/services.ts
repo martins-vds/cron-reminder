@@ -81,7 +81,8 @@ export const authentication: AuthenticationPort | null = supabase
             .from("devices")
             .delete()
             .eq("id", deviceId);
-          if (!deviceError) await AsyncStorage.removeItem(deviceKey);
+          if (deviceError) throw deviceError;
+          await AsyncStorage.removeItem(deviceKey);
         }
         const { error } = await supabase.auth.signOut();
         if (error) throw error;

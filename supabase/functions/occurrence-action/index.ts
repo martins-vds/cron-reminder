@@ -14,28 +14,16 @@ Deno.serve(async (request) => {
   if (!isAction(input)) return response({ error: 'Invalid action payload' }, 400);
 
   const now = new Date();
-  const patch =
-    input.action === 'dismiss'
-      ? { status: 'dismissed', acted_at: now.toISOString(), snoozed_until: null }
-      : {
-          status: 'postponed',
-          acted_at: now.toISOString(),
-          snoozed_until: new Date(now.getTime() + input.minutes * 60_000).toISOString(),
-        };
-  const { data, error } = await client
-    .from('occurrences')
-    .update(patch)
-    .eq('id', input.occurrenceId)
-    .eq('status', 'triggered')
-    .select('id,reminder_id,owner_id')
-    .single();
-  if (error || !data) return response({ error: 'Occurrence not found' }, 404);
-  await client.from('history').insert({
-    reminder_id: data.reminder_id,
-    occurrence_id: data.id,
-    owner_id: data.owner_id,
-    event_type: input.action === 'dismiss' ? 'dismissed' : 'postponed',
+  const { data, error } = await client.rpc('act_on_occurrence', {
+    p_occurrence_id: input.occurrenceId,
+    p_event: input.action === 'dismiss' ? 'dismissed' : 'postponed',
+    p_snoozed_until:
+      input.action === 'dismiss'
+        ? null
+        : new Date(now.getTime() + input.minutes * 60_000).toISOString(),
   });
+  if (error) return response({ error: 'Unable to record occurrence action' }, 500);
+  if (!data) return response({ error: 'Occurrence not found' }, 404);
   return response({ updated: true });
 });
 
