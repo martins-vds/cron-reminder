@@ -65,11 +65,13 @@ const deletedKey = "cron-reminder:deleted";
 const notificationActionsKey = "cron-reminder:notification-actions";
 const pendingDeviceDeregistrationsKey =
   "cron-reminder:pending-device-deregistrations";
+const pendingPushTokenKey = "cron-reminder:pending-push-token";
 let tombstoneQueue = Promise.resolve();
 let synchronizationQueue = Promise.resolve();
 let notificationActionQueue = Promise.resolve();
 let notificationActionFlushQueue = Promise.resolve();
 let deviceDeregistrationQueue = Promise.resolve();
+let pushTokenQueue = Promise.resolve();
 
 interface PendingNotificationAction {
   occurrenceId: string;
@@ -85,6 +87,11 @@ interface DeviceRegistrationRecord {
 interface StoredDeviceRegistration {
   id: string;
   token?: string;
+}
+
+interface PendingPushToken {
+  ownerId: string;
+  token: string;
 }
 
 export const authentication: AuthenticationPort | null = supabase
@@ -125,6 +132,7 @@ export const authentication: AuthenticationPort | null = supabase
         } else if (device) {
           await supabase.from("devices").delete().eq("id", device.id);
         }
+        await clearPendingPushTokenUpdate();
         await AsyncStorage.removeItem(deviceKey);
         const { error } = await supabase.auth.signOut();
         if (error) {
@@ -168,6 +176,7 @@ export const authentication: AuthenticationPort | null = supabase
             });
           }
           await AsyncStorage.removeItem(deviceKey);
+          await clearPendingPushTokenUpdate(ownerId);
           await removePendingDeviceDeregistration(device?.id);
           const { error: signOutError } = await supabase.auth.signOut();
           if (signOutError) {
@@ -194,6 +203,7 @@ export const synchronization = supabase
 
 export async function rememberDevice(id: string, token: string): Promise<void> {
   await AsyncStorage.setItem(deviceKey, JSON.stringify({ id, token }));
+  await clearPendingPushTokenUpdate();
 }
 
 export async function getRememberedDeviceId(): Promise<string | null> {
@@ -204,15 +214,32 @@ export async function updateRememberedDeviceToken(
   ownerId: string,
   token: string,
 ): Promise<void> {
+  await withPushToken(async () => {
+    await AsyncStorage.setItem(
+      pendingPushTokenKey,
+      JSON.stringify({ ownerId, token }),
+    );
+  });
+  await flushPendingPushTokenUpdate();
+}
+
+export async function flushPendingPushTokenUpdate(): Promise<void> {
   if (!supabase) return;
-  const device = await readDeviceRegistration();
-  if (!device) return;
-  const { error } = await supabase
-    .from("devices")
-    .update({ token, updated_at: new Date().toISOString() })
-    .eq("id", device.id)
-    .eq("owner_id", ownerId);
-  if (error) throw error;
+  await withPushToken(async () => {
+    const pending = await readPendingPushToken();
+    const device = await readDeviceRegistration();
+    if (!pending || !device) return;
+    const { error } = await supabase
+      .from("devices")
+      .update({
+        token: pending.token,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", device.id)
+      .eq("owner_id", pending.ownerId);
+    if (error) return;
+    await AsyncStorage.removeItem(pendingPushTokenKey);
+  });
 }
 
 export async function flushPendingDeviceDeregistrations(): Promise<void> {
@@ -414,6 +441,30 @@ async function readDeviceRegistration(): Promise<StoredDeviceRegistration | null
   return { id: value };
 }
 
+async function readPendingPushToken(): Promise<PendingPushToken | null> {
+  const value = await AsyncStorage.getItem(pendingPushTokenKey);
+  if (!value) return null;
+  const parsed: unknown = JSON.parse(value);
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    typeof (parsed as Record<string, unknown>).ownerId !== "string" ||
+    typeof (parsed as Record<string, unknown>).token !== "string"
+  ) {
+    return null;
+  }
+  return parsed as PendingPushToken;
+}
+
+async function clearPendingPushTokenUpdate(ownerId?: string): Promise<void> {
+  await withPushToken(async () => {
+    const pending = await readPendingPushToken();
+    if (!pending || ownerId === undefined || pending.ownerId === ownerId) {
+      await AsyncStorage.removeItem(pendingPushTokenKey);
+    }
+  });
+}
+
 async function queueDeviceDeregistration(
   device: DeviceRegistrationRecord,
 ): Promise<void> {
@@ -524,6 +575,15 @@ function withNotificationActionFlush<T>(
 function withDeviceDeregistrations<T>(operation: () => Promise<T>): Promise<T> {
   const result = deviceDeregistrationQueue.then(operation, operation);
   deviceDeregistrationQueue = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
+
+function withPushToken<T>(operation: () => Promise<T>): Promise<T> {
+  const result = pushTokenQueue.then(operation, operation);
+  pushTokenQueue = result.then(
     () => undefined,
     () => undefined,
   );

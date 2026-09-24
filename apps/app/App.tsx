@@ -53,6 +53,7 @@ import {
   deleteReminder,
   flushPendingDeviceDeregistrations,
   flushNotificationActions,
+  flushPendingPushTokenUpdate,
   getRememberedDeviceId,
   localRepository,
   rememberDevice,
@@ -131,8 +132,10 @@ export function RootNavigator() {
   const t = createTranslator(locale);
 
   useEffect(() => {
-    const retry = () =>
+    const retry = () => {
       void flushPendingDeviceDeregistrations().catch(() => {});
+      void flushPendingPushTokenUpdate().catch(() => {});
+    };
     retry();
     if (Platform.OS === "web") {
       globalThis.addEventListener("online", retry);
