@@ -1034,10 +1034,10 @@ function dueOccurrences(
   const persistedNextDue = reminder.next_due_at
     ? new Date(reminder.next_due_at)
     : windowStart;
-  const reminderCursor =
-    persistedNextDue < windowStart ? persistedNextDue : windowStart;
   const lowerBound =
-    reminderCreatedAt > reminderCursor ? reminderCreatedAt : reminderCursor;
+    reminderCreatedAt > persistedNextDue
+      ? reminderCreatedAt
+      : persistedNextDue;
   if (reminder.schedule.kind === 'once') {
     const date = new Date(reminder.schedule.at);
     return {

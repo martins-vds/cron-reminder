@@ -13,7 +13,7 @@ self.addEventListener("push", (event) => {
     self.registration.showNotification(data.title || "Cron Reminder", {
       body: data.body,
       data: data.data,
-      silent: soundMode === "silent" || soundMode === "vibrate",
+      silent: soundMode === "silent",
       vibrate: soundMode === "vibrate" ? vibration : undefined,
       actions: [
         { action: "dismiss", title: "Dismiss" },

@@ -1,4 +1,5 @@
-create extension if not exists pgcrypto;
+create schema if not exists extensions;
+create extension if not exists pgcrypto with schema extensions;
 
 create type public.reminder_status as enum ('active', 'disabled', 'archived');
 create type public.occurrence_status as enum ('scheduled', 'triggered', 'delivering', 'dismissed', 'postponed', 'missed', 'delivery-failed');
@@ -206,7 +207,7 @@ create table public.devices (
   owner_id uuid not null references auth.users(id) on delete cascade,
   platform text not null check (platform in ('android', 'ios', 'web')),
   token text not null,
-  token_hash bytea generated always as (public.digest(token, 'sha256')) stored,
+  token_hash bytea generated always as (extensions.digest(token, 'sha256')) stored,
   deregistration_token uuid not null default gen_random_uuid(),
   enabled boolean not null default true,
   created_at timestamptz not null default now(),
@@ -236,7 +237,7 @@ begin
   delete from public.devices
   where (
     platform = p_platform
-    and token_hash = public.digest(p_token, 'sha256')
+    and token_hash = extensions.digest(p_token, 'sha256')
     and id <> p_device_id
   );
   insert into public.devices(
