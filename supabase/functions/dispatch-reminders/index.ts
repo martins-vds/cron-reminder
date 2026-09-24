@@ -57,6 +57,7 @@ const OCCURRENCE_CONCURRENCY = 10;
 const DEVICE_SEND_CONCURRENCY = 10;
 const MAX_DEVICES_PER_DELIVERY_ATTEMPT = 10;
 const EXPO_RECEIPT_BATCH_SIZE = 1_000;
+const EXPO_RECEIPT_REQUEST_SIZE = 300;
 const RECEIPT_RPC_CONCURRENCY = 25;
 const ALLOWED_PUSH_HOSTS = [
   'fcm.googleapis.com',
@@ -1094,6 +1095,24 @@ async function processExpoReceiptBatch(
   now: Date,
 ): Promise<void> {
   if (!tickets?.length) return;
+  for (
+    let offset = 0;
+    offset < tickets.length;
+    offset += EXPO_RECEIPT_REQUEST_SIZE
+  ) {
+    await processExpoReceiptRequest(
+      client,
+      tickets.slice(offset, offset + EXPO_RECEIPT_REQUEST_SIZE),
+      now,
+    );
+  }
+}
+
+async function processExpoReceiptRequest(
+  client: ServiceClient,
+  tickets: Array<{ ticket_id: string; created_at: string }>,
+  now: Date,
+): Promise<void> {
   const response = await fetch(
     'https://exp.host/--/api/v2/push/getReceipts',
     {

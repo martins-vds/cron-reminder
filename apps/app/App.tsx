@@ -1363,6 +1363,13 @@ function Settings({
 function inferEditorKind(schedule: Schedule | undefined): EditorKind {
   if (!schedule) return "daily";
   if (schedule.kind === "once") return "once";
+  if (
+    schedule.startAt !== undefined ||
+    schedule.endAt !== undefined ||
+    schedule.occurrenceLimit !== undefined
+  ) {
+    return "advanced";
+  }
   const presets: Record<string, EditorKind> = {
     "*/5 * * * *": "interval",
     "0 9 * * *": "daily",
