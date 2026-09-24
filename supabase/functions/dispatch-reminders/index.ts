@@ -209,7 +209,7 @@ async function dispatchPendingDeliveries(
     .lt('delivery_attempts', MAX_DELIVERY_ATTEMPTS)
     .or(deliverableFilter(now));
   if (error) throw error;
-  let delivered = alreadyDelivered.size;
+  let delivered = 0;
   for (const occurrence of data ?? []) {
     const reminder = await loadActiveReminder(client, occurrence.reminder_id);
     if (!reminder) continue;
@@ -229,7 +229,7 @@ async function dispatchPostponed(
     .eq('status', 'postponed')
     .lte('snoozed_until', now.toISOString());
   if (error) throw error;
-  let delivered = 0;
+  let delivered = alreadyDelivered.size;
   for (const occurrence of data ?? []) {
     const reminder = await loadActiveReminder(client, occurrence.reminder_id);
     if (!reminder) continue;
@@ -371,12 +371,17 @@ async function recordDeviceDelivery(
   ownerId: string,
   deviceId: string,
 ) {
-  const { error } = await client.from('occurrence_device_deliveries').upsert({
-    occurrence_id: occurrenceId,
-    owner_id: ownerId,
-    device_id: deviceId,
-    delivered_at: new Date().toISOString(),
-  });
+  const { error } = await client
+    .from('occurrence_device_deliveries')
+    .upsert(
+      {
+        occurrence_id: occurrenceId,
+        owner_id: ownerId,
+        device_id: deviceId,
+        delivered_at: new Date().toISOString(),
+      },
+      { onConflict: 'occurrence_id,device_id' },
+    );
   if (error) throw error;
 }
 
