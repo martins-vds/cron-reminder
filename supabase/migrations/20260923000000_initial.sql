@@ -216,9 +216,10 @@ create table public.sync_conflicts (
 );
 
 create table public.reminder_tombstones (
-  id text primary key,
+  id text not null,
   owner_id uuid not null references auth.users(id) on delete cascade,
-  deleted_at timestamptz not null default now()
+  deleted_at timestamptz not null default now(),
+  primary key (id, owner_id)
 );
 create index reminder_tombstones_owner_idx on public.reminder_tombstones(owner_id);
 
@@ -228,8 +229,8 @@ begin
   if tg_op = 'DELETE' then
     insert into public.reminder_tombstones(id, owner_id)
     values (old.id, old.owner_id)
-    on conflict (id) do update
-      set owner_id = excluded.owner_id, deleted_at = now();
+    on conflict (id, owner_id) do update
+      set deleted_at = now();
     return old;
   end if;
   if exists (

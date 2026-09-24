@@ -25,7 +25,10 @@ interface ReminderRow {
 interface DeviceDeliveryResult {
   delivered: number;
   retryableFailures: number;
+  deferred: boolean;
 }
+
+interface DeviceAttemptResult extends DeviceDeliveryResult {}
 
 interface DispatchWorkResult {
   delivered: number;
@@ -46,6 +49,9 @@ const MAX_DISPATCH_WORK_PER_RUN = 500;
 const DELIVERY_LEASE_MS = 5 * 60_000;
 const MAX_DELIVERY_ATTEMPTS = 5;
 const PUSH_TIMEOUT_MS = 30_000;
+const DEVICE_SEND_CONCURRENCY = 10;
+const MAX_DEVICES_PER_DELIVERY_ATTEMPT = 20;
+const EXPO_RECEIPT_BATCH_SIZE = 100;
 const ALLOWED_PUSH_HOSTS = [
   'fcm.googleapis.com',
   'android.googleapis.com',
@@ -65,6 +71,11 @@ Deno.serve(async (request) => {
     required('SUPABASE_URL'),
     required('SUPABASE_SERVICE_ROLE_KEY'),
   );
+  try {
+    await processExpoReceipts(client);
+  } catch {
+    return json({ error: 'Unable to process Expo push receipts' }, 500);
+  }
   const now = new Date();
   const minuteStart = new Date(now);
   minuteStart.setUTCSeconds(0, 0);
@@ -491,6 +502,15 @@ async function deliverOccurrence(
     if (result.retryableFailures > 0) {
       throw new RetryableDeliveryError(result.delivered);
     }
+    if (result.deferred) {
+      const { error } = await client.rpc('defer_occurrence_delivery', {
+        p_occurrence_id: occurrenceId,
+        p_lease_id: leaseId,
+        p_now: new Date().toISOString(),
+      });
+      if (error) throw error;
+      return result.delivered;
+    }
     const { data, error } = await client.rpc('complete_occurrence_delivery', {
       p_occurrence_id: occurrenceId,
       p_lease_id: leaseId,
@@ -533,31 +553,78 @@ async function deliverToDevices(
     .eq('occurrence_id', occurrenceId)
     .eq('owner_id', reminder.owner_id);
   if (deliveredDevicesError) throw deliveredDevicesError;
+  const { data: pendingTickets, error: pendingTicketsError } = await client
+    .from('expo_push_tickets')
+    .select('device_id')
+    .eq('occurrence_id', occurrenceId)
+    .eq('owner_id', reminder.owner_id);
+  if (pendingTicketsError) throw pendingTicketsError;
   const alreadyDelivered = new Set(
     (deliveredDevices ?? []).map(({ device_id }) => String(device_id)),
   );
+  const awaitingReceipt = new Set(
+    (pendingTickets ?? []).map(({ device_id }) => String(device_id)),
+  );
   let delivered = alreadyDelivered.size;
   let retryableFailures = 0;
-  for (const device of devices ?? []) {
-    if (alreadyDelivered.has(device.id)) continue;
-    if (!(await renewActiveLease(client, occurrenceId, leaseId))) {
-      throw new LeaseLostError();
-    }
-    const payload = {
-      title: reminder.title,
-      body: reminder.notes,
-      data: {
-        reminderId: reminder.id,
-        occurrenceId,
-        soundMode: reminder.sound.mode,
-      },
-    };
-    try {
-      if (device.platform === 'web') {
-        await sendWebPush(device.token, payload);
-      } else {
-        await sendExpoPush(device.token, payload, reminder.sound);
+  let deferred = awaitingReceipt.size > 0;
+  const pendingDevices = (devices ?? []).filter(
+    (device) =>
+      !alreadyDelivered.has(device.id) && !awaitingReceipt.has(device.id),
+  );
+  if (pendingDevices.length > MAX_DEVICES_PER_DELIVERY_ATTEMPT) deferred = true;
+  const attemptedDevices = pendingDevices.slice(
+    0,
+    MAX_DEVICES_PER_DELIVERY_ATTEMPT,
+  );
+  for (
+    let offset = 0;
+    offset < attemptedDevices.length;
+    offset += DEVICE_SEND_CONCURRENCY
+  ) {
+    const outcomes = await Promise.allSettled(
+      attemptedDevices
+        .slice(offset, offset + DEVICE_SEND_CONCURRENCY)
+        .map((device) =>
+          deliverToDevice(client, reminder, occurrenceId, leaseId, device),
+        ),
+    );
+    for (const outcome of outcomes) {
+      if (outcome.status === 'rejected') {
+        if (outcome.reason instanceof LeaseLostError) throw outcome.reason;
+        retryableFailures++;
+        continue;
       }
+      delivered += outcome.value.delivered;
+      retryableFailures += outcome.value.retryableFailures;
+      deferred ||= outcome.value.deferred;
+    }
+  }
+  return { delivered, retryableFailures, deferred };
+}
+
+async function deliverToDevice(
+  client: ServiceClient,
+  reminder: ReminderRow,
+  occurrenceId: string,
+  leaseId: string,
+  device: { id: string; platform: string; token: string },
+): Promise<DeviceAttemptResult> {
+  if (!(await renewActiveLease(client, occurrenceId, leaseId))) {
+    throw new LeaseLostError();
+  }
+  const payload = {
+    title: reminder.title,
+    body: reminder.notes,
+    data: {
+      reminderId: reminder.id,
+      occurrenceId,
+      soundMode: reminder.sound.mode,
+    },
+  };
+  try {
+    if (device.platform === 'web') {
+      await sendWebPush(device.token, payload);
       const recorded = await recordDeviceDelivery(
         client,
         occurrenceId,
@@ -566,17 +633,31 @@ async function deliverToDevices(
         leaseId,
       );
       if (!recorded) throw new LeaseLostError();
-      delivered++;
-    } catch (error) {
-      if (error instanceof LeaseLostError) throw error;
-      if (isPermanentDeliveryFailure(error)) {
-        await disableDevice(client, device.id);
-      } else {
-        retryableFailures++;
-      }
+      return { delivered: 1, retryableFailures: 0, deferred: false };
     }
+    const ticketId = await sendExpoPush(
+      device.token,
+      payload,
+      reminder.sound,
+    );
+    const recorded = await recordExpoPushTicket(
+      client,
+      ticketId,
+      occurrenceId,
+      reminder.owner_id,
+      device.id,
+      leaseId,
+    );
+    if (!recorded) throw new LeaseLostError();
+    return { delivered: 0, retryableFailures: 0, deferred: true };
+  } catch (error) {
+    if (error instanceof LeaseLostError) throw error;
+    if (isPermanentDeliveryFailure(error)) {
+      await disableDevice(client, device.id);
+      return { delivered: 0, retryableFailures: 0, deferred: false };
+    }
+    return { delivered: 0, retryableFailures: 1, deferred: false };
   }
-  return { delivered, retryableFailures };
 }
 
 async function recordDeviceDelivery(
@@ -595,6 +676,25 @@ async function recordDeviceDelivery(
       p_lease_id: leaseId,
     },
   );
+  if (error) throw error;
+  return Boolean(data);
+}
+
+async function recordExpoPushTicket(
+  client: ServiceClient,
+  ticketId: string,
+  occurrenceId: string,
+  ownerId: string,
+  deviceId: string,
+  leaseId: string,
+): Promise<boolean> {
+  const { data, error } = await client.rpc('record_expo_push_ticket', {
+    p_ticket_id: ticketId,
+    p_occurrence_id: occurrenceId,
+    p_owner_id: ownerId,
+    p_device_id: deviceId,
+    p_lease_id: leaseId,
+  });
   if (error) throw error;
   return Boolean(data);
 }
@@ -706,8 +806,13 @@ function dueOccurrences(
   limit: number,
 ): { occurrences: Date[]; truncated: boolean } {
   const reminderCreatedAt = new Date(reminder.created_at);
+  const persistedNextDue = reminder.next_due_at
+    ? new Date(reminder.next_due_at)
+    : windowStart;
+  const reminderCursor =
+    persistedNextDue < windowStart ? persistedNextDue : windowStart;
   const lowerBound =
-    reminderCreatedAt > windowStart ? reminderCreatedAt : windowStart;
+    reminderCreatedAt > reminderCursor ? reminderCreatedAt : reminderCursor;
   if (reminder.schedule.kind === 'once') {
     const date = new Date(reminder.schedule.at);
     return {
@@ -747,7 +852,7 @@ async function sendExpoPush(
   token: string,
   payload: Record<string, unknown>,
   sound: ReminderRow['sound'],
-) {
+): Promise<string> {
   const nativeSound =
     sound.mode === 'silent' || sound.mode === 'vibrate' ? undefined : 'default';
   const response = await fetch('https://exp.host/--/api/v2/push/send', {
@@ -794,6 +899,84 @@ async function sendExpoPush(
   ) {
     throw new Error('Expo rejected the push notification');
   }
+  const ticketId = (data as { id?: unknown }).id;
+  if (typeof ticketId !== 'string' || !ticketId) {
+    throw new Error('Expo response did not include a ticket ID');
+  }
+  return ticketId;
+}
+
+async function processExpoReceipts(client: ServiceClient): Promise<void> {
+  const { data: tickets, error } = await client
+    .from('expo_push_tickets')
+    .select('ticket_id,created_at')
+    .order('created_at')
+    .limit(EXPO_RECEIPT_BATCH_SIZE);
+  if (error) throw error;
+  if (!tickets?.length) return;
+  const response = await fetch(
+    'https://exp.host/--/api/v2/push/getReceipts',
+    {
+      method: 'POST',
+      signal: AbortSignal.timeout(PUSH_TIMEOUT_MS),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ids: tickets.map(({ ticket_id }) => ticket_id),
+      }),
+    },
+  );
+  if (!response.ok) throw new Error('Expo receipt request failed');
+  const payload: unknown = await response.json();
+  const receipts =
+    typeof payload === 'object' &&
+    payload !== null &&
+    typeof (payload as { data?: unknown }).data === 'object' &&
+    (payload as { data?: unknown }).data !== null
+      ? ((payload as { data: Record<string, unknown> }).data ?? {})
+      : {};
+  for (const ticket of tickets) {
+    const receipt = receipts[ticket.ticket_id];
+    if (typeof receipt !== 'object' || receipt === null) {
+      if (
+        Date.now() - Date.parse(ticket.created_at) >
+        24 * 60 * 60_000
+      ) {
+        await failExpoPushTicket(client, ticket.ticket_id, false);
+      }
+      continue;
+    }
+    const status = (receipt as { status?: unknown }).status;
+    if (status === 'ok') {
+      const { error: completeError } = await client.rpc(
+        'complete_expo_push_ticket',
+        { p_ticket_id: ticket.ticket_id },
+      );
+      if (completeError) throw completeError;
+      continue;
+    }
+    if (status === 'error') {
+      const providerError = (
+        receipt as { details?: { error?: unknown } }
+      ).details?.error;
+      await failExpoPushTicket(
+        client,
+        ticket.ticket_id,
+        providerError === 'DeviceNotRegistered',
+      );
+    }
+  }
+}
+
+async function failExpoPushTicket(
+  client: ServiceClient,
+  ticketId: string,
+  disableDevice: boolean,
+): Promise<void> {
+  const { error } = await client.rpc('fail_expo_push_ticket', {
+    p_ticket_id: ticketId,
+    p_disable_device: disableDevice,
+  });
+  if (error) throw error;
 }
 
 async function sendWebPush(

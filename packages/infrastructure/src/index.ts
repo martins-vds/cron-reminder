@@ -501,12 +501,17 @@ function toDatabase(reminder: Reminder): Record<string, unknown> {
 
 function calculateNextDueAt(reminder: Reminder): string | null {
   if (reminder.status !== "active") return null;
+  if (reminder.schedule.kind === "once") return reminder.schedule.at;
   try {
+    const cursor =
+      reminder.revision === 1
+        ? new Date(Date.parse(reminder.createdAt) - 1)
+        : new Date();
     return (
       nextOccurrences(
         reminder.schedule,
         reminder.timezone,
-        new Date(),
+        cursor,
         1,
       )[0]?.toISOString() ?? null
     );

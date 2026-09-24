@@ -674,7 +674,7 @@ function ReminderList({
             </View>
             {reminder.status !== "archived" && (
               <Switch
-                accessibilityLabel={t("enabled")}
+                accessibilityLabel={`${reminder.title}: ${t("enabled")}`}
                 value={reminder.status === "active"}
                 onValueChange={(value) =>
                   void mutate(() => service.setEnabled(reminder.id, value))

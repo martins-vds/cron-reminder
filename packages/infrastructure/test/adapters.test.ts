@@ -247,7 +247,9 @@ class FakeSupabaseClient {
       }),
       upsert: async (row: { id: string; owner_id: string }) => {
         this.operations.push("tombstone");
-        this.tombstones = this.tombstones.filter((item) => item.id !== row.id);
+        this.tombstones = this.tombstones.filter(
+          (item) => item.id !== row.id || item.owner_id !== row.owner_id,
+        );
         this.tombstones.push(row);
         return { error: null };
       },
@@ -273,6 +275,26 @@ function toDatabaseRow(value: Reminder): Record<string, unknown> {
 }
 
 describe("Supabase reminder repository", () => {
+  it("preserves an overdue one-time due cursor on initial sync", async () => {
+    const fake = new FakeSupabaseClient();
+    const repository = new SupabaseReminderRepository(
+      fake as unknown as ConstructorParameters<
+        typeof SupabaseReminderRepository
+      >[0],
+    );
+    const overdue = reminder({
+      schedule: { kind: "once", at: "2026-01-01T09:00:00.000Z" },
+      createdAt: "2026-01-01T08:00:00.000Z",
+      updatedAt: "2026-01-01T08:00:00.000Z",
+    });
+
+    await repository.save(overdue);
+
+    expect(fake.reminders.get(overdue.id)?.next_due_at).toBe(
+      "2026-01-01T09:00:00.000Z",
+    );
+  });
+
   it("accepts identical equal-revision writes and rejects divergent ones", async () => {
     const fake = new FakeSupabaseClient();
     const repository = new SupabaseReminderRepository(

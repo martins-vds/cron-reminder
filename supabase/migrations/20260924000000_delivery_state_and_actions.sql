@@ -23,6 +23,19 @@ create table if not exists public.occurrence_device_deliveries (
 create index if not exists occurrence_device_deliveries_owner_idx on public.occurrence_device_deliveries(owner_id, delivered_at desc);
 alter table public.occurrence_device_deliveries enable row level security;
 
+create table if not exists public.expo_push_tickets (
+  ticket_id text primary key,
+  occurrence_id text not null,
+  owner_id uuid not null references auth.users(id) on delete cascade,
+  device_id text not null references public.devices(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  foreign key (occurrence_id, owner_id)
+    references public.occurrences(id, owner_id) on delete cascade
+);
+create index if not exists expo_push_tickets_created_idx
+  on public.expo_push_tickets(created_at);
+alter table public.expo_push_tickets enable row level security;
+
 drop policy if exists "owners manage occurrences" on public.occurrences;
 do $$
 begin
@@ -195,6 +208,97 @@ begin
 end;
 $$;
 
+create or replace function public.record_expo_push_ticket(
+  p_ticket_id text,
+  p_occurrence_id text,
+  p_owner_id uuid,
+  p_device_id text,
+  p_lease_id uuid
+)
+returns boolean language plpgsql security definer set search_path = '' as $$
+declare active_occurrence text;
+begin
+  select id into active_occurrence
+  from public.occurrences
+  where id = p_occurrence_id
+    and owner_id = p_owner_id
+    and status = 'delivering'
+    and delivery_lease_id = p_lease_id
+  for update;
+  if not found then
+    return false;
+  end if;
+  insert into public.expo_push_tickets(
+    ticket_id, occurrence_id, owner_id, device_id
+  )
+  values (p_ticket_id, p_occurrence_id, p_owner_id, p_device_id)
+  on conflict (ticket_id) do nothing;
+  return true;
+end;
+$$;
+
+create or replace function public.complete_expo_push_ticket(p_ticket_id text)
+returns boolean language plpgsql security definer set search_path = '' as $$
+declare ticket public.expo_push_tickets%rowtype;
+begin
+  delete from public.expo_push_tickets
+  where ticket_id = p_ticket_id
+  returning * into ticket;
+  if not found then
+    return false;
+  end if;
+  insert into public.occurrence_device_deliveries(
+    occurrence_id, owner_id, device_id, delivered_at
+  )
+  values (ticket.occurrence_id, ticket.owner_id, ticket.device_id, now())
+  on conflict (occurrence_id, device_id) do update
+    set delivered_at = excluded.delivered_at;
+  return true;
+end;
+$$;
+
+create or replace function public.fail_expo_push_ticket(
+  p_ticket_id text,
+  p_disable_device boolean
+)
+returns boolean language plpgsql security definer set search_path = '' as $$
+declare ticket public.expo_push_tickets%rowtype;
+begin
+  delete from public.expo_push_tickets
+  where ticket_id = p_ticket_id
+  returning * into ticket;
+  if not found then
+    return false;
+  end if;
+  if p_disable_device then
+    update public.devices
+    set enabled = false, updated_at = now()
+    where id = ticket.device_id;
+  end if;
+  return true;
+end;
+$$;
+
+create or replace function public.defer_occurrence_delivery(
+  p_occurrence_id text,
+  p_lease_id uuid,
+  p_now timestamptz
+)
+returns boolean language plpgsql security definer set search_path = '' as $$
+declare deferred boolean;
+begin
+  update public.occurrences
+  set status = 'delivery-failed',
+      next_delivery_attempt_at = p_now + interval '1 minute',
+      delivery_lease_id = null
+  where id = p_occurrence_id
+    and status = 'delivering'
+    and delivery_lease_id = p_lease_id
+  returning true into deferred;
+  return coalesce(deferred, false);
+end;
+$$;
+
 create or replace function public.act_on_occurrence(
   p_occurrence_id text,
   p_event text,
@@ -254,8 +358,16 @@ revoke all on function public.complete_occurrence_delivery(text, uuid, timestamp
 revoke all on function public.renew_occurrence_delivery_lease(text, uuid, timestamptz) from public, anon, authenticated;
 revoke all on function public.fail_occurrence_delivery(text, uuid, timestamptz) from public, anon, authenticated;
 revoke all on function public.record_occurrence_device_delivery(text, uuid, text, uuid) from public, anon, authenticated;
+revoke all on function public.record_expo_push_ticket(text, text, uuid, text, uuid) from public, anon, authenticated;
+revoke all on function public.complete_expo_push_ticket(text) from public, anon, authenticated;
+revoke all on function public.fail_expo_push_ticket(text, boolean) from public, anon, authenticated;
+revoke all on function public.defer_occurrence_delivery(text, uuid, timestamptz) from public, anon, authenticated;
 grant execute on function public.claim_occurrence_delivery(text, uuid, timestamptz, timestamptz) to service_role;
 grant execute on function public.complete_occurrence_delivery(text, uuid, timestamptz) to service_role;
 grant execute on function public.renew_occurrence_delivery_lease(text, uuid, timestamptz) to service_role;
 grant execute on function public.fail_occurrence_delivery(text, uuid, timestamptz) to service_role;
 grant execute on function public.record_occurrence_device_delivery(text, uuid, text, uuid) to service_role;
+grant execute on function public.record_expo_push_ticket(text, text, uuid, text, uuid) to service_role;
+grant execute on function public.complete_expo_push_ticket(text) to service_role;
+grant execute on function public.fail_expo_push_ticket(text, boolean) to service_role;
+grant execute on function public.defer_occurrence_delivery(text, uuid, timestamptz) to service_role;
