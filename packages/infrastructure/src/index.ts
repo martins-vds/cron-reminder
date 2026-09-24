@@ -295,7 +295,15 @@ export class SupabaseReminderRepository implements ReminderRepository {
       if (error) throw error;
       return;
     }
-    if (reminder.revision <= existing.revision) return;
+    if (reminder.revision === existing.revision) {
+      if (JSON.stringify(reminder) === JSON.stringify(existing)) return;
+      throw new Error(
+        `Reminder ${reminder.id} has different content at revision ${reminder.revision}; resolve the conflict before saving.`,
+      );
+    }
+    if (reminder.revision < existing.revision) {
+      throw new Error(`Reminder ${reminder.id} is stale; refresh and retry.`);
+    }
     const { data, error } = await this.client
       .from("reminders")
       .update(toDatabase(reminder))

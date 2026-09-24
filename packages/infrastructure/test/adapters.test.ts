@@ -273,6 +273,22 @@ function toDatabaseRow(value: Reminder): Record<string, unknown> {
 }
 
 describe("Supabase reminder repository", () => {
+  it("accepts identical equal-revision writes and rejects divergent ones", async () => {
+    const fake = new FakeSupabaseClient();
+    const repository = new SupabaseReminderRepository(
+      fake as unknown as ConstructorParameters<
+        typeof SupabaseReminderRepository
+      >[0],
+    );
+    const original = reminder({ revision: 2 });
+    fake.reminders.set(original.id, toDatabaseRow(original));
+
+    await expect(repository.save(original)).resolves.toBeUndefined();
+    await expect(
+      repository.save({ ...original, title: "Diverged" }),
+    ).rejects.toThrow("different content");
+  });
+
   it("rejects a stale write when a concurrent update wins the race", async () => {
     const fake = new FakeSupabaseClient();
     const repository = new SupabaseReminderRepository(

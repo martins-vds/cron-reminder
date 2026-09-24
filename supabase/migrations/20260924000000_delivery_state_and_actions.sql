@@ -117,6 +117,24 @@ begin
 end;
 $$;
 
+create or replace function public.renew_occurrence_delivery_lease(
+  p_occurrence_id text,
+  p_lease_id uuid,
+  p_now timestamptz
+)
+returns boolean language plpgsql security definer set search_path = '' as $$
+declare renewed boolean;
+begin
+  update public.occurrences
+  set acted_at = p_now
+  where id = p_occurrence_id
+    and status = 'delivering'
+    and delivery_lease_id = p_lease_id
+  returning true into renewed;
+  return coalesce(renewed, false);
+end;
+$$;
+
 create or replace function public.fail_occurrence_delivery(
   p_occurrence_id text,
   p_lease_id uuid,
@@ -225,9 +243,11 @@ revoke all on function public.act_on_occurrence(text, text, timestamptz) from pu
 grant execute on function public.act_on_occurrence(text, text, timestamptz) to authenticated, service_role;
 revoke all on function public.claim_occurrence_delivery(text, uuid, timestamptz, timestamptz) from public, anon, authenticated;
 revoke all on function public.complete_occurrence_delivery(text, uuid, timestamptz) from public, anon, authenticated;
+revoke all on function public.renew_occurrence_delivery_lease(text, uuid, timestamptz) from public, anon, authenticated;
 revoke all on function public.fail_occurrence_delivery(text, uuid, timestamptz) from public, anon, authenticated;
 revoke all on function public.record_occurrence_device_delivery(text, uuid, text, uuid) from public, anon, authenticated;
 grant execute on function public.claim_occurrence_delivery(text, uuid, timestamptz, timestamptz) to service_role;
 grant execute on function public.complete_occurrence_delivery(text, uuid, timestamptz) to service_role;
+grant execute on function public.renew_occurrence_delivery_lease(text, uuid, timestamptz) to service_role;
 grant execute on function public.fail_occurrence_delivery(text, uuid, timestamptz) to service_role;
 grant execute on function public.record_occurrence_device_delivery(text, uuid, text, uuid) to service_role;

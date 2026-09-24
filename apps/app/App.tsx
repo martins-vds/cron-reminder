@@ -535,15 +535,13 @@ function ReminderList({
   }
 
   function remove(reminder: Reminder) {
-    Alert.alert(t("delete"), t("confirmDelete"), [
-      { text: t("cancel"), style: "cancel" },
-      {
-        text: t("delete"),
-        style: "destructive",
-        onPress: () =>
-          void mutate(() => deleteReminder(reminder.id, ownerId), true),
-      },
-    ]);
+    confirmDestructiveAction(
+      t("delete"),
+      t("confirmDelete"),
+      t("cancel"),
+      t("delete"),
+      () => void mutate(() => deleteReminder(reminder.id, ownerId), true),
+    );
   }
 
   return (
@@ -1198,17 +1196,12 @@ function Settings({
       <Button
         label="Delete account and data"
         onPress={() =>
-          Alert.alert(
+          confirmDestructiveAction(
             "Delete account",
             "This permanently deletes all synchronized data.",
-            [
-              { text: t("cancel") },
-              {
-                text: t("delete"),
-                style: "destructive",
-                onPress: () => void authentication?.deleteAccount(),
-              },
-            ],
+            t("cancel"),
+            t("delete"),
+            () => void authentication?.deleteAccount(),
           )
         }
         colors={colors}
@@ -1216,6 +1209,23 @@ function Settings({
       />
     </ScrollView>
   );
+}
+
+function confirmDestructiveAction(
+  title: string,
+  message: string,
+  cancelLabel: string,
+  confirmLabel: string,
+  onConfirm: () => void,
+) {
+  if (Platform.OS === "web") {
+    if (globalThis.confirm(`${title}\n\n${message}`)) onConfirm();
+    return;
+  }
+  Alert.alert(title, message, [
+    { text: cancelLabel, style: "cancel" },
+    { text: confirmLabel, style: "destructive", onPress: onConfirm },
+  ]);
 }
 
 function Field({

@@ -31,6 +31,7 @@ cp apps/app/.env.example apps/app/.env
 npx supabase link
 npx supabase db push
 npx supabase functions deploy delete-account
+npx supabase functions deploy deregister-device --no-verify-jwt
 npx supabase functions deploy occurrence-action
 npx supabase functions deploy dispatch-reminders --no-verify-jwt
 npm start --workspace @cron-reminder/app

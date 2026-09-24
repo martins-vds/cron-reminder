@@ -44,6 +44,7 @@ const MAX_DISPATCH_WORK_PER_RUN = 500;
 const REMINDER_PAGE_SIZE = 1_000;
 const DELIVERY_LEASE_MS = 5 * 60_000;
 const MAX_DELIVERY_ATTEMPTS = 5;
+const PUSH_TIMEOUT_MS = 30_000;
 const ALLOWED_PUSH_HOSTS = [
   'fcm.googleapis.com',
   'android.googleapis.com',
@@ -86,11 +87,13 @@ Deno.serve(async (request) => {
   delivered += postponed.delivered;
   remainingWork -= postponed.processed;
 
-  let reminders: ReminderRow[];
-  try {
-    reminders = await loadReminders(client);
-  } catch {
-    return json({ error: 'Unable to load reminders' }, 500);
+  let reminders: ReminderRow[] = [];
+  if (remainingWork > 0) {
+    try {
+      reminders = await loadReminders(client);
+    } catch {
+      return json({ error: 'Unable to load reminders' }, 500);
+    }
   }
 
   const scheduled: ScheduledOccurrence[] = [];
@@ -482,7 +485,7 @@ async function deliverToDevices(
   let retryableFailures = 0;
   for (const device of devices ?? []) {
     if (alreadyDelivered.has(device.id)) continue;
-    if (!(await hasActiveLease(client, occurrenceId, leaseId))) {
+    if (!(await renewActiveLease(client, occurrenceId, leaseId))) {
       throw new LeaseLostError();
     }
     const payload = {
@@ -541,18 +544,19 @@ async function recordDeviceDelivery(
   return Boolean(data);
 }
 
-async function hasActiveLease(
+async function renewActiveLease(
   client: ServiceClient,
   occurrenceId: string,
   leaseId: string,
 ): Promise<boolean> {
-  const { data, error } = await client
-    .from('occurrences')
-    .select('id')
-    .eq('id', occurrenceId)
-    .eq('status', 'delivering')
-    .eq('delivery_lease_id', leaseId)
-    .maybeSingle();
+  const { data, error } = await client.rpc(
+    'renew_occurrence_delivery_lease',
+    {
+      p_occurrence_id: occurrenceId,
+      p_lease_id: leaseId,
+      p_now: new Date().toISOString(),
+    },
+  );
   if (error) throw error;
   return Boolean(data);
 }
@@ -670,6 +674,7 @@ async function sendExpoPush(
     sound.mode === 'silent' || sound.mode === 'vibrate' ? undefined : 'default';
   const response = await fetch('https://exp.host/--/api/v2/push/send', {
     method: 'POST',
+    signal: AbortSignal.timeout(PUSH_TIMEOUT_MS),
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       to: token,
@@ -725,6 +730,7 @@ async function sendWebPush(
   await webpush.sendNotification(
     parseWebPushSubscription(token),
     JSON.stringify(payload),
+    { timeout: PUSH_TIMEOUT_MS },
   );
 }
 

@@ -384,8 +384,10 @@ async function queueDeviceDeregistration(
   device: DeviceRegistrationRecord,
 ): Promise<void> {
   await withDeviceDeregistrations(async () => {
-    const pending = await readPendingDeviceDeregistrations();
-    if (!pending.some(({ id }) => id === device.id)) pending.push(device);
+    const pending = (await readPendingDeviceDeregistrations()).filter(
+      ({ id }) => id !== device.id,
+    );
+    pending.push(device);
     await writePendingDeviceDeregistrations(pending);
   });
 }
