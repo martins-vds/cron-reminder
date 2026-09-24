@@ -73,7 +73,7 @@ begin
     where id = p_reminder_id
       and owner_id = p_owner_id
       and status = 'active'
-      and revision = p_reminder_revision
+      and schedule_revision = p_reminder_revision
   ) then
     return false;
   end if;
@@ -142,7 +142,7 @@ begin
         and (
           public.occurrences.status = 'postponed'
           or (
-            revision = p_reminder_revision
+            schedule_revision = p_reminder_revision
             and public.occurrences.reminder_revision =
               p_reminder_revision
           )
@@ -177,7 +177,7 @@ language sql security definer set search_path = '' as $$
       )
       or (
         not p_postponed
-        and occurrence.reminder_revision = reminder.revision
+        and occurrence.reminder_revision = reminder.schedule_revision
         and (
           occurrence.status in ('triggered', 'delivery-failed')
           or (
@@ -200,6 +200,18 @@ language sql security definer set search_path = '' as $$
     occurrence.owner_id,
     occurrence.id
   limit greatest(p_limit, 0);
+$$;
+
+create or replace function public.get_recorded_occurrence_ids(
+  p_owner_id uuid,
+  p_occurrence_ids text[]
+)
+returns table(id text)
+language sql security definer set search_path = '' as $$
+  select occurrence.id
+  from public.occurrences occurrence
+  where occurrence.owner_id = p_owner_id
+    and occurrence.id = any(p_occurrence_ids);
 $$;
 
 create or replace function public.complete_occurrence_delivery(
@@ -247,7 +259,7 @@ begin
   where id = p_reminder_id
     and owner_id = p_owner_id
     and status = 'active'
-    and revision = p_reminder_revision
+    and schedule_revision = p_reminder_revision
   for share;
   if not found then
     return false;
@@ -577,6 +589,7 @@ revoke all on function public.act_on_occurrence(text, text, integer) from public
 grant execute on function public.act_on_occurrence(text, text, integer) to authenticated, service_role;
 revoke all on function public.claim_occurrence_delivery(text, uuid, text, integer, uuid, timestamptz, timestamptz) from public, anon, authenticated;
 revoke all on function public.list_deliverable_occurrences(timestamptz, timestamptz, integer, boolean) from public, anon, authenticated;
+revoke all on function public.get_recorded_occurrence_ids(uuid, text[]) from public, anon, authenticated;
 revoke all on function public.complete_occurrence_delivery(text, uuid, uuid, timestamptz) from public, anon, authenticated;
 revoke all on function public.prepare_occurrence_delivery(text, text, uuid, integer, timestamptz, uuid, timestamptz, timestamptz) from public, anon, authenticated;
 revoke all on function public.renew_occurrence_delivery_lease(text, uuid, uuid, timestamptz) from public, anon, authenticated;
@@ -588,6 +601,7 @@ revoke all on function public.fail_expo_push_ticket(text, boolean) from public, 
 revoke all on function public.defer_occurrence_delivery(text, uuid, uuid, timestamptz) from public, anon, authenticated;
 grant execute on function public.claim_occurrence_delivery(text, uuid, text, integer, uuid, timestamptz, timestamptz) to service_role;
 grant execute on function public.list_deliverable_occurrences(timestamptz, timestamptz, integer, boolean) to service_role;
+grant execute on function public.get_recorded_occurrence_ids(uuid, text[]) to service_role;
 grant execute on function public.complete_occurrence_delivery(text, uuid, uuid, timestamptz) to service_role;
 grant execute on function public.prepare_occurrence_delivery(text, text, uuid, integer, timestamptz, uuid, timestamptz, timestamptz) to service_role;
 grant execute on function public.renew_occurrence_delivery_lease(text, uuid, uuid, timestamptz) to service_role;

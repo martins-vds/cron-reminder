@@ -9,6 +9,7 @@
     "@cron-reminder/localization": "0.1.0",
     "@expo/metro-runtime": "~57.0.16",
     "@react-native-async-storage/async-storage": "2.2.0",
+    "@react-native-community/netinfo": "^12.0.1",
     "@supabase/supabase-js": "^2.117.1",
     "expo": "~57.0.24",
     "expo-audio": "~57.0.5",

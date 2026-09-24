@@ -158,6 +158,8 @@ create table public.reminders (
     check (public.is_valid_sound(sound)),
   status public.reminder_status not null default 'active',
   revision integer not null default 1 check (revision > 0),
+  schedule_revision integer not null default 1
+    check (schedule_revision > 0),
   next_due_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),

@@ -2,6 +2,7 @@ import { StatusBar } from "expo-status-bar";
 import { Stack, router, usePathname } from "expo-router";
 import { getLocales } from "expo-localization";
 import * as Crypto from "expo-crypto";
+import NetInfo from "@react-native-community/netinfo";
 import {
   createContext,
   useCallback,
@@ -206,9 +207,13 @@ export function RootNavigator() {
     const subscription = AppState.addEventListener("change", (state) => {
       if (state === "active") retry();
     });
+    const unsubscribeNetwork = NetInfo.addEventListener((state) => {
+      if (state.isConnected) retry();
+    });
     return () => {
       active = false;
       subscription.remove();
+      unsubscribeNetwork();
     };
   }, [ownerId]);
 

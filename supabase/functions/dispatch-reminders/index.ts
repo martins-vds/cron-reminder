@@ -19,6 +19,7 @@ interface ReminderRow {
   timezone: string;
   sound: { mode: 'default' | 'silent' | 'vibrate' };
   revision: number;
+  schedule_revision: number;
   created_at: string;
   next_due_at: string | null;
 }
@@ -73,7 +74,7 @@ const ALLOWED_PUSH_HOSTS = [
   'push.apple.com',
 ];
 const REMINDER_SELECT =
-  'id,owner_id,title,notes,schedule,timezone,sound,revision,created_at,next_due_at';
+  'id,owner_id,title,notes,schedule,timezone,sound,revision,schedule_revision,created_at,next_due_at';
 
 Deno.serve(async (request) => {
   const cronSecret = Deno.env.get('CRON_SECRET');
@@ -521,13 +522,17 @@ async function loadRecordedOccurrenceIds(
     (due) => `${reminderId}:${due.toISOString()}`,
   );
   if (!ids.length) return new Set();
-  const { data, error } = await client
-    .from('occurrences')
-    .select('id')
-    .eq('owner_id', ownerId)
-    .in('id', ids);
+  const { data, error } = await client.rpc(
+    'get_recorded_occurrence_ids',
+    {
+      p_owner_id: ownerId,
+      p_occurrence_ids: ids,
+    },
+  );
   if (error) throw error;
-  return new Set((data ?? []).map(({ id }) => String(id)));
+  return new Set(
+    ((data ?? []) as Array<{ id: string }>).map(({ id }) => String(id)),
+  );
 }
 
 async function processScheduledOccurrence(
@@ -542,7 +547,7 @@ async function processScheduledOccurrence(
       p_occurrence_id: occurrenceId,
       p_reminder_id: reminder.id,
       p_owner_id: reminder.owner_id,
-      p_reminder_revision: reminder.revision,
+      p_reminder_revision: reminder.schedule_revision,
       p_scheduled_at: due.toISOString(),
     });
     if (error) throw error;
@@ -554,7 +559,7 @@ async function processScheduledOccurrence(
     p_occurrence_id: occurrenceId,
     p_reminder_id: reminder.id,
     p_owner_id: reminder.owner_id,
-    p_reminder_revision: reminder.revision,
+    p_reminder_revision: reminder.schedule_revision,
     p_scheduled_at: due.toISOString(),
     p_lease_id: leaseId,
     p_now: now.toISOString(),
@@ -579,7 +584,7 @@ async function claimUndelivered(
     p_occurrence_id: occurrenceId,
     p_owner_id: reminder.owner_id,
     p_reminder_id: reminder.id,
-    p_reminder_revision: reminder.revision,
+    p_reminder_revision: reminder.schedule_revision,
     p_lease_id: leaseId,
     p_now: now.toISOString(),
     p_stale_before: new Date(
