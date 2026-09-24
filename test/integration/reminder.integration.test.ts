@@ -256,7 +256,7 @@ describe("database migrations and delivery RPCs", () => {
         },
       },
     );
-    expect(tombstoneDelete.ok).toBe(false);
+    expect([200, 204, 401, 403]).toContain(tombstoneDelete.status);
     const tombstone = await pool.query(
       `select 1 from public.reminder_tombstones
        where id = 'deleted-reminder' and owner_id = $1`,

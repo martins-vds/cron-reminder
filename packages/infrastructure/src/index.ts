@@ -367,6 +367,9 @@ export class SupabaseReminderRepository implements ReminderRepository {
           : null,
     );
     if (!changedScheduling) delete databaseUpdate.next_due_at;
+    delete databaseUpdate.id;
+    delete databaseUpdate.owner_id;
+    delete databaseUpdate.created_at;
     const { data, error } = await this.client
       .from("reminders")
       .update(databaseUpdate)

@@ -446,10 +446,34 @@ create policy "owners create tombstones" on public.reminder_tombstones
 create policy "owners refresh tombstones" on public.reminder_tombstones
   for update using (owner_id = auth.uid()) with check (owner_id = auth.uid());
 
-revoke insert(occurrence_count, schedule_revision)
-  on public.reminders from authenticated;
-revoke update(occurrence_count, schedule_revision)
-  on public.reminders from authenticated;
+revoke insert, update on public.reminders from authenticated;
+grant insert(
+  id,
+  owner_id,
+  title,
+  notes,
+  tags,
+  schedule,
+  timezone,
+  sound,
+  status,
+  revision,
+  next_due_at,
+  created_at,
+  updated_at
+) on public.reminders to authenticated;
+grant update(
+  title,
+  notes,
+  tags,
+  schedule,
+  timezone,
+  sound,
+  status,
+  revision,
+  next_due_at,
+  updated_at
+) on public.reminders to authenticated;
 
 create or replace function public.create_profile()
 returns trigger language plpgsql security definer set search_path = '' as $$
