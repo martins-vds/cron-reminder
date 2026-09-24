@@ -6,7 +6,11 @@ import type {
 } from "@cron-reminder/application";
 import { detectConflict } from "@cron-reminder/application";
 import type { Reminder, Schedule } from "@cron-reminder/domain";
-import { validateSchedule, validateTimezone } from "@cron-reminder/domain";
+import {
+  nextOccurrences,
+  validateSchedule,
+  validateTimezone,
+} from "@cron-reminder/domain";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 type SupabaseClientLike = Pick<SupabaseClient, "auth" | "from" | "functions">;
@@ -491,7 +495,24 @@ function toDatabase(reminder: Reminder): Record<string, unknown> {
     revision: reminder.revision,
     created_at: reminder.createdAt,
     updated_at: reminder.updatedAt,
+    next_due_at: calculateNextDueAt(reminder),
   };
+}
+
+function calculateNextDueAt(reminder: Reminder): string | null {
+  if (reminder.status !== "active") return null;
+  try {
+    return (
+      nextOccurrences(
+        reminder.schedule,
+        reminder.timezone,
+        new Date(),
+        1,
+      )[0]?.toISOString() ?? null
+    );
+  } catch {
+    return null;
+  }
 }
 
 function fromDatabase(value: Record<string, unknown>): Reminder {

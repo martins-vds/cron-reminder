@@ -19,6 +19,7 @@ interface ReminderRow {
   timezone: string;
   sound: { mode: 'default' | 'silent' | 'vibrate' };
   created_at: string;
+  next_due_at: string | null;
 }
 
 interface DeviceDeliveryResult {
@@ -41,7 +42,6 @@ type ServiceClient = ReturnType<typeof createClient<any>>;
 
 const DISPATCH_STATE_ID = true;
 const MAX_DISPATCH_WORK_PER_RUN = 500;
-const REMINDER_PAGE_SIZE = 1_000;
 const DELIVERY_LEASE_MS = 5 * 60_000;
 const MAX_DELIVERY_ATTEMPTS = 5;
 const PUSH_TIMEOUT_MS = 30_000;
@@ -52,6 +52,8 @@ const ALLOWED_PUSH_HOSTS = [
   'notify.windows.com',
   'push.apple.com',
 ];
+const REMINDER_SELECT =
+  'id,owner_id,title,notes,schedule,timezone,sound,created_at,next_due_at';
 
 Deno.serve(async (request) => {
   const cronSecret = Deno.env.get('CRON_SECRET');
@@ -88,24 +90,35 @@ Deno.serve(async (request) => {
   remainingWork -= postponed.processed;
 
   let reminders: ReminderRow[] = [];
+  let reminderPageTruncated = false;
+  let nextReminderCursor: { due: Date; id: string } | null = null;
   if (remainingWork > 0) {
     try {
-      reminders = await loadReminders(client);
+      const page = await loadReminders(client, windowEnd, remainingWork);
+      reminders = page.reminders;
+      reminderPageTruncated = page.truncated;
+      nextReminderCursor = page.nextCursor;
     } catch {
       return json({ error: 'Unable to load reminders' }, 500);
     }
   }
 
   const scheduled: ScheduledOccurrence[] = [];
+  const exhaustedReminderIds = new Set<string>();
   let candidateGenerationTruncated = false;
+  let candidateCapacity = remainingWork + 1;
   for (const reminder of remainingWork > 0 ? reminders : []) {
+    if (candidateCapacity <= 0) {
+      candidateGenerationTruncated = true;
+      break;
+    }
     let dueResult: ReturnType<typeof dueOccurrences>;
     try {
       dueResult = dueOccurrences(
         reminder,
         windowStart,
         windowEnd,
-        MAX_DISPATCH_WORK_PER_RUN + 1,
+        candidateCapacity,
       );
     } catch {
       continue;
@@ -129,6 +142,7 @@ Deno.serve(async (request) => {
       if (countError) return json({ error: 'Unable to count occurrences' }, 500);
       const remaining = reminder.schedule.occurrenceLimit - (count ?? 0);
       if (remaining <= 0) {
+        exhaustedReminderIds.add(reminder.id);
         dueResult.truncated = false;
         continue;
       }
@@ -148,6 +162,15 @@ Deno.serve(async (request) => {
       });
       for (const due of occurrences) {
         if (
+          nextReminderCursor &&
+          (due > nextReminderCursor.due ||
+            (due.getTime() === nextReminderCursor.due.getTime() &&
+              reminder.id >= nextReminderCursor.id))
+        ) {
+          candidateGenerationTruncated = true;
+          continue;
+        }
+        if (
           due.getTime() === windowStart.getTime() &&
           windowStartReminderId !== null &&
           reminder.id <= windowStartReminderId
@@ -163,10 +186,20 @@ Deno.serve(async (request) => {
         });
       }
       candidateGenerationTruncated ||= dueResult.truncated;
+      candidateCapacity -= occurrences.length;
       continue;
     }
     candidateGenerationTruncated ||= dueResult.truncated;
     for (const due of occurrences) {
+      if (
+        nextReminderCursor &&
+        (due > nextReminderCursor.due ||
+          (due.getTime() === nextReminderCursor.due.getTime() &&
+            reminder.id >= nextReminderCursor.id))
+      ) {
+        candidateGenerationTruncated = true;
+        continue;
+      }
       if (
         due.getTime() === windowStart.getTime() &&
         windowStartReminderId !== null &&
@@ -176,6 +209,7 @@ Deno.serve(async (request) => {
       }
       scheduled.push({ reminder, due, recorded: false });
     }
+    candidateCapacity -= occurrences.length;
   }
 
   scheduled.sort(
@@ -199,6 +233,7 @@ Deno.serve(async (request) => {
   }
   const hasUnprocessedScheduleWork =
     remainingWork === 0 ||
+    reminderPageTruncated ||
     candidateGenerationTruncated ||
     scheduledIndex < scheduled.length;
 
@@ -271,6 +306,25 @@ Deno.serve(async (request) => {
       : hasUnprocessedScheduleWork
         ? windowStartReminderId
         : null;
+  const nextDueUpdates = reminders.map((reminder) => ({
+    id: reminder.id,
+    next_due_at: exhaustedReminderIds.has(reminder.id)
+      ? null
+      : nextDueAtCursor(
+          reminder,
+          nextWindowStart,
+          nextWindowReminderId === null ||
+            reminder.id > nextWindowReminderId,
+        ),
+  }));
+  if (nextDueUpdates.length) {
+    const { error: nextDueError } = await client.rpc(
+      'update_reminder_next_due',
+      { p_updates: nextDueUpdates },
+    );
+    if (nextDueError)
+      return json({ error: 'Unable to update reminder due times' }, 500);
+  }
   const { error: updateStateError } = await client.rpc('advance_dispatch_state', {
     p_last_dispatched_at: nextWindowStart.toISOString(),
     p_last_dispatched_reminder_id: nextWindowReminderId,
@@ -283,27 +337,32 @@ Deno.serve(async (request) => {
 
 async function loadReminders(
   client: ServiceClient,
-): Promise<ReminderRow[]> {
-  const reminders: ReminderRow[] = [];
-  let lastId: string | null = null;
-  for (;;) {
-    let query = client
-      .from('reminders')
-      .select(
-        'id,owner_id,title,notes,schedule,timezone,sound,created_at',
-      )
-      .eq('status', 'active')
-      .order('id')
-      .limit(REMINDER_PAGE_SIZE);
-    if (lastId !== null) query = query.gt('id', lastId);
-    const { data, error } = await query;
-    if (error) throw error;
-    const page = (data ?? []) as ReminderRow[];
-    reminders.push(...page);
-    if (page.length < REMINDER_PAGE_SIZE) return reminders;
-    lastId = page[page.length - 1]?.id ?? null;
-    if (lastId === null) return reminders;
-  }
+  windowEnd: Date,
+  limit: number,
+): Promise<{
+  reminders: ReminderRow[];
+  truncated: boolean;
+  nextCursor: { due: Date; id: string } | null;
+}> {
+  const { data, error } = await client
+    .from('reminders')
+    .select(REMINDER_SELECT)
+    .eq('status', 'active')
+    .lte('next_due_at', windowEnd.toISOString())
+    .order('next_due_at')
+    .order('id')
+    .limit(limit + 1);
+  if (error) throw error;
+  const page = (data ?? []) as ReminderRow[];
+  const nextReminder = page[limit];
+  return {
+    reminders: page.slice(0, limit),
+    truncated: page.length > limit,
+    nextCursor:
+      nextReminder?.next_due_at
+        ? { due: new Date(nextReminder.next_due_at), id: nextReminder.id }
+        : null,
+  };
 }
 
 async function loadRecordedOccurrenceIds(
@@ -349,7 +408,7 @@ async function dispatchPendingDeliveries(
   const now = new Date();
   const { data, error } = await client
     .from('occurrences')
-    .select('id,reminder_id,reminders!inner(status)')
+    .select(`id,reminder_id,reminders!inner(${REMINDER_SELECT},status)`)
     .eq('reminders.status', 'active')
     .is('delivered_at', null)
     .lt('delivery_attempts', MAX_DELIVERY_ATTEMPTS)
@@ -360,7 +419,7 @@ async function dispatchPendingDeliveries(
   let processed = 0;
   for (const occurrence of data ?? []) {
     processed++;
-    const reminder = await loadActiveReminder(client, occurrence.reminder_id);
+    const reminder = embeddedReminder(occurrence.reminders);
     if (!reminder) continue;
     const leaseId = await claimUndelivered(client, occurrence.id);
     if (!leaseId) continue;
@@ -382,7 +441,7 @@ async function dispatchPostponed(
   if (limit <= 0) return { delivered: 0, processed: 0 };
   const { data, error } = await client
     .from('occurrences')
-    .select('id,reminder_id,reminders!inner(status)')
+    .select(`id,reminder_id,reminders!inner(${REMINDER_SELECT},status)`)
     .eq('reminders.status', 'active')
     .eq('status', 'postponed')
     .lte('snoozed_until', now.toISOString())
@@ -392,7 +451,7 @@ async function dispatchPostponed(
   let processed = 0;
   for (const occurrence of data ?? []) {
     processed++;
-    const reminder = await loadActiveReminder(client, occurrence.reminder_id);
+    const reminder = embeddedReminder(occurrence.reminders);
     if (!reminder) continue;
     const leaseId = await claimUndelivered(client, occurrence.id);
     if (!leaseId) continue;
@@ -406,18 +465,11 @@ async function dispatchPostponed(
   return { delivered, processed };
 }
 
-async function loadActiveReminder(
-  client: ServiceClient,
-  reminderId: string,
-): Promise<ReminderRow | null> {
-  const { data, error } = await client
-    .from('reminders')
-    .select('id,owner_id,title,notes,schedule,timezone,sound,created_at')
-    .eq('id', reminderId)
-    .eq('status', 'active')
-    .maybeSingle();
-  if (error) throw error;
-  return data as ReminderRow | null;
+function embeddedReminder(value: unknown): ReminderRow | null {
+  const reminder = Array.isArray(value) ? value[0] : value;
+  return reminder && typeof reminder === 'object'
+    ? (reminder as ReminderRow)
+    : null;
 }
 
 async function deliverOccurrence(
@@ -620,6 +672,29 @@ class RetryableDeliveryError extends Error {
 }
 
 class LeaseLostError extends Error {}
+
+function nextDueAtCursor(
+  reminder: ReminderRow,
+  boundary: Date,
+  inclusive: boolean,
+): string | null {
+  if (reminder.schedule.kind === 'once') {
+    const due = new Date(reminder.schedule.at);
+    const allowed = inclusive ? due >= boundary : due > boundary;
+    return allowed ? due.toISOString() : null;
+  }
+  try {
+    const interval = CronExpressionParser.parse(reminder.schedule.expression, {
+      currentDate: new Date(boundary.getTime() - (inclusive ? 1 : 0)),
+      startDate: reminder.schedule.startAt,
+      endDate: reminder.schedule.endAt,
+      tz: reminder.timezone,
+    });
+    return interval.next().toDate().toISOString();
+  } catch {
+    return null;
+  }
+}
 
 function dueOccurrences(
   reminder: ReminderRow,

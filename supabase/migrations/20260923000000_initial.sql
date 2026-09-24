@@ -155,12 +155,15 @@ create table public.reminders (
     check (public.is_valid_sound(sound)),
   status public.reminder_status not null default 'active',
   revision integer not null default 1 check (revision > 0),
+  next_due_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   unique (id, owner_id)
 );
 create index reminders_owner_status_idx on public.reminders(owner_id, status);
 create index reminders_tags_idx on public.reminders using gin(tags);
+create index reminders_due_idx on public.reminders(next_due_at, id)
+  where status = 'active' and next_due_at is not null;
 
 create table public.occurrences (
   id text primary key,
@@ -230,7 +233,7 @@ begin
   end if;
   if exists (
     select 1 from public.reminder_tombstones
-    where id = new.id
+    where id = new.id and owner_id = new.owner_id
   ) then
     raise exception 'Reminder % has been deleted', new.id using errcode = '23514';
   end if;
@@ -270,6 +273,17 @@ returns void language sql security definer set search_path = '' as $$
           coalesce(p_last_dispatched_reminder_id, '')
       )
     );
+$$;
+
+create or replace function public.update_reminder_next_due(p_updates jsonb)
+returns void language sql security definer set search_path = '' as $$
+  update public.reminders reminder
+  set next_due_at = updates.next_due_at
+  from jsonb_to_recordset(p_updates) as updates(
+    id text,
+    next_due_at timestamptz
+  )
+  where reminder.id = updates.id;
 $$;
 
 alter table public.profiles enable row level security;
@@ -312,3 +326,5 @@ revoke all on function public.delete_expired_history() from public, anon, authen
 grant execute on function public.delete_expired_history() to service_role;
 revoke all on function public.advance_dispatch_state(timestamptz, text) from public, anon, authenticated;
 grant execute on function public.advance_dispatch_state(timestamptz, text) to service_role;
+revoke all on function public.update_reminder_next_due(jsonb) from public, anon, authenticated;
+grant execute on function public.update_reminder_next_due(jsonb) to service_role;

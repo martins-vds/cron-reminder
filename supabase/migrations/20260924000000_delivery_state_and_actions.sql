@@ -198,7 +198,7 @@ $$;
 create or replace function public.act_on_occurrence(
   p_occurrence_id text,
   p_event text,
-  p_snoozed_until timestamptz
+  p_snooze_minutes integer
 )
 returns boolean language plpgsql security definer set search_path = '' as $$
 declare
@@ -211,13 +211,21 @@ begin
   if p_event not in ('dismissed', 'postponed') then
     raise exception 'Unsupported occurrence action %', p_event;
   end if;
-  if p_event = 'postponed' and (p_snoozed_until is null or p_snoozed_until <= now()) then
-    raise exception 'Postponed occurrences require a future snooze time';
+  if p_event = 'postponed'
+    and (
+      p_snooze_minutes is null
+      or p_snooze_minutes not in (5, 10, 15, 30, 60)
+    ) then
+    raise exception 'Unsupported snooze duration %', p_snooze_minutes;
   end if;
   update public.occurrences
   set status = p_event::public.occurrence_status,
       acted_at = now(),
-      snoozed_until = case when p_event = 'postponed' then p_snoozed_until else null end,
+      snoozed_until = case
+        when p_event = 'postponed'
+          then now() + make_interval(mins => p_snooze_minutes)
+        else null
+      end,
       delivered_at = case when p_event = 'postponed' then null else delivered_at end,
       delivery_attempts = case when p_event = 'postponed' then 0 else delivery_attempts end,
       next_delivery_attempt_at = case when p_event = 'postponed' then null else next_delivery_attempt_at end,
@@ -239,8 +247,8 @@ begin
 end;
 $$;
 
-revoke all on function public.act_on_occurrence(text, text, timestamptz) from public, anon;
-grant execute on function public.act_on_occurrence(text, text, timestamptz) to authenticated, service_role;
+revoke all on function public.act_on_occurrence(text, text, integer) from public, anon;
+grant execute on function public.act_on_occurrence(text, text, integer) to authenticated, service_role;
 revoke all on function public.claim_occurrence_delivery(text, uuid, timestamptz, timestamptz) from public, anon, authenticated;
 revoke all on function public.complete_occurrence_delivery(text, uuid, timestamptz) from public, anon, authenticated;
 revoke all on function public.renew_occurrence_delivery_lease(text, uuid, timestamptz) from public, anon, authenticated;

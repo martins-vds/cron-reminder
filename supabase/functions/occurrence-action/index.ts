@@ -20,14 +20,10 @@ Deno.serve(async (request) => {
   }
   if (!isAction(input)) return response({ error: 'Invalid action payload' }, 400);
 
-  const now = new Date();
   const { data, error } = await client.rpc('act_on_occurrence', {
     p_occurrence_id: input.occurrenceId,
     p_event: input.action === 'dismiss' ? 'dismissed' : 'postponed',
-    p_snoozed_until:
-      input.action === 'dismiss'
-        ? null
-        : new Date(now.getTime() + input.minutes * 60_000).toISOString(),
+    p_snooze_minutes: input.action === 'dismiss' ? null : input.minutes,
   });
   if (error) return response({ error: 'Unable to record occurrence action' }, 500);
   if (!data) return response({ error: 'Occurrence not found' }, 404);

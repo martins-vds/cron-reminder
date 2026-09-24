@@ -121,7 +121,20 @@ export function RootNavigator() {
   const t = createTranslator(locale);
 
   useEffect(() => {
-    void flushPendingDeviceDeregistrations().catch(() => {});
+    const retry = () =>
+      void flushPendingDeviceDeregistrations().catch(() => {});
+    retry();
+    if (Platform.OS === "web") {
+      globalThis.addEventListener("online", retry);
+      return () => globalThis.removeEventListener("online", retry);
+    }
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state === "active") retry();
+    });
+    return () => subscription.remove();
+  }, []);
+
+  useEffect(() => {
     if (!supabase) {
       setLoadingSession(false);
       return;
@@ -730,7 +743,7 @@ function ReminderEditor({
   const [notes, setNotes] = useState(reminder?.notes ?? "");
   const [tags, setTags] = useState(reminder?.tags.join(", ") ?? "");
   const [kind, setKind] = useState<EditorKind>(
-    reminder?.schedule.kind === "once" ? "once" : "daily",
+    inferEditorKind(reminder?.schedule),
   );
   const [cron, setCron] = useState(
     reminder?.schedule.kind === "cron"
@@ -1209,6 +1222,19 @@ function Settings({
       />
     </ScrollView>
   );
+}
+
+function inferEditorKind(schedule: Schedule | undefined): EditorKind {
+  if (!schedule) return "daily";
+  if (schedule.kind === "once") return "once";
+  const presets: Record<string, EditorKind> = {
+    "*/5 * * * *": "interval",
+    "0 9 * * *": "daily",
+    "0 9 * * 1-5": "weekdays",
+    "0 9 1 * *": "monthly",
+    "0 9 1 1 *": "yearly",
+  };
+  return presets[schedule.expression.trim()] ?? "advanced";
 }
 
 function confirmDestructiveAction(
