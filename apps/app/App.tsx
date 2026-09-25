@@ -1201,6 +1201,8 @@ function ReminderEditor({
   onSaved: (conflicts: readonly SyncConflict[]) => void;
 }) {
   const t = createTranslator(locale);
+  const { width } = useWindowDimensions();
+  const isWide = width >= 1120;
   const [title, setTitle] = useState(reminder?.title ?? "");
   const [notes, setNotes] = useState(reminder?.notes ?? "");
   const [tags, setTags] = useState(reminder?.tags.join(", ") ?? "");
@@ -1308,173 +1310,190 @@ function ReminderEditor({
         )}
         colors={colors}
       />
-      <SectionCard
-        title={copy(locale, "Details", "Detalhes")}
-        description={copy(
-          locale,
-          "Give this reminder a clear name and optional context.",
-          "Dê um nome claro e um contexto opcional a este lembrete.",
-        )}
-        colors={colors}
-      >
-        <View style={styles.formStack}>
-          <Field
-            label={t("title")}
-            value={title}
-            onChangeText={setTitle}
-            colors={colors}
-            placeholder={copy(
+      <View style={[styles.screenGrid, isWide && styles.screenGridWide]}>
+        <View
+          style={[styles.screenColumn, isWide && styles.editorDetailsColumn]}
+        >
+          <SectionCard
+            title={copy(locale, "Details", "Detalhes")}
+            description={copy(
               locale,
-              "For example, submit weekly report",
-              "Por exemplo, enviar relatório semanal",
+              "Give this reminder a clear name and optional context.",
+              "Dê um nome claro e um contexto opcional a este lembrete.",
             )}
-          />
-          <Field
-            label={t("notes")}
-            value={notes}
-            onChangeText={setNotes}
             colors={colors}
-            multiline
-            placeholder={copy(
-              locale,
-              "Add useful context or a checklist",
-              "Adicione um contexto útil ou uma lista",
-            )}
-          />
-          <Field
-            label={`${t("tags")} (${copy(locale, "comma separated", "separadas por vírgula")})`}
-            value={tags}
-            onChangeText={setTags}
-            colors={colors}
-            placeholder={copy(locale, "work, finance", "trabalho, finanças")}
-          />
-        </View>
-      </SectionCard>
-      <SectionCard
-        title={t("schedule")}
-        description={copy(
-          locale,
-          "Choose a common rhythm or enter an advanced cron expression.",
-          "Escolha um ritmo comum ou insira uma expressão cron avançada.",
-        )}
-        colors={colors}
-      >
-        <View style={styles.formStack}>
-          <View style={styles.chips}>
-            {(
-              [
-                "once",
-                "interval",
-                "daily",
-                "weekdays",
-                "monthly",
-                "yearly",
-                "advanced",
-              ] as const
-            ).map((value) => (
-              <Button
-                key={value}
-                label={t(value)}
-                onPress={() => chooseKind(value)}
-                active={kind === value}
-                selected={kind === value}
+          >
+            <View style={styles.formStack}>
+              <Field
+                label={t("title")}
+                value={title}
+                onChangeText={setTitle}
                 colors={colors}
-                variant="chip"
-                compact
+                placeholder={copy(
+                  locale,
+                  "For example, submit weekly report",
+                  "Por exemplo, enviar relatório semanal",
+                )}
               />
-            ))}
-          </View>
-          {kind === "once" ? (
-            <Field
-              label={copy(locale, "ISO date and time", "Data e hora ISO")}
-              value={onceAt}
-              onChangeText={setOnceAt}
-              colors={colors}
-            />
-          ) : (
-            <Field
-              label={kind === "advanced" ? t("advanced") : "Cron"}
-              value={cron}
-              onChangeText={setCron}
-              colors={colors}
-            />
-          )}
-          {!validation.valid && (
-            <Notice
-              tone="danger"
-              colors={colors}
-              text={copy(
-                locale,
-                "Enter a valid five-field schedule.",
-                "Insira uma agenda válida de cinco campos.",
-              )}
-            />
-          )}
-          {validation.valid && (
-            <View
-              style={[
-                styles.preview,
-                {
-                  borderColor: colors.border,
-                  backgroundColor: colors.surfaceMuted,
-                },
-              ]}
-            >
-              <Text style={[styles.cardTitle, { color: colors.text }]}>
-                {describeSchedule(schedule, locale)}
-              </Text>
-              <Text style={[styles.sectionLabel, { color: colors.subtle }]}>
-                {t("upcoming")}
-              </Text>
-              <View style={styles.previewList}>
-                {preview.map((date, index) => (
-                  <View key={date.toISOString()} style={styles.previewRow}>
-                    <Text
-                      style={[styles.previewIndex, { color: colors.accent }]}
-                    >
-                      {index + 1}
-                    </Text>
-                    <Text style={[styles.caption, { color: colors.muted }]}>
-                      {date.toLocaleString(locale, { timeZone: timezone })}
-                    </Text>
-                  </View>
+              <Field
+                label={t("notes")}
+                value={notes}
+                onChangeText={setNotes}
+                colors={colors}
+                multiline
+                placeholder={copy(
+                  locale,
+                  "Add useful context or a checklist",
+                  "Adicione um contexto útil ou uma lista",
+                )}
+              />
+              <Field
+                label={`${t("tags")} (${copy(locale, "comma separated", "separadas por vírgula")})`}
+                value={tags}
+                onChangeText={setTags}
+                colors={colors}
+                placeholder={copy(
+                  locale,
+                  "work, finance",
+                  "trabalho, finanças",
+                )}
+              />
+            </View>
+          </SectionCard>
+        </View>
+        <View
+          style={[styles.screenColumn, isWide && styles.editorScheduleColumn]}
+        >
+          <SectionCard
+            title={t("schedule")}
+            description={copy(
+              locale,
+              "Choose a common rhythm or enter an advanced cron expression.",
+              "Escolha um ritmo comum ou insira uma expressão cron avançada.",
+            )}
+            colors={colors}
+          >
+            <View style={styles.formStack}>
+              <View style={styles.chips}>
+                {(
+                  [
+                    "once",
+                    "interval",
+                    "daily",
+                    "weekdays",
+                    "monthly",
+                    "yearly",
+                    "advanced",
+                  ] as const
+                ).map((value) => (
+                  <Button
+                    key={value}
+                    label={t(value)}
+                    onPress={() => chooseKind(value)}
+                    active={kind === value}
+                    selected={kind === value}
+                    colors={colors}
+                    variant="chip"
+                    compact
+                  />
                 ))}
               </View>
+              {kind === "once" ? (
+                <Field
+                  label={copy(locale, "ISO date and time", "Data e hora ISO")}
+                  value={onceAt}
+                  onChangeText={setOnceAt}
+                  colors={colors}
+                />
+              ) : (
+                <Field
+                  label={kind === "advanced" ? t("advanced") : "Cron"}
+                  value={cron}
+                  onChangeText={setCron}
+                  colors={colors}
+                />
+              )}
+              {!validation.valid && (
+                <Notice
+                  tone="danger"
+                  colors={colors}
+                  text={copy(
+                    locale,
+                    "Enter a valid five-field schedule.",
+                    "Insira uma agenda válida de cinco campos.",
+                  )}
+                />
+              )}
+              {validation.valid && (
+                <View
+                  style={[
+                    styles.preview,
+                    {
+                      borderColor: colors.border,
+                      backgroundColor: colors.surfaceMuted,
+                    },
+                  ]}
+                >
+                  <Text style={[styles.cardTitle, { color: colors.text }]}>
+                    {describeSchedule(schedule, locale)}
+                  </Text>
+                  <Text style={[styles.sectionLabel, { color: colors.subtle }]}>
+                    {t("upcoming")}
+                  </Text>
+                  <View style={styles.previewList}>
+                    {preview.map((date, index) => (
+                      <View key={date.toISOString()} style={styles.previewRow}>
+                        <Text
+                          style={[
+                            styles.previewIndex,
+                            { color: colors.accent },
+                          ]}
+                        >
+                          {index + 1}
+                        </Text>
+                        <Text style={[styles.caption, { color: colors.muted }]}>
+                          {date.toLocaleString(locale, { timeZone: timezone })}
+                        </Text>
+                      </View>
+                    ))}
+                  </View>
+                </View>
+              )}
             </View>
-          )}
-        </View>
-      </SectionCard>
-      <SectionCard
-        title={t("sound")}
-        description={copy(
-          locale,
-          "Choose how this reminder should get your attention.",
-          "Escolha como este lembrete deve chamar sua atenção.",
-        )}
-        colors={colors}
-      >
-        <View style={styles.chips}>
-          {(["default", "silent", "vibrate"] as const).map((mode) => (
-            <Button
-              key={mode}
-              label={mode}
-              onPress={() => setSound({ mode })}
-              active={sound.mode === mode}
-              selected={sound.mode === mode}
-              colors={colors}
-              variant="chip"
-              compact
-            />
-          ))}
-          <Button
-            label={copy(locale, "Preview sound", "Ouvir prévia")}
-            onPress={() => void previewSound(sound)}
+          </SectionCard>
+          <SectionCard
+            title={t("sound")}
+            description={copy(
+              locale,
+              "Choose how this reminder should get your attention.",
+              "Escolha como este lembrete deve chamar sua atenção.",
+            )}
             colors={colors}
-            variant="secondary"
-            compact
-          />
+          >
+            <View style={styles.chips}>
+              {(["default", "silent", "vibrate"] as const).map((mode) => (
+                <Button
+                  key={mode}
+                  label={mode}
+                  onPress={() => setSound({ mode })}
+                  active={sound.mode === mode}
+                  selected={sound.mode === mode}
+                  colors={colors}
+                  variant="chip"
+                  compact
+                />
+              ))}
+              <Button
+                label={copy(locale, "Preview sound", "Ouvir prévia")}
+                onPress={() => void previewSound(sound)}
+                colors={colors}
+                variant="secondary"
+                compact
+              />
+            </View>
+          </SectionCard>
         </View>
-      </SectionCard>
+      </View>
       {error && <Notice tone="danger" colors={colors} text={error} />}
       <View
         style={[
@@ -1542,6 +1561,8 @@ function Settings({
   colors: Colors;
 }) {
   const t = createTranslator(locale);
+  const { width } = useWindowDimensions();
+  const isWide = width >= 1120;
   const [backupText, setBackupText] = useState("");
   const [backupMessage, setBackupMessage] = useState("");
   const [importConflicts, setImportConflicts] = useState<
@@ -1672,233 +1693,243 @@ function Settings({
         )}
         colors={colors}
       />
-      <SectionCard
-        title={copy(locale, "Preferences", "Preferências")}
-        description={copy(
-          locale,
-          "Choose the language and appearance used on this device.",
-          "Escolha o idioma e a aparência usados neste dispositivo.",
-        )}
-        colors={colors}
-      >
-        <View style={styles.formStack}>
-          <View>
-            <Text style={[styles.label, { color: colors.text }]}>
-              {t("language")}
-            </Text>
-            <View style={styles.chips}>
-              <Button
-                label="English"
-                onPress={() => updateLocale("en")}
-                active={locale === "en"}
-                selected={locale === "en"}
-                colors={colors}
-                variant="chip"
-              />
-              <Button
-                label="Português (Brasil)"
-                onPress={() => updateLocale("pt-BR")}
-                active={locale === "pt-BR"}
-                selected={locale === "pt-BR"}
-                colors={colors}
-                variant="chip"
-              />
+      <View style={[styles.screenGrid, isWide && styles.screenGridWide]}>
+        <View style={styles.screenColumn}>
+          <SectionCard
+            title={copy(locale, "Preferences", "Preferências")}
+            description={copy(
+              locale,
+              "Choose the language and appearance used on this device.",
+              "Escolha o idioma e a aparência usados neste dispositivo.",
+            )}
+            colors={colors}
+          >
+            <View style={styles.formStack}>
+              <View>
+                <Text style={[styles.label, { color: colors.text }]}>
+                  {t("language")}
+                </Text>
+                <View style={styles.chips}>
+                  <Button
+                    label="English"
+                    onPress={() => updateLocale("en")}
+                    active={locale === "en"}
+                    selected={locale === "en"}
+                    colors={colors}
+                    variant="chip"
+                  />
+                  <Button
+                    label="Português (Brasil)"
+                    onPress={() => updateLocale("pt-BR")}
+                    active={locale === "pt-BR"}
+                    selected={locale === "pt-BR"}
+                    colors={colors}
+                    variant="chip"
+                  />
+                </View>
+              </View>
+              <View>
+                <Text style={[styles.label, { color: colors.text }]}>
+                  {t("theme")}
+                </Text>
+                <View style={styles.chips}>
+                  {(["system", "light", "dark"] as const).map((value) => (
+                    <Button
+                      key={value}
+                      label={
+                        value === "system"
+                          ? copy(locale, "System", "Sistema")
+                          : value === "light"
+                            ? copy(locale, "Light", "Claro")
+                            : copy(locale, "Dark", "Escuro")
+                      }
+                      onPress={() => updateTheme(value)}
+                      active={theme === value}
+                      selected={theme === value}
+                      colors={colors}
+                      variant="chip"
+                    />
+                  ))}
+                </View>
+              </View>
             </View>
-          </View>
-          <View>
-            <Text style={[styles.label, { color: colors.text }]}>
-              {t("theme")}
-            </Text>
-            <View style={styles.chips}>
-              {(["system", "light", "dark"] as const).map((value) => (
-                <Button
-                  key={value}
-                  label={
-                    value === "system"
-                      ? copy(locale, "System", "Sistema")
-                      : value === "light"
-                        ? copy(locale, "Light", "Claro")
-                        : copy(locale, "Dark", "Escuro")
-                  }
-                  onPress={() => updateTheme(value)}
-                  active={theme === value}
-                  selected={theme === value}
+          </SectionCard>
+          <SectionCard
+            title={copy(locale, "Notifications", "Notificações")}
+            description={copy(
+              locale,
+              "Register this device to receive reminders when the app is closed.",
+              "Registre este dispositivo para receber lembretes quando o aplicativo estiver fechado.",
+            )}
+            colors={colors}
+          >
+            <View style={styles.formStack}>
+              <Button
+                label={
+                  notificationStatus === "registering"
+                    ? t("enablingNotifications")
+                    : notificationStatus === "registered"
+                      ? t("notificationsEnabled")
+                      : t("enableNotifications")
+                }
+                onPress={() => void enableNotifications()}
+                colors={colors}
+                variant={
+                  notificationStatus === "registered" ? "secondary" : "primary"
+                }
+                loading={notificationStatus === "registering"}
+                disabled={notificationStatus === "registering"}
+              />
+              {notificationMessageKey && (
+                <Notice
+                  tone={notificationStatus === "error" ? "warning" : "success"}
                   colors={colors}
-                  variant="chip"
+                  text={t(notificationMessageKey)}
                 />
+              )}
+            </View>
+          </SectionCard>
+        </View>
+        <View style={styles.screenColumn}>
+          <SectionCard
+            title={copy(locale, "Backup and restore", "Backup e restauração")}
+            description={copy(
+              locale,
+              "Export your reminders or merge a JSON backup into this account.",
+              "Exporte seus lembretes ou mescle um backup JSON nesta conta.",
+            )}
+            colors={colors}
+          >
+            <View style={styles.formStack}>
+              <Button
+                label={copy(
+                  locale,
+                  "Export JSON backup",
+                  "Exportar backup JSON",
+                )}
+                onPress={() => void exportJson()}
+                colors={colors}
+                variant="secondary"
+              />
+              <Field
+                label={t("importBackupPrompt")}
+                value={backupText}
+                onChangeText={setBackupText}
+                colors={colors}
+                multiline
+                placeholder={copy(
+                  locale,
+                  "Paste the JSON backup here",
+                  "Cole o backup JSON aqui",
+                )}
+              />
+              <Button
+                label={t("importBackup")}
+                onPress={() => void importJson()}
+                colors={colors}
+                variant="primary"
+                disabled={!backupText.trim()}
+              />
+              {backupMessage && (
+                <Notice tone="neutral" colors={colors} text={backupMessage} />
+              )}
+              {importConflicts.map((conflict) => (
+                <View
+                  key={conflict.id}
+                  style={[
+                    styles.conflictCard,
+                    {
+                      borderColor: colors.warning,
+                      backgroundColor: colors.warningSoft,
+                    },
+                  ]}
+                >
+                  <View style={styles.flex}>
+                    <Text style={[styles.cardTitle, { color: colors.text }]}>
+                      {conflict.local.title}
+                    </Text>
+                    <Text style={[styles.body, { color: colors.muted }]}>
+                      {copy(
+                        locale,
+                        "Choose which version to keep.",
+                        "Escolha qual versão manter.",
+                      )}
+                    </Text>
+                  </View>
+                  <View style={styles.actions}>
+                    {(["local", "remote"] as const).map((choice) => (
+                      <Button
+                        key={choice}
+                        label={
+                          choice === "local"
+                            ? copy(locale, "Keep existing", "Manter existente")
+                            : copy(locale, "Keep imported", "Manter importado")
+                        }
+                        colors={colors}
+                        variant="secondary"
+                        onPress={() =>
+                          void runReminderMutation(() =>
+                            localRepository.save({
+                              ...conflict[choice],
+                              revision:
+                                Math.max(
+                                  conflict.local.revision,
+                                  conflict.remote.revision,
+                                ) + 1,
+                              updatedAt: new Date().toISOString(),
+                            }),
+                          )
+                            .then(() =>
+                              synchronizeReminders(ownerId).catch(() => []),
+                            )
+                            .then(() =>
+                              setImportConflicts((items) =>
+                                items.filter(({ id }) => id !== conflict.id),
+                              ),
+                            )
+                        }
+                      />
+                    ))}
+                  </View>
+                </View>
               ))}
             </View>
-          </View>
-        </View>
-      </SectionCard>
-      <SectionCard
-        title={copy(locale, "Notifications", "Notificações")}
-        description={copy(
-          locale,
-          "Register this device to receive reminders when the app is closed.",
-          "Registre este dispositivo para receber lembretes quando o aplicativo estiver fechado.",
-        )}
-        colors={colors}
-      >
-        <View style={styles.formStack}>
-          <Button
-            label={
-              notificationStatus === "registering"
-                ? t("enablingNotifications")
-                : notificationStatus === "registered"
-                  ? t("notificationsEnabled")
-                  : t("enableNotifications")
-            }
-            onPress={() => void enableNotifications()}
-            colors={colors}
-            variant={
-              notificationStatus === "registered" ? "secondary" : "primary"
-            }
-            loading={notificationStatus === "registering"}
-            disabled={notificationStatus === "registering"}
-          />
-          {notificationMessageKey && (
-            <Notice
-              tone={notificationStatus === "error" ? "warning" : "success"}
-              colors={colors}
-              text={t(notificationMessageKey)}
-            />
-          )}
-        </View>
-      </SectionCard>
-      <SectionCard
-        title={copy(locale, "Backup and restore", "Backup e restauração")}
-        description={copy(
-          locale,
-          "Export your reminders or merge a JSON backup into this account.",
-          "Exporte seus lembretes ou mescle um backup JSON nesta conta.",
-        )}
-        colors={colors}
-      >
-        <View style={styles.formStack}>
-          <Button
-            label={copy(locale, "Export JSON backup", "Exportar backup JSON")}
-            onPress={() => void exportJson()}
-            colors={colors}
-            variant="secondary"
-          />
-          <Field
-            label={t("importBackupPrompt")}
-            value={backupText}
-            onChangeText={setBackupText}
-            colors={colors}
-            multiline
-            placeholder={copy(
+          </SectionCard>
+          <SectionCard
+            title={copy(locale, "Account access", "Acesso à conta")}
+            description={copy(
               locale,
-              "Paste the JSON backup here",
-              "Cole o backup JSON aqui",
+              "Sign out on this device or permanently remove your synchronized data.",
+              "Saia neste dispositivo ou remova permanentemente seus dados sincronizados.",
             )}
-          />
-          <Button
-            label={t("importBackup")}
-            onPress={() => void importJson()}
             colors={colors}
-            variant="primary"
-            disabled={!backupText.trim()}
-          />
-          {backupMessage && (
-            <Notice tone="neutral" colors={colors} text={backupMessage} />
-          )}
-          {importConflicts.map((conflict) => (
-            <View
-              key={conflict.id}
-              style={[
-                styles.conflictCard,
-                {
-                  borderColor: colors.warning,
-                  backgroundColor: colors.warningSoft,
-                },
-              ]}
-            >
-              <View style={styles.flex}>
-                <Text style={[styles.cardTitle, { color: colors.text }]}>
-                  {conflict.local.title}
-                </Text>
-                <Text style={[styles.body, { color: colors.muted }]}>
-                  {copy(
-                    locale,
-                    "Choose which version to keep.",
-                    "Escolha qual versão manter.",
-                  )}
-                </Text>
-              </View>
-              <View style={styles.actions}>
-                {(["local", "remote"] as const).map((choice) => (
-                  <Button
-                    key={choice}
-                    label={
-                      choice === "local"
-                        ? copy(locale, "Keep existing", "Manter existente")
-                        : copy(locale, "Keep imported", "Manter importado")
-                    }
-                    colors={colors}
-                    variant="secondary"
-                    onPress={() =>
-                      void runReminderMutation(() =>
-                        localRepository.save({
-                          ...conflict[choice],
-                          revision:
-                            Math.max(
-                              conflict.local.revision,
-                              conflict.remote.revision,
-                            ) + 1,
-                          updatedAt: new Date().toISOString(),
-                        }),
-                      )
-                        .then(() =>
-                          synchronizeReminders(ownerId).catch(() => []),
-                        )
-                        .then(() =>
-                          setImportConflicts((items) =>
-                            items.filter(({ id }) => id !== conflict.id),
-                          ),
-                        )
-                    }
-                  />
-                ))}
-              </View>
+          >
+            <View style={styles.accountActions}>
+              <Button
+                label={t("signOut")}
+                onPress={() => void authentication?.signOut()}
+                colors={colors}
+                variant="secondary"
+              />
+              <Button
+                label={t("deleteAccount")}
+                onPress={() =>
+                  confirmDestructiveAction(
+                    t("deleteAccountTitle"),
+                    t("deleteAccountMessage"),
+                    t("cancel"),
+                    t("deleteAccount"),
+                    () => void authentication?.deleteAccount(),
+                  )
+                }
+                colors={colors}
+                danger
+                variant="danger"
+              />
             </View>
-          ))}
+          </SectionCard>
         </View>
-      </SectionCard>
-      <SectionCard
-        title={copy(locale, "Account access", "Acesso à conta")}
-        description={copy(
-          locale,
-          "Sign out on this device or permanently remove your synchronized data.",
-          "Saia neste dispositivo ou remova permanentemente seus dados sincronizados.",
-        )}
-        colors={colors}
-      >
-        <View style={styles.accountActions}>
-          <Button
-            label={t("signOut")}
-            onPress={() => void authentication?.signOut()}
-            colors={colors}
-            variant="secondary"
-          />
-          <Button
-            label={t("deleteAccount")}
-            onPress={() =>
-              confirmDestructiveAction(
-                t("deleteAccountTitle"),
-                t("deleteAccountMessage"),
-                t("cancel"),
-                t("deleteAccount"),
-                () => void authentication?.deleteAccount(),
-              )
-            }
-            colors={colors}
-            danger
-            variant="danger"
-          />
-        </View>
-      </SectionCard>
+      </View>
     </ScrollView>
   );
 }
@@ -2392,6 +2423,21 @@ const styles = StyleSheet.create({
     paddingVertical: space["3xl"],
     gap: space.xl,
   },
+  screenGrid: {
+    width: "100%",
+    gap: space.xl,
+  },
+  screenGridWide: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+  },
+  screenColumn: {
+    flex: 1,
+    minWidth: 0,
+    gap: space.xl,
+  },
+  editorDetailsColumn: { flex: 0.9 },
+  editorScheduleColumn: { flex: 1.1 },
   listHeader: { gap: space.xl, marginBottom: space.xl },
   center: {
     alignItems: "center",
