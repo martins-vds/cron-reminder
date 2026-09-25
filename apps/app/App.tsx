@@ -547,12 +547,19 @@ function SignIn({
   configured: boolean;
 }) {
   const t = createTranslator(locale);
-  const providers = [
-    ["google", "Google"],
-    ["apple", "Apple"],
-    ["azure", "Microsoft"],
-    ["github", "GitHub"],
-  ] as const;
+  const enabledProviders = new Set(
+    (process.env.EXPO_PUBLIC_AUTH_PROVIDERS ?? "google,apple,azure,github")
+      .split(",")
+      .map((provider: string) => provider.trim()),
+  );
+  const providers = (
+    [
+      ["google", "Google"],
+      ["apple", "Apple"],
+      ["azure", "Microsoft"],
+      ["github", "GitHub"],
+    ] as const
+  ).filter(([provider]) => enabledProviders.has(provider));
   return (
     <SafeAreaView
       style={[

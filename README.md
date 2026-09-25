@@ -102,10 +102,13 @@ Set these Pages build variables for both production and preview:
 ```text
 EXPO_PUBLIC_SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
 EXPO_PUBLIC_SUPABASE_ANON_KEY=YOUR_SUPABASE_PUBLIC_KEY
+EXPO_PUBLIC_AUTH_PROVIDERS=github
 EXPO_PUBLIC_VAPID_PUBLIC_KEY=YOUR_VAPID_PUBLIC_KEY
 EXPO_PUBLIC_EAS_PROJECT_ID=YOUR_EAS_PROJECT_ID
 ```
 
+`EXPO_PUBLIC_AUTH_PROVIDERS` is a comma-separated list containing any enabled
+Supabase OAuth providers: `google`, `apple`, `azure`, and `github`.
 `EXPO_PUBLIC_EAS_PROJECT_ID` is needed for native Expo push registration but
 does not block the web-only deployment. Never add `CRON_SECRET`, the VAPID
 private key, or the Supabase service-role key to Cloudflare.
