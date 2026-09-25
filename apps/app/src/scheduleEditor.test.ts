@@ -4,6 +4,7 @@ import {
   createScheduleEditorState,
   hasValidScheduleEditorValues,
 } from "./scheduleEditor";
+import { MAX_DAILY_TIMES } from "@cron-reminder/domain";
 
 describe("schedule editor", () => {
   it("turns common cron expressions into plain-language editor modes", () => {
@@ -29,6 +30,15 @@ describe("schedule editor", () => {
       yearMonth: "9",
       yearDay: "24",
       time: "09:00",
+    });
+    expect(
+      createScheduleEditorState({
+        kind: "cron",
+        expression: "0 9,12,18,21 * * *",
+      }),
+    ).toMatchObject({
+      kind: "multiple-daily",
+      dailyTimes: ["09:00", "12:00", "18:00", "21:00"],
     });
   });
 
@@ -80,6 +90,31 @@ describe("schedule editor", () => {
         kind: "yearly",
         yearMonth: "2",
         yearDay: "30",
+      }),
+    ).toBe(false);
+    expect(
+      hasValidScheduleEditorValues({
+        ...state,
+        kind: "multiple-daily",
+        dailyTimes: ["09:15", "12:30"],
+      }),
+    ).toBe(true);
+    expect(
+      hasValidScheduleEditorValues({
+        ...state,
+        kind: "multiple-daily",
+        dailyTimes: ["09:00", "09:00"],
+      }),
+    ).toBe(false);
+    expect(
+      hasValidScheduleEditorValues({
+        ...state,
+        kind: "multiple-daily",
+        dailyTimes: Array.from(
+          { length: MAX_DAILY_TIMES + 1 },
+          (_value, index) =>
+            `${String(Math.floor(index / 2)).padStart(2, "0")}:${index % 2 ? "30" : "00"}`,
+        ),
       }),
     ).toBe(false);
   });

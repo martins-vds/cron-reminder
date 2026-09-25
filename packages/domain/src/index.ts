@@ -16,6 +16,7 @@ export type ReminderSound = { mode: "default" | "silent" | "vibrate" };
 
 export type Schedule =
   | { kind: "once"; at: string }
+  | { kind: "daily-times"; times: readonly string[] }
   | {
       kind: "cron";
       expression: string;
@@ -70,7 +71,9 @@ export interface CreateReminderInput {
 
 export const SNOOZE_MINUTES = [5, 10, 15, 30, 60] as const;
 export const HISTORY_RETENTION_DAYS = 30;
+export const MAX_DAILY_TIMES = 24;
 const REMINDER_ID_PATTERN = /^[a-z0-9_-]+$/;
+const DAILY_TIME_PATTERN = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 
 const MONTH_NAMES = [
   "JAN",
@@ -182,6 +185,20 @@ export function validateSchedule(schedule: Schedule): void {
   if (schedule.kind === "once") {
     if (strictScheduleTimestamp(schedule.at) === null)
       throw new Error("A valid date is required.");
+    return;
+  }
+  if (schedule.kind === "daily-times") {
+    if (schedule.times.length < 2)
+      throw new Error("At least two daily times are required.");
+    if (schedule.times.length > MAX_DAILY_TIMES)
+      throw new Error(
+        `Daily schedules support up to ${MAX_DAILY_TIMES} times.`,
+      );
+    const normalized = schedule.times.map((time) => time.trim());
+    if (normalized.some((time) => !DAILY_TIME_PATTERN.test(time)))
+      throw new Error("Daily times must use HH:MM in 24-hour format.");
+    if (new Set(normalized).size !== normalized.length)
+      throw new Error("Daily times must be unique.");
     return;
   }
   const result = validateCronExpression(schedule.expression);
@@ -379,6 +396,26 @@ export function nextOccurrences(
     const occurrence = new Date(schedule.at);
     return occurrence > after ? [occurrence] : [];
   }
+  if (schedule.kind === "daily-times") {
+    const candidates = schedule.times.flatMap((time) => {
+      const [hour, minute] = time.split(":");
+      const interval = CronExpressionParser.parse(
+        `${Number(minute)} ${Number(hour)} * * *`,
+        {
+          currentDate: after,
+          tz: timezone,
+        },
+      );
+      return interval.take(count).map((value) => value.toDate());
+    });
+    return [
+      ...new Map(
+        candidates.map((candidate) => [candidate.toISOString(), candidate]),
+      ).values(),
+    ]
+      .sort((left, right) => left.getTime() - right.getTime())
+      .slice(0, count);
+  }
   const interval = CronExpressionParser.parse(schedule.expression, {
     currentDate: after,
     startDate: inclusiveStartDate(schedule.startAt),
@@ -402,6 +439,16 @@ export function describeSchedule(
       dateStyle: "medium",
       timeStyle: "short",
     }).format(new Date(schedule.at));
+  }
+  if (schedule.kind === "daily-times") {
+    const times = [...schedule.times].sort();
+    const formattedTimes = new Intl.ListFormat(locale, {
+      style: "long",
+      type: "conjunction",
+    }).format(times);
+    return locale === "pt-BR"
+      ? `Todos os dias às ${formattedTimes}`
+      : `Every day at ${formattedTimes}`;
   }
   const fields = schedule.expression.trim().split(/\s+/);
   const [minute, hour, day, month, weekday] = fields;

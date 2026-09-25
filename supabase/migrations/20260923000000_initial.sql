@@ -73,6 +73,7 @@ declare
   fields text[];
   starts_at timestamptz;
   ends_at timestamptz;
+  time_count integer;
 begin
   if jsonb_typeof(value) <> 'object' then return false; end if;
   if value->>'kind' = 'once' then
@@ -83,6 +84,28 @@ begin
     if value->>'at' !~ '(Z|[+-][0-9]{2}:[0-9]{2})$' then return false; end if;
     perform (value->>'at')::timestamptz;
     return true;
+  end if;
+  if value->>'kind' = 'daily-times' then
+    if coalesce(jsonb_typeof(value->'times') = 'array', false) = false then
+      return false;
+    end if;
+    if jsonb_array_length(value->'times') < 2
+      or jsonb_array_length(value->'times') > 24
+      or value ?| array['at', 'expression', 'startAt', 'endAt', 'occurrenceLimit'] then
+      return false;
+    end if;
+    if exists (
+      select 1
+      from jsonb_array_elements(value->'times') as entry(item)
+      where jsonb_typeof(item) <> 'string'
+        or item #>> '{}' !~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+    ) then
+      return false;
+    end if;
+    select count(distinct item #>> '{}')
+    into time_count
+    from jsonb_array_elements(value->'times') as entry(item);
+    return time_count = jsonb_array_length(value->'times');
   end if;
   if coalesce(value->>'kind' = 'cron', false) = false
     or coalesce(jsonb_typeof(value->'expression') = 'string', false) = false then

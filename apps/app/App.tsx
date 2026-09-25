@@ -41,8 +41,8 @@ import {
 import { exportBackup, importBackup } from "@cron-reminder/infrastructure";
 import {
   describeSchedule,
+  MAX_DAILY_TIMES,
   nextOccurrences,
-  validateCronExpression,
   validateSchedule,
   type Reminder,
   type ReminderSound,
@@ -88,6 +88,7 @@ import {
   buildCronExpression,
   createScheduleEditorState,
   hasValidScheduleEditorValues,
+  normalizeDailyTimes,
   type ScheduleEditorKind,
   type ScheduleEditorState,
 } from "./src/scheduleEditor";
@@ -1224,6 +1225,31 @@ function ReminderEditor({
     setScheduleEditor((current) => ({ ...current, ...updates }));
   }
 
+  function updateDailyTime(index: number, value: string) {
+    setScheduleEditor((current) => ({
+      ...current,
+      dailyTimes: current.dailyTimes.map((time, timeIndex) =>
+        timeIndex === index ? value : time,
+      ),
+    }));
+  }
+
+  function addDailyTime() {
+    setScheduleEditor((current) => ({
+      ...current,
+      dailyTimes: [...current.dailyTimes, ""],
+    }));
+  }
+
+  function removeDailyTime(index: number) {
+    setScheduleEditor((current) => ({
+      ...current,
+      dailyTimes: current.dailyTimes.filter(
+        (_time, timeIndex) => timeIndex !== index,
+      ),
+    }));
+  }
+
   const kind = scheduleEditor.kind;
   const existingCronSchedule =
     reminder?.schedule.kind === "cron" ? reminder.schedule : undefined;
@@ -1231,27 +1257,28 @@ function ReminderEditor({
   const schedule: Schedule =
     kind === "once"
       ? { kind: "once", at: scheduleEditor.onceAt }
-      : kind === "advanced"
+      : kind === "multiple-daily"
         ? {
-            ...existingCronSchedule,
-            kind: "cron",
-            expression: cronExpression,
+            kind: "daily-times",
+            times: normalizeDailyTimes(scheduleEditor.dailyTimes),
           }
-        : { kind: "cron", expression: cronExpression };
+        : kind === "advanced"
+          ? {
+              ...existingCronSchedule,
+              kind: "cron",
+              expression: cronExpression,
+            }
+          : { kind: "cron", expression: cronExpression };
   const editorValuesValid = hasValidScheduleEditorValues(scheduleEditor);
-  const validation =
-    schedule.kind === "cron"
-      ? editorValuesValid
-        ? validateCronExpression(schedule.expression)
-        : { valid: false }
-      : (() => {
-          try {
-            validateSchedule(schedule);
-            return { valid: true };
-          } catch {
-            return { valid: false };
-          }
-        })();
+  const validation = (() => {
+    if (!editorValuesValid) return { valid: false };
+    try {
+      validateSchedule(schedule);
+      return { valid: true };
+    } catch {
+      return { valid: false };
+    }
+  })();
   let preview: Date[] = [];
   if (validation.valid) {
     try {
@@ -1371,21 +1398,25 @@ function ReminderEditor({
               <View style={styles.chips}>
                 {(
                   [
-                    "once",
-                    "interval",
-                    "daily",
-                    "weekdays",
-                    "monthly",
-                    "yearly",
-                    "advanced",
+                    { value: "once", label: t("once") },
+                    { value: "interval", label: t("interval") },
+                    { value: "daily", label: t("daily") },
+                    {
+                      value: "multiple-daily",
+                      label: t("multipleDaily"),
+                    },
+                    { value: "weekdays", label: t("weekdays") },
+                    { value: "monthly", label: t("monthly") },
+                    { value: "yearly", label: t("yearly") },
+                    { value: "advanced", label: t("advanced") },
                   ] as const
-                ).map((value) => (
+                ).map((option) => (
                   <Button
-                    key={value}
-                    label={t(value)}
-                    onPress={() => chooseKind(value)}
-                    active={kind === value}
-                    selected={kind === value}
+                    key={option.value}
+                    label={option.label}
+                    onPress={() => chooseKind(option.value)}
+                    active={kind === option.value}
+                    selected={kind === option.value}
                     colors={colors}
                     variant="chip"
                     compact
@@ -1405,6 +1436,72 @@ function ReminderEditor({
                   autoCapitalize="none"
                   autoCorrect={false}
                 />
+              ) : kind === "multiple-daily" ? (
+                <View style={styles.formStack}>
+                  <Text style={[styles.body, { color: colors.muted }]}>
+                    {copy(
+                      locale,
+                      "Add two or more times. Each time creates an occurrence for the same reminder.",
+                      "Adicione dois ou mais horários. Cada horário cria uma ocorrência do mesmo lembrete.",
+                    )}
+                  </Text>
+                  {scheduleEditor.dailyTimes.map((time, index) => (
+                    <View key={index} style={styles.dailyTimeRow}>
+                      <View style={styles.dailyTimeField}>
+                        <Field
+                          label={copy(
+                            locale,
+                            `Time ${index + 1} (24-hour)`,
+                            `Horário ${index + 1} (24 horas)`,
+                          )}
+                          value={time}
+                          onChangeText={(value) =>
+                            updateDailyTime(index, value)
+                          }
+                          colors={colors}
+                          placeholder="09:00"
+                        />
+                      </View>
+                      {scheduleEditor.dailyTimes.length > 2 && (
+                        <Button
+                          label={copy(locale, "Remove", "Remover")}
+                          accessibilityLabel={copy(
+                            locale,
+                            `Remove time ${index + 1}`,
+                            `Remover horário ${index + 1}`,
+                          )}
+                          onPress={() => removeDailyTime(index)}
+                          colors={colors}
+                          variant="danger"
+                          compact
+                        />
+                      )}
+                    </View>
+                  ))}
+                  <View style={styles.scheduleAddTime}>
+                    <Button
+                      label={copy(
+                        locale,
+                        "Add another time",
+                        "Adicionar outro horário",
+                      )}
+                      onPress={addDailyTime}
+                      colors={colors}
+                      variant="secondary"
+                      compact
+                      disabled={
+                        scheduleEditor.dailyTimes.length >= MAX_DAILY_TIMES
+                      }
+                    />
+                    <Text style={[styles.caption, { color: colors.subtle }]}>
+                      {copy(
+                        locale,
+                        `Up to ${MAX_DAILY_TIMES} times. Uses the ${timezone} timezone.`,
+                        `Até ${MAX_DAILY_TIMES} horários. Usa o fuso horário ${timezone}.`,
+                      )}
+                    </Text>
+                  </View>
+                </View>
               ) : kind === "advanced" ? (
                 <Field
                   label={t("advanced")}
@@ -1547,10 +1644,14 @@ function ReminderEditor({
                     locale,
                     kind === "advanced"
                       ? "Enter a valid five-field cron expression."
-                      : "Check the schedule values. Times use HH:MM.",
+                      : kind === "multiple-daily"
+                        ? `Add 2 to ${MAX_DAILY_TIMES} unique times using HH:MM.`
+                        : "Check the schedule values. Times use HH:MM.",
                     kind === "advanced"
                       ? "Insira uma expressão cron válida de cinco campos."
-                      : "Revise os valores da agenda. Use HH:MM para horários.",
+                      : kind === "multiple-daily"
+                        ? `Adicione de 2 a ${MAX_DAILY_TIMES} horários únicos usando HH:MM.`
+                        : "Revise os valores da agenda. Use HH:MM para horários.",
                   )}
                 />
               )}
@@ -2143,6 +2244,7 @@ type ButtonVariant =
 
 function Button({
   label,
+  accessibilityLabel,
   onPress,
   colors,
   active,
@@ -2156,6 +2258,7 @@ function Button({
   grow = false,
 }: {
   label: string;
+  accessibilityLabel?: string;
   onPress: () => void;
   colors: Colors;
   active?: boolean;
@@ -2210,6 +2313,7 @@ function Button({
 
   return (
     <Pressable
+      accessibilityLabel={accessibilityLabel}
       accessibilityRole="button"
       accessibilityState={{
         busy: loading,
@@ -2649,6 +2753,19 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     flexBasis: 140,
     minWidth: 0,
+  },
+  dailyTimeRow: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: space.sm,
+  },
+  dailyTimeField: {
+    flex: 1,
+    minWidth: 0,
+  },
+  scheduleAddTime: {
+    alignItems: "flex-start",
+    gap: space.sm,
   },
   titleRow: {
     flexDirection: "row",

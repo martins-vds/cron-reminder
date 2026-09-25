@@ -1,9 +1,10 @@
-import type { Schedule } from "@cron-reminder/domain";
+import { MAX_DAILY_TIMES, type Schedule } from "@cron-reminder/domain";
 
 export type ScheduleEditorKind =
   | "once"
   | "interval"
   | "daily"
+  | "multiple-daily"
   | "weekdays"
   | "monthly"
   | "yearly"
@@ -14,6 +15,7 @@ export interface ScheduleEditorState {
   onceAt: string;
   intervalMinutes: string;
   time: string;
+  dailyTimes: string[];
   monthDay: string;
   yearMonth: string;
   yearDay: string;
@@ -31,6 +33,7 @@ export function createScheduleEditorState(
     onceAt: new Date(now.getTime() + 3_600_000).toISOString(),
     intervalMinutes: "5",
     time: "09:00",
+    dailyTimes: ["09:00", "18:00"],
     monthDay: "1",
     yearMonth: "1",
     yearDay: "1",
@@ -41,6 +44,13 @@ export function createScheduleEditorState(
   if (schedule.kind === "once") {
     return { ...defaults, kind: "once", onceAt: schedule.at };
   }
+  if (schedule.kind === "daily-times") {
+    return {
+      ...defaults,
+      kind: "multiple-daily",
+      dailyTimes: [...schedule.times],
+    };
+  }
   if (
     schedule.startAt !== undefined ||
     schedule.endAt !== undefined ||
@@ -50,6 +60,14 @@ export function createScheduleEditorState(
   }
 
   const expression = schedule.expression.trim().replace(/\s+/g, " ");
+  const dailyTimes = parseDailyCronTimes(expression);
+  if (dailyTimes) {
+    return {
+      ...defaults,
+      kind: "multiple-daily",
+      dailyTimes,
+    };
+  }
   const interval = expression.match(/^\*\/(\d{1,2}) \* \* \* \*$/);
   if (interval && isIntegerInRange(interval[1], 1, 59)) {
     return {
@@ -135,6 +153,15 @@ export function hasValidScheduleEditorValues(
   state: ScheduleEditorState,
 ): boolean {
   if (state.kind === "once" || state.kind === "advanced") return true;
+  if (state.kind === "multiple-daily") {
+    const times = normalizeDailyTimes(state.dailyTimes);
+    return (
+      times.length >= 2 &&
+      times.length <= MAX_DAILY_TIMES &&
+      times.every((time) => /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(time)) &&
+      new Set(times).size === times.length
+    );
+  }
   if (state.kind === "interval") {
     return isIntegerInRange(state.intervalMinutes, 1, 59);
   }
@@ -146,6 +173,49 @@ export function hasValidScheduleEditorValues(
     return isValidAnnualDate(state.yearMonth, state.yearDay);
   }
   return true;
+}
+
+export function normalizeDailyTimes(times: readonly string[]): string[] {
+  return times.map((time) => time.trim()).sort();
+}
+
+function parseDailyCronTimes(expression: string): string[] | null {
+  const match = expression.match(/^([\d,]+) ([\d,]+) \* \* \*$/);
+  if (!match) return null;
+  const minutes = parseCronNumberList(match[1], 0, 59);
+  const hours = parseCronNumberList(match[2], 0, 23);
+  if (
+    !minutes ||
+    !hours ||
+    minutes.length * hours.length < 2 ||
+    minutes.length * hours.length > MAX_DAILY_TIMES
+  ) {
+    return null;
+  }
+  return hours
+    .flatMap((hour) =>
+      minutes.map(
+        (minute) =>
+          `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`,
+      ),
+    )
+    .sort();
+}
+
+function parseCronNumberList(
+  value: string | undefined,
+  minimum: number,
+  maximum: number,
+): number[] | null {
+  if (!value) return null;
+  const parts = value.split(",");
+  if (
+    parts.some((part) => !isIntegerInRange(part, minimum, maximum)) ||
+    new Set(parts).size !== parts.length
+  ) {
+    return null;
+  }
+  return parts.map(Number);
 }
 
 function parseTime(value: string): { hour: string; minute: string } | null {

@@ -41,20 +41,21 @@ async function insertOwner(): Promise<void> {
 async function insertReminder(options?: {
   id?: string;
   occurrenceLimit?: number;
+  schedule?: Record<string, unknown>;
   scheduleRevision?: number;
   scheduledAt?: Date;
 }): Promise<{ id: string; scheduledAt: Date }> {
   const id = options?.id ?? "integration-reminder";
   const scheduledAt = options?.scheduledAt ?? new Date(Date.now() - 5_000);
-  const schedule = {
-    ...(options?.occurrenceLimit
+  const schedule =
+    options?.schedule ??
+    (options?.occurrenceLimit
       ? {
           kind: "cron",
           expression: "* * * * *",
           occurrenceLimit: options.occurrenceLimit,
         }
-      : { kind: "once", at: scheduledAt.toISOString() }),
-  };
+      : { kind: "once", at: scheduledAt.toISOString() });
   await pool.query(
     `insert into public.reminders(
       id, owner_id, title, schedule, timezone, sound, revision,
@@ -106,6 +107,52 @@ describe("database migrations and delivery RPCs", () => {
         ) values ('invalid', $1, 'Invalid', '{"expression":"0 9 * * *"}',
           'UTC', '{"mode":"default"}')`,
         [ownerId],
+      ),
+    ).rejects.toThrow();
+
+    await expect(
+      pool.query(
+        `insert into public.reminders(
+          id, owner_id, title, schedule, timezone, sound
+        ) values (
+          'daily-times', $1, 'Daily times',
+          '{"kind":"daily-times","times":["09:15","12:30","18:00","21:45"]}',
+          'UTC', '{"mode":"default"}'
+        )`,
+        [ownerId],
+      ),
+    ).resolves.toBeDefined();
+    await expect(
+      pool.query(
+        `insert into public.reminders(
+          id, owner_id, title, schedule, timezone, sound
+        ) values (
+          'duplicate-times', $1, 'Duplicate times',
+          '{"kind":"daily-times","times":["09:00","09:00"]}',
+          'UTC', '{"mode":"default"}'
+        )`,
+        [ownerId],
+      ),
+    ).rejects.toThrow();
+    await expect(
+      pool.query(
+        `insert into public.reminders(
+          id, owner_id, title, schedule, timezone, sound
+        ) values (
+          'too-many-times', $1, 'Too many times', $2::jsonb,
+          'UTC', '{"mode":"default"}'
+        )`,
+        [
+          ownerId,
+          JSON.stringify({
+            kind: "daily-times",
+            times: Array.from(
+              { length: 25 },
+              (_value, index) =>
+                `${String(Math.floor(index / 2)).padStart(2, "0")}:${index % 2 ? "30" : "00"}`,
+            ),
+          }),
+        ],
       ),
     ).rejects.toThrow();
 
@@ -375,6 +422,46 @@ describe("Edge Function state transitions", () => {
       [occurrenceId, ownerId],
     );
     expect(history.rowCount).toBe(1);
+  });
+
+  it("dispatches reminders with multiple daily times", async () => {
+    const scheduledAt = new Date();
+    scheduledAt.setUTCSeconds(0, 0);
+    const secondHour = (scheduledAt.getUTCHours() + 1) % 24;
+    const dailyTimes = [
+      `${String(scheduledAt.getUTCHours()).padStart(2, "0")}:${String(
+        scheduledAt.getUTCMinutes(),
+      ).padStart(2, "0")}`,
+      `${String(secondHour).padStart(2, "0")}:${String(
+        scheduledAt.getUTCMinutes(),
+      ).padStart(2, "0")}`,
+    ].sort();
+    const { id } = await insertReminder({
+      id: "daily-times-dispatch",
+      schedule: { kind: "daily-times", times: dailyTimes },
+      scheduledAt,
+    });
+    await pool.query(
+      `update public.dispatch_state
+       set last_dispatched_at = $1
+       where id = true`,
+      [new Date(scheduledAt.getTime() - 10_000).toISOString()],
+    );
+
+    const response = await fetch("http://127.0.0.1:55432/", {
+      method: "POST",
+      headers: { "x-cron-secret": "integration-cron-secret" },
+    });
+    expect(response.status).toBe(200);
+
+    const occurrence = await pool.query<{ scheduled_at: Date }>(
+      `select scheduled_at from public.occurrences
+       where reminder_id = $1 and owner_id = $2`,
+      [id, ownerId],
+    );
+    expect(occurrence.rows[0]?.scheduled_at.toISOString()).toBe(
+      scheduledAt.toISOString(),
+    );
   });
 
   it("applies occurrence actions and clears delivery state atomically", async () => {
