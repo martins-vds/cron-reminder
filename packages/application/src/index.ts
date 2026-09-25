@@ -210,7 +210,10 @@ export function detectConflict(
 }
 
 export function sameReminder(left: Reminder, right: Reminder): boolean {
-  return structurallyEqual(left, right);
+  return structurallyEqual(
+    comparableReminderContent(left),
+    comparableReminderContent(right),
+  );
 }
 
 export function structurallyEqual(left: unknown, right: unknown): boolean {
@@ -227,4 +230,21 @@ function canonicalize(value: unknown): unknown {
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([key, item]) => [key, canonicalize(item)]),
   );
+}
+
+function comparableReminderContent(
+  reminder: Reminder,
+): Omit<Reminder, "createdAt" | "updatedAt"> {
+  return {
+    id: reminder.id,
+    ownerId: reminder.ownerId,
+    title: reminder.title,
+    notes: reminder.notes,
+    tags: reminder.tags,
+    schedule: reminder.schedule,
+    timezone: reminder.timezone,
+    sound: reminder.sound,
+    status: reminder.status,
+    revision: reminder.revision,
+  };
 }

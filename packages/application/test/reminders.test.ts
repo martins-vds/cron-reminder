@@ -122,5 +122,18 @@ describe("ReminderService", () => {
         },
       }),
     ).toBe(true);
+    expect(
+      sameReminder(base, {
+        ...base,
+        createdAt: "2025-12-31T19:00:00.000-05:00",
+        updatedAt: "2026-01-01T19:00:00.000-05:00",
+      }),
+    ).toBe(true);
+    expect(
+      detectConflict(base, {
+        ...base,
+        updatedAt: "2026-01-02T00:00:00+00:00",
+      }),
+    ).toBe(false);
   });
 });
