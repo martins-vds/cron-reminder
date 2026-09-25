@@ -10,7 +10,7 @@ The npm workspace enforces a dependency direction toward the isolated domain:
 - `packages/application` — use cases and ports for repositories, authentication, notifications, time, timezone, and synchronization.
 - `packages/infrastructure` — local JSON persistence, Supabase adapters, offline synchronization, manual conflict detection, and versioned JSON backup.
 - `packages/localization` — English and Brazilian Portuguese messages.
-- `apps/app` — responsive Expo React Native presentation shared by Android, iOS, and web.
+- `apps/app` — responsive Expo React Native presentation shared by Android, iOS, and web, including a Today agenda for upcoming and unresolved occurrences.
 - `supabase` — database schema, Row Level Security, account deletion, occurrence actions, and one-minute notification dispatch.
 
 The domain package has no React, Expo, storage, or Supabase dependencies.
@@ -120,8 +120,9 @@ API token needs **Account > Cloudflare Pages > Edit** permission.
 After a commit reaches `main`, `.github/workflows/deploy-production.yml`
 validates and performs the production release in this order:
 
-1. Run application tests, type checking, source linting, formatting checks,
-   Deno checks, migration integration tests, and the production web build.
+1. Run application tests, authenticated browser UI checks, type checking,
+   source linting, formatting checks, Deno checks, migration integration tests,
+   and the production web build.
 2. Apply all pending Supabase database migrations.
 3. Deploy the Supabase Edge Functions.
 4. Upload `apps/app/dist` to Cloudflare Pages.
@@ -158,8 +159,13 @@ npm run typecheck    # TypeScript project references
 npm run lint         # ESLint architecture and correctness checks
 npm run format:check # Prettier verification
 npm run build        # Type check and export the web application
+npm run test:ui      # Playwright responsive layout checks with mocked authentication
 npm run test:integration # Dockerized PostgreSQL/PostgREST/Edge Function tests
 ```
+
+Install the browser once with `npx playwright install chromium` before running
+the UI suite. It covers the signed-out screen, authenticated routes, and the
+reminder editor from 280px mobile layouts through 1440px desktop layouts.
 
 The integration command builds the stack in `compose.integration.yml`, applies
 the real Supabase migrations to PostgreSQL, starts PostgREST and the Deno Edge
