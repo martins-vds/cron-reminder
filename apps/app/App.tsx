@@ -92,6 +92,7 @@ import {
   type ScheduleEditorKind,
   type ScheduleEditorState,
 } from "./src/scheduleEditor";
+import { synchronizationFailureMessage } from "./src/syncStatus";
 
 type ThemePreference = "system" | "light" | "dark";
 type NotificationRegistrationStatus =
@@ -809,6 +810,7 @@ function ReminderList({
   const [status, setStatus] = useState<Reminder["status"] | "all">("all");
   const [editing, setEditing] = useState<Reminder | "new" | null>(null);
   const [syncMessage, setSyncMessage] = useState("");
+  const [syncing, setSyncing] = useState(false);
   const [syncConflicts, setSyncConflicts] = useState<readonly SyncConflict[]>(
     [],
   );
@@ -834,17 +836,14 @@ function ReminderList({
         setSyncMessage("");
         refresh();
       })
-      .catch(() =>
-        active
-          ? setSyncMessage(
-              "Offline changes will synchronize when connectivity returns.",
-            )
-          : undefined,
-      );
+      .catch(async () => {
+        const message = await getSynchronizationFailureMessage(locale);
+        if (active) setSyncMessage(message);
+      });
     return () => {
       active = false;
     };
-  }, [ownerId, refresh]);
+  }, [locale, ownerId, refresh]);
   const visible = useMemo(
     () => filterReminders(reminders, { query, status, sort: "updated" }),
     [query, reminders, status],
@@ -858,6 +857,19 @@ function ReminderList({
     [reminders, syncConflicts],
   );
 
+  async function retrySynchronization() {
+    setSyncing(true);
+    try {
+      setSyncConflicts(await synchronizeReminders(ownerId));
+      setSyncMessage("");
+      refresh();
+    } catch {
+      setSyncMessage(await getSynchronizationFailureMessage(locale));
+    } finally {
+      setSyncing(false);
+    }
+  }
+
   if (editing) {
     return (
       <ReminderEditor
@@ -866,9 +878,9 @@ function ReminderList({
         locale={locale}
         colors={colors}
         onCancel={() => setEditing(null)}
-        onSaved={(conflicts) => {
+        onSaved={(conflicts, message) => {
           setSyncConflicts(conflicts);
-          setSyncMessage("");
+          setSyncMessage(message);
           setEditing(null);
           refresh();
         }}
@@ -886,9 +898,7 @@ function ReminderList({
       setSyncConflicts(await synchronizeReminders(ownerId));
       setSyncMessage("");
     } catch {
-      setSyncMessage(
-        "Offline changes will synchronize when connectivity returns.",
-      );
+      setSyncMessage(await getSynchronizationFailureMessage(locale));
     }
     refresh();
   }
@@ -924,7 +934,18 @@ function ReminderList({
         }
       />
       {syncMessage && (
-        <Notice tone="warning" colors={colors} text={syncMessage} />
+        <Notice tone="warning" colors={colors} text={syncMessage}>
+          <View style={styles.noticeActions}>
+            <Button
+              label={copy(locale, "Retry sync", "Tentar sincronizar")}
+              onPress={() => void retrySynchronization()}
+              colors={colors}
+              variant="secondary"
+              compact
+              loading={syncing}
+            />
+          </View>
+        </Notice>
       )}
       {activeSyncConflicts.length > 0 && (
         <Notice
@@ -1198,7 +1219,7 @@ function ReminderEditor({
   locale: Locale;
   colors: Colors;
   onCancel: () => void;
-  onSaved: (conflicts: readonly SyncConflict[]) => void;
+  onSaved: (conflicts: readonly SyncConflict[], syncMessage: string) => void;
 }) {
   const t = createTranslator(locale);
   const { width } = useWindowDimensions();
@@ -1307,8 +1328,14 @@ function ReminderEditor({
           ? service.update(ownerId, reminder.id, changes)
           : service.create({ ...changes, ownerId }),
       );
-      const conflicts = await synchronizeReminders(ownerId).catch(() => []);
-      onSaved(conflicts);
+      let conflicts: readonly SyncConflict[] = [];
+      let syncMessage = "";
+      try {
+        conflicts = await synchronizeReminders(ownerId);
+      } catch {
+        syncMessage = await getSynchronizationFailureMessage(locale);
+      }
+      onSaved(conflicts, syncMessage);
     } catch (reason) {
       setError(
         reason instanceof Error ? reason.message : "Unable to save reminder.",
@@ -2568,6 +2595,29 @@ function copy(locale: Locale, english: string, portuguese: string): string {
   return locale === "pt-BR" ? portuguese : english;
 }
 
+async function getSynchronizationFailureMessage(
+  locale: Locale,
+): Promise<string> {
+  const browserOnline =
+    Platform.OS === "web" && typeof globalThis.navigator !== "undefined"
+      ? globalThis.navigator.onLine
+      : undefined;
+  try {
+    const network = await NetInfo.fetch();
+    return synchronizationFailureMessage(locale, {
+      isConnected: network.isConnected,
+      isInternetReachable: network.isInternetReachable,
+      browserOnline,
+    });
+  } catch {
+    return synchronizationFailureMessage(locale, {
+      isConnected: null,
+      isInternetReachable: null,
+      browserOnline,
+    });
+  }
+}
+
 const styles = StyleSheet.create({
   safe: { flex: 1 },
   shell: { flex: 1 },
@@ -2898,6 +2948,10 @@ const styles = StyleSheet.create({
     fontSize: type.label,
     lineHeight: type.bodyLine,
     fontWeight: "600",
+  },
+  noticeActions: {
+    marginTop: space.sm,
+    alignItems: "flex-start",
   },
   empty: {
     borderWidth: 1,
