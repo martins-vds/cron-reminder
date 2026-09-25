@@ -527,6 +527,40 @@ describe("synchronization", () => {
     expect(fake.reminders.has(staleLocal.id)).toBe(false);
   });
 
+  it("treats equivalent database timestamp formats as the same reminder", async () => {
+    const local = new JsonReminderRepository(new MemoryStore());
+    const unchanged = reminder({
+      createdAt: "2026-09-23T00:00:00.000Z",
+      updatedAt: "2026-09-24T00:00:00.000Z",
+    });
+    await local.save(unchanged);
+    await local.setSyncedRevision(
+      unchanged.ownerId,
+      unchanged.id,
+      unchanged.revision,
+    );
+
+    const fake = new FakeSupabaseClient();
+    fake.reminders.set(unchanged.id, {
+      ...toDatabaseRow(unchanged),
+      created_at: "2026-09-23T00:00:00+00:00",
+      updated_at: "2026-09-24T00:00:00+00:00",
+    });
+    const remote = new SupabaseReminderRepository(
+      fake as unknown as ConstructorParameters<
+        typeof SupabaseReminderRepository
+      >[0],
+    );
+
+    const conflicts = await new OfflineSynchronizationAdapter(
+      local,
+      remote,
+    ).synchronize(unchanged.ownerId);
+
+    expect(conflicts).toEqual([]);
+    expect(await local.get(unchanged.ownerId, unchanged.id)).toEqual(unchanged);
+  });
+
   it("preserves divergent edits with unequal revision counters", async () => {
     const local = new JsonReminderRepository(new MemoryStore());
     const localEdit = reminder({

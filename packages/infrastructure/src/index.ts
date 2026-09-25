@@ -658,7 +658,15 @@ function fromDatabase(value: Record<string, unknown>): Reminder {
     sound: value.sound as Reminder["sound"],
     status: value.status as Reminder["status"],
     revision: Number(value.revision),
-    createdAt: String(value.created_at),
-    updatedAt: String(value.updated_at),
+    createdAt: normalizeDatabaseTimestamp(value.created_at),
+    updatedAt: normalizeDatabaseTimestamp(value.updated_at),
   };
+}
+
+function normalizeDatabaseTimestamp(value: unknown): string {
+  const timestamp = String(value);
+  if (!isValidScheduleTimestamp(timestamp)) {
+    throw new Error(`Invalid database timestamp: ${timestamp}`);
+  }
+  return new Date(timestamp).toISOString();
 }
