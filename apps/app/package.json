@@ -37,7 +37,7 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "typecheck": "tsc --noEmit",
-    "export:web": "expo export --platform web && node -e \"require('node:fs').copyFileSync('public/sw.js', 'dist/sw.js')\""
+    "export:web": "expo export --platform web --clear && node -e \"require('node:fs').cpSync('public', 'dist', { recursive: true })\""
   },
   "private": true
 }

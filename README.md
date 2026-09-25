@@ -48,6 +48,83 @@ Schedule `dispatch-reminders` once per minute from Supabase Cron or another trus
 
 Supabase supplies its URL, anonymous key, and service-role key to deployed functions.
 
+## Free-tier deployment
+
+The initial hosted setup uses Cloudflare Pages Free for the web application and
+Supabase Free for Postgres, Authentication, Edge Functions, and Cron.
+
+### 1. Create and deploy the Supabase project
+
+Create a free Supabase project, then authenticate and link the CLI:
+
+```sh
+npx supabase login
+npx supabase link --project-ref YOUR_PROJECT_REF
+npx supabase db push
+npx supabase functions deploy delete-account
+npx supabase functions deploy deregister-device --no-verify-jwt
+npx supabase functions deploy occurrence-action
+npx supabase functions deploy dispatch-reminders --no-verify-jwt
+```
+
+Generate a strong dispatcher secret and VAPID key pair. Store the private values
+only as Edge Function secrets:
+
+```sh
+CRON_SECRET="$(openssl rand -hex 32)"
+npx web-push generate-vapid-keys
+npx supabase secrets set \
+  CRON_SECRET="$CRON_SECRET" \
+  VAPID_SUBJECT="mailto:YOUR_EMAIL" \
+  VAPID_PUBLIC_KEY="YOUR_VAPID_PUBLIC_KEY" \
+  VAPID_PRIVATE_KEY="YOUR_VAPID_PRIVATE_KEY"
+```
+
+In the Supabase dashboard, enable the Cron, `pg_net`, and Vault integrations.
+Replace the placeholders in `supabase/configure-dispatch-cron.sql`, run it in
+the SQL Editor, and verify that `dispatch-cron-reminders` succeeds once per
+minute. The script also removes Cron run history older than seven days.
+
+### 2. Deploy the web app to Cloudflare Pages
+
+Create a Pages project using Git integration and select this repository. Use:
+
+```text
+Production branch: main
+Root directory: /
+Build command: npm ci && npm run build
+Build output directory: apps/app/dist
+Node version: 22
+```
+
+Set these Pages build variables for both production and preview:
+
+```text
+EXPO_PUBLIC_SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
+EXPO_PUBLIC_SUPABASE_ANON_KEY=YOUR_SUPABASE_PUBLIC_KEY
+EXPO_PUBLIC_VAPID_PUBLIC_KEY=YOUR_VAPID_PUBLIC_KEY
+EXPO_PUBLIC_EAS_PROJECT_ID=YOUR_EAS_PROJECT_ID
+```
+
+`EXPO_PUBLIC_EAS_PROJECT_ID` is needed for native Expo push registration but
+does not block the web-only deployment. Never add `CRON_SECRET`, the VAPID
+private key, or the Supabase service-role key to Cloudflare.
+
+After the first Pages deployment, set the Supabase Authentication site URL to
+the generated `https://PROJECT.pages.dev` origin and add these redirect URLs:
+
+```text
+https://PROJECT.pages.dev/**
+cron-reminder://**
+```
+
+Redeploy Pages after changing any `EXPO_PUBLIC_*` value because Expo embeds
+those values in the static JavaScript bundle.
+
+The Supabase Free plan can pause low-activity projects and does not provide
+downloadable database backups. Treat this setup as a hobby or evaluation
+deployment rather than a reliable production service.
+
 ## Commands
 
 ```sh
