@@ -422,6 +422,8 @@ export function describeSchedule(
     weekday === "*"
   ) {
     const interval = minute.slice(2);
+    if (interval === "1")
+      return locale === "pt-BR" ? "A cada minuto" : "Every minute";
     return locale === "pt-BR"
       ? `A cada ${interval} minutos`
       : `Every ${interval} minutes`;
@@ -437,9 +439,41 @@ export function describeSchedule(
       return locale === "pt-BR"
         ? `Todos os dias às ${time}`
         : `Every day at ${time}`;
+    if (weekday === "1-5")
+      return locale === "pt-BR"
+        ? `Todos os dias úteis às ${time}`
+        : `Every weekday at ${time}`;
     return locale === "pt-BR"
       ? `Nos dias selecionados às ${time}`
       : `On selected weekdays at ${time}`;
+  }
+  if (
+    /^\d+$/.test(minute ?? "") &&
+    /^\d+$/.test(hour ?? "") &&
+    /^\d+$/.test(day ?? "") &&
+    month === "*" &&
+    weekday === "*"
+  ) {
+    const time = `${hour?.padStart(2, "0")}:${minute?.padStart(2, "0")}`;
+    return locale === "pt-BR"
+      ? `Todo mês, no dia ${day}, às ${time}`
+      : `Every month on day ${day} at ${time}`;
+  }
+  if (
+    /^\d+$/.test(minute ?? "") &&
+    /^\d+$/.test(hour ?? "") &&
+    /^\d+$/.test(day ?? "") &&
+    /^\d+$/.test(month ?? "") &&
+    weekday === "*"
+  ) {
+    const time = `${hour?.padStart(2, "0")}:${minute?.padStart(2, "0")}`;
+    const monthName = new Intl.DateTimeFormat(locale, {
+      month: "long",
+      timeZone: "UTC",
+    }).format(new Date(Date.UTC(2024, Number(month) - 1, 1)));
+    return locale === "pt-BR"
+      ? `Todos os anos em ${day} de ${monthName} às ${time}`
+      : `Every year on ${monthName} ${day} at ${time}`;
   }
   return locale === "pt-BR"
     ? `Agenda cron: ${schedule.expression}`

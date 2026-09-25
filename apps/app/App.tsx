@@ -84,18 +84,17 @@ import {
   type,
   type AppColors as Colors,
 } from "./src/theme";
+import {
+  buildCronExpression,
+  createScheduleEditorState,
+  hasValidScheduleEditorValues,
+  type ScheduleEditorKind,
+  type ScheduleEditorState,
+} from "./src/scheduleEditor";
 
 type ThemePreference = "system" | "light" | "dark";
 type NotificationRegistrationStatus =
   "idle" | "registering" | "registered" | "error";
-type EditorKind =
-  | "once"
-  | "interval"
-  | "daily"
-  | "weekdays"
-  | "monthly"
-  | "yearly"
-  | "advanced";
 
 const service = new ReminderService(
   localRepository,
@@ -1206,18 +1205,8 @@ function ReminderEditor({
   const [title, setTitle] = useState(reminder?.title ?? "");
   const [notes, setNotes] = useState(reminder?.notes ?? "");
   const [tags, setTags] = useState(reminder?.tags.join(", ") ?? "");
-  const [kind, setKind] = useState<EditorKind>(
-    inferEditorKind(reminder?.schedule),
-  );
-  const [cron, setCron] = useState(
-    reminder?.schedule.kind === "cron"
-      ? reminder.schedule.expression
-      : "0 9 * * *",
-  );
-  const [onceAt, setOnceAt] = useState(
-    reminder?.schedule.kind === "once"
-      ? reminder.schedule.at
-      : new Date(Date.now() + 3_600_000).toISOString(),
+  const [scheduleEditor, setScheduleEditor] = useState<ScheduleEditorState>(
+    () => createScheduleEditorState(reminder?.schedule),
   );
   const [sound, setSound] = useState<ReminderSound>(
     reminder?.sound ?? { mode: "default" },
@@ -1227,29 +1216,34 @@ function ReminderEditor({
     Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
   const timezone = reminder?.timezone ?? deviceTimezone;
 
-  function chooseKind(next: EditorKind) {
-    setKind(next);
-    const expressions: Partial<Record<EditorKind, string>> = {
-      interval: "*/5 * * * *",
-      daily: "0 9 * * *",
-      weekdays: "0 9 * * 1-5",
-      monthly: "0 9 1 * *",
-      yearly: "0 9 1 1 *",
-    };
-    if (expressions[next]) setCron(expressions[next] ?? cron);
+  function chooseKind(next: ScheduleEditorKind) {
+    setScheduleEditor((current) => ({ ...current, kind: next }));
   }
 
+  function updateScheduleEditor(updates: Partial<ScheduleEditorState>) {
+    setScheduleEditor((current) => ({ ...current, ...updates }));
+  }
+
+  const kind = scheduleEditor.kind;
   const existingCronSchedule =
     reminder?.schedule.kind === "cron" ? reminder.schedule : undefined;
+  const cronExpression = buildCronExpression(scheduleEditor);
   const schedule: Schedule =
     kind === "once"
-      ? { kind: "once", at: onceAt }
+      ? { kind: "once", at: scheduleEditor.onceAt }
       : kind === "advanced"
-        ? { ...existingCronSchedule, kind: "cron", expression: cron }
-        : { kind: "cron", expression: cron };
+        ? {
+            ...existingCronSchedule,
+            kind: "cron",
+            expression: cronExpression,
+          }
+        : { kind: "cron", expression: cronExpression };
+  const editorValuesValid = hasValidScheduleEditorValues(scheduleEditor);
   const validation =
     schedule.kind === "cron"
-      ? validateCronExpression(schedule.expression)
+      ? editorValuesValid
+        ? validateCronExpression(schedule.expression)
+        : { valid: false }
       : (() => {
           try {
             validateSchedule(schedule);
@@ -1368,8 +1362,8 @@ function ReminderEditor({
             title={t("schedule")}
             description={copy(
               locale,
-              "Choose a common rhythm or enter an advanced cron expression.",
-              "Escolha um ritmo comum ou insira uma expressão cron avançada.",
+              "Choose when it repeats. Cron syntax is only shown in Advanced cron.",
+              "Escolha quando repetir. A sintaxe cron só aparece em Cron avançado.",
             )}
             colors={colors}
           >
@@ -1400,18 +1394,150 @@ function ReminderEditor({
               </View>
               {kind === "once" ? (
                 <Field
-                  label={copy(locale, "ISO date and time", "Data e hora ISO")}
-                  value={onceAt}
-                  onChangeText={setOnceAt}
+                  label={copy(
+                    locale,
+                    "Date and time (ISO)",
+                    "Data e hora (ISO)",
+                  )}
+                  value={scheduleEditor.onceAt}
+                  onChangeText={(onceAt) => updateScheduleEditor({ onceAt })}
                   colors={colors}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+              ) : kind === "advanced" ? (
+                <Field
+                  label={t("advanced")}
+                  value={scheduleEditor.advancedCron}
+                  onChangeText={(advancedCron) =>
+                    updateScheduleEditor({ advancedCron })
+                  }
+                  colors={colors}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  hint={copy(
+                    locale,
+                    "Five fields: minute, hour, day, month, weekday.",
+                    "Cinco campos: minuto, hora, dia, mês e dia da semana.",
+                  )}
                 />
               ) : (
-                <Field
-                  label={kind === "advanced" ? t("advanced") : "Cron"}
-                  value={cron}
-                  onChangeText={setCron}
-                  colors={colors}
-                />
+                <View style={styles.formStack}>
+                  {kind === "interval" && (
+                    <Field
+                      label={copy(
+                        locale,
+                        "Repeat every (minutes)",
+                        "Repetir a cada (minutos)",
+                      )}
+                      value={scheduleEditor.intervalMinutes}
+                      onChangeText={(intervalMinutes) =>
+                        updateScheduleEditor({ intervalMinutes })
+                      }
+                      colors={colors}
+                      keyboardType="number-pad"
+                      hint={copy(
+                        locale,
+                        "Enter a value from 1 to 59.",
+                        "Insira um valor de 1 a 59.",
+                      )}
+                    />
+                  )}
+                  {(kind === "daily" || kind === "weekdays") && (
+                    <Field
+                      label={copy(
+                        locale,
+                        "Time (24-hour)",
+                        "Horário (24 horas)",
+                      )}
+                      value={scheduleEditor.time}
+                      onChangeText={(time) => updateScheduleEditor({ time })}
+                      colors={colors}
+                      placeholder="09:00"
+                      hint={copy(
+                        locale,
+                        `Uses the ${timezone} timezone.`,
+                        `Usa o fuso horário ${timezone}.`,
+                      )}
+                    />
+                  )}
+                  {kind === "monthly" && (
+                    <View style={styles.scheduleFieldsRow}>
+                      <View style={styles.scheduleField}>
+                        <Field
+                          label={copy(locale, "Day of month", "Dia do mês")}
+                          value={scheduleEditor.monthDay}
+                          onChangeText={(monthDay) =>
+                            updateScheduleEditor({ monthDay })
+                          }
+                          colors={colors}
+                          keyboardType="number-pad"
+                          hint={copy(locale, "1 to 31", "1 a 31")}
+                        />
+                      </View>
+                      <View style={styles.scheduleField}>
+                        <Field
+                          label={copy(
+                            locale,
+                            "Time (24-hour)",
+                            "Horário (24 horas)",
+                          )}
+                          value={scheduleEditor.time}
+                          onChangeText={(time) =>
+                            updateScheduleEditor({ time })
+                          }
+                          colors={colors}
+                          placeholder="09:00"
+                          hint={timezone}
+                        />
+                      </View>
+                    </View>
+                  )}
+                  {kind === "yearly" && (
+                    <View style={styles.scheduleFieldsRow}>
+                      <View style={styles.scheduleField}>
+                        <Field
+                          label={copy(locale, "Month", "Mês")}
+                          value={scheduleEditor.yearMonth}
+                          onChangeText={(yearMonth) =>
+                            updateScheduleEditor({ yearMonth })
+                          }
+                          colors={colors}
+                          keyboardType="number-pad"
+                          hint={copy(locale, "1 to 12", "1 a 12")}
+                        />
+                      </View>
+                      <View style={styles.scheduleField}>
+                        <Field
+                          label={copy(locale, "Day", "Dia")}
+                          value={scheduleEditor.yearDay}
+                          onChangeText={(yearDay) =>
+                            updateScheduleEditor({ yearDay })
+                          }
+                          colors={colors}
+                          keyboardType="number-pad"
+                          hint={copy(locale, "1 to 31", "1 a 31")}
+                        />
+                      </View>
+                      <View style={styles.scheduleField}>
+                        <Field
+                          label={copy(
+                            locale,
+                            "Time (24-hour)",
+                            "Horário (24 horas)",
+                          )}
+                          value={scheduleEditor.time}
+                          onChangeText={(time) =>
+                            updateScheduleEditor({ time })
+                          }
+                          colors={colors}
+                          placeholder="09:00"
+                          hint={timezone}
+                        />
+                      </View>
+                    </View>
+                  )}
+                </View>
               )}
               {!validation.valid && (
                 <Notice
@@ -1419,8 +1545,12 @@ function ReminderEditor({
                   colors={colors}
                   text={copy(
                     locale,
-                    "Enter a valid five-field schedule.",
-                    "Insira uma agenda válida de cinco campos.",
+                    kind === "advanced"
+                      ? "Enter a valid five-field cron expression."
+                      : "Check the schedule values. Times use HH:MM.",
+                    kind === "advanced"
+                      ? "Insira uma expressão cron válida de cinco campos."
+                      : "Revise os valores da agenda. Use HH:MM para horários.",
                   )}
                 />
               )}
@@ -1945,26 +2075,6 @@ function notificationErrorMessageKey(error: unknown): MessageKey {
   return "notificationRegistrationFailed";
 }
 
-function inferEditorKind(schedule: Schedule | undefined): EditorKind {
-  if (!schedule) return "daily";
-  if (schedule.kind === "once") return "once";
-  if (
-    schedule.startAt !== undefined ||
-    schedule.endAt !== undefined ||
-    schedule.occurrenceLimit !== undefined
-  ) {
-    return "advanced";
-  }
-  const presets: Record<string, EditorKind> = {
-    "*/5 * * * *": "interval",
-    "0 9 * * *": "daily",
-    "0 9 * * 1-5": "weekdays",
-    "0 9 1 * *": "monthly",
-    "0 9 1 1 *": "yearly",
-  };
-  return presets[schedule.expression.trim()] ?? "advanced";
-}
-
 function confirmDestructiveAction(
   title: string,
   message: string,
@@ -1986,6 +2096,7 @@ function Field({
   label,
   colors,
   placeholder,
+  hint,
   ...props
 }: {
   label: string;
@@ -1994,6 +2105,10 @@ function Field({
   onChangeText: (value: string) => void;
   multiline?: boolean;
   placeholder?: string;
+  hint?: string;
+  keyboardType?: "number-pad";
+  autoCapitalize?: "none" | "sentences" | "words" | "characters";
+  autoCorrect?: boolean;
 }) {
   const [focused, setFocused] = useState(false);
   return (
@@ -2016,6 +2131,9 @@ function Field({
         ]}
         {...props}
       />
+      {hint && (
+        <Text style={[styles.fieldHint, { color: colors.subtle }]}>{hint}</Text>
+      )}
     </View>
   );
 }
@@ -2516,6 +2634,22 @@ const styles = StyleSheet.create({
   sectionDivider: { width: "100%", height: 1 },
   formStack: { gap: space.lg },
   field: { minWidth: 0 },
+  fieldHint: {
+    marginTop: space.xs,
+    fontSize: type.caption,
+    lineHeight: type.captionLine,
+  },
+  scheduleFieldsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "flex-start",
+    gap: space.md,
+  },
+  scheduleField: {
+    flexGrow: 1,
+    flexBasis: 140,
+    minWidth: 0,
+  },
   titleRow: {
     flexDirection: "row",
     alignItems: "flex-start",

@@ -55,6 +55,15 @@ describe("cron schedule", () => {
     expect(
       describeSchedule({ kind: "cron", expression: "0 9 * * *" }, "pt-BR"),
     ).toBe("Todos os dias às 09:00");
+    expect(
+      describeSchedule({ kind: "cron", expression: "30 8 * * 1-5" }, "en"),
+    ).toBe("Every weekday at 08:30");
+    expect(
+      describeSchedule({ kind: "cron", expression: "15 10 20 * *" }, "en"),
+    ).toBe("Every month on day 20 at 10:15");
+    expect(
+      describeSchedule({ kind: "cron", expression: "0 9 24 9 *" }, "pt-BR"),
+    ).toBe("Todos os anos em 24 de setembro às 09:00");
   });
 
   it("moves a nonexistent daylight-saving time to the next valid time", () => {
