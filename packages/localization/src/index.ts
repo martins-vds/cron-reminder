@@ -40,6 +40,18 @@ const messages = {
     title: "Title",
     upcoming: "Next occurrences",
     enableNotifications: "Enable notifications on this device",
+    enablingNotifications: "Enabling notifications...",
+    notificationsEnabled: "Notifications are enabled on this device.",
+    notificationPermissionDenied:
+      "Notifications are blocked. Allow them for this site in your browser settings, then try again.",
+    notificationUnsupported:
+      "Web Push is not supported in this browser or installation.",
+    notificationSecureContextRequired:
+      "Notifications require a secure HTTPS connection.",
+    notificationMissingConfiguration:
+      "Web Push is not configured for this deployment.",
+    notificationRegistrationFailed:
+      "Notifications could not be enabled. Check your connection and try again.",
     deleteAccount: "Delete account and data",
     deleteAccountTitle: "Delete account",
     deleteAccountMessage: "This permanently deletes all synchronized data.",
@@ -85,6 +97,18 @@ const messages = {
     title: "Título",
     upcoming: "Próximas ocorrências",
     enableNotifications: "Ativar notificações neste dispositivo",
+    enablingNotifications: "Ativando notificações...",
+    notificationsEnabled: "As notificações estão ativas neste dispositivo.",
+    notificationPermissionDenied:
+      "As notificações estão bloqueadas. Permita-as para este site nas configurações do navegador e tente novamente.",
+    notificationUnsupported:
+      "O Web Push não é compatível com este navegador ou instalação.",
+    notificationSecureContextRequired:
+      "As notificações exigem uma conexão HTTPS segura.",
+    notificationMissingConfiguration:
+      "O Web Push não está configurado para esta implantação.",
+    notificationRegistrationFailed:
+      "Não foi possível ativar as notificações. Verifique sua conexão e tente novamente.",
     deleteAccount: "Excluir conta e dados",
     deleteAccountTitle: "Excluir conta",
     deleteAccountMessage:

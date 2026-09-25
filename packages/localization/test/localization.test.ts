@@ -9,6 +9,12 @@ describe("localization", () => {
     expect(createTranslator("en")("yearly")).toBe("Yearly");
     expect(createTranslator("pt-BR")("monthly")).toBe("Mensalmente");
     expect(createTranslator("pt-BR")("yearly")).toBe("Anualmente");
+    expect(createTranslator("en")("notificationsEnabled")).toBe(
+      "Notifications are enabled on this device.",
+    );
+    expect(createTranslator("pt-BR")("notificationsEnabled")).toBe(
+      "As notificações estão ativas neste dispositivo.",
+    );
   });
 
   it("falls back regional locales safely", () => {

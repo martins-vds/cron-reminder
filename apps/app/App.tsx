@@ -49,6 +49,7 @@ import {
   createTranslator,
   normalizeLocale,
   type Locale,
+  type MessageKey,
 } from "@cron-reminder/localization";
 import {
   authentication,
@@ -70,8 +71,11 @@ import {
   DeviceNotificationAdapter,
   subscribeToPushTokenChanges,
 } from "./src/notificationAdapter";
+import { NotificationRegistrationError } from "./src/notificationErrors";
 
 type ThemePreference = "system" | "light" | "dark";
+type NotificationRegistrationStatus =
+  "idle" | "registering" | "registered" | "error";
 type EditorKind =
   | "once"
   | "interval"
@@ -1188,6 +1192,24 @@ function Settings({
   const [importConflicts, setImportConflicts] = useState<
     readonly SyncConflict[]
   >([]);
+  const [notificationStatus, setNotificationStatus] =
+    useState<NotificationRegistrationStatus>("idle");
+  const [notificationMessageKey, setNotificationMessageKey] =
+    useState<MessageKey | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void getRememberedDeviceRegistration()
+      .then((registration) => {
+        if (!active || !registration) return;
+        setNotificationStatus("registered");
+        setNotificationMessageKey("notificationsEnabled");
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [ownerId]);
 
   async function exportJson() {
     const json = exportBackup(await localRepository.list(ownerId), new Date());
@@ -1249,18 +1271,19 @@ function Settings({
   }
 
   async function enableNotifications() {
-    const registration = await new DeviceNotificationAdapter().register(
-      ownerId,
-    );
-    if (!registration) {
-      Alert.alert(
-        "Notifications",
-        "Permission was denied or Web Push is unavailable.",
+    if (notificationStatus === "registering") return;
+    setNotificationStatus("registering");
+    setNotificationMessageKey(null);
+    try {
+      const registration = await new DeviceNotificationAdapter().register(
+        ownerId,
       );
-      return;
-    }
-
-    if (supabase) {
+      if (!registration) {
+        setNotificationStatus("error");
+        setNotificationMessageKey("notificationPermissionDenied");
+        return;
+      }
+      if (!supabase) throw new Error("Supabase is not configured.");
       const deregistrationToken = Crypto.randomUUID();
       const rememberedDevice = await getRememberedDeviceRegistration();
       const deviceId = rememberedDevice?.id ?? Crypto.randomUUID();
@@ -1274,10 +1297,13 @@ function Settings({
       if (error) throw error;
       if (!data) throw new Error("Unable to claim push token.");
       await rememberDevice(deviceId, deregistrationToken);
-    } else {
-      return;
+      setNotificationStatus("registered");
+      setNotificationMessageKey("notificationsEnabled");
+    } catch (error) {
+      console.error("Notification registration failed.", error);
+      setNotificationStatus("error");
+      setNotificationMessageKey(notificationErrorMessageKey(error));
     }
-    Alert.alert("Notifications", "This device is registered.");
   }
   return (
     <ScrollView contentContainerStyle={styles.page}>
@@ -1381,14 +1407,31 @@ function Settings({
         </View>
       ))}
       <Button
-        label={t("enableNotifications")}
-        onPress={() =>
-          void enableNotifications().catch(() =>
-            Alert.alert("Notifications", "Device registration failed."),
-          )
+        label={
+          notificationStatus === "registering"
+            ? t("enablingNotifications")
+            : notificationStatus === "registered"
+              ? t("notificationsEnabled")
+              : t("enableNotifications")
         }
+        onPress={() => void enableNotifications()}
         colors={colors}
+        active={notificationStatus === "registered"}
+        disabled={notificationStatus === "registering"}
       />
+      {notificationMessageKey && (
+        <Text
+          accessibilityRole={
+            notificationStatus === "error" ? "alert" : undefined
+          }
+          style={{
+            color:
+              notificationStatus === "error" ? colors.warning : colors.muted,
+          }}
+        >
+          {t(notificationMessageKey)}
+        </Text>
+      )}
       <Button
         label={t("signOut")}
         onPress={() => void authentication?.signOut()}
@@ -1410,6 +1453,17 @@ function Settings({
       />
     </ScrollView>
   );
+}
+
+function notificationErrorMessageKey(error: unknown): MessageKey {
+  if (error instanceof NotificationRegistrationError) {
+    if (error.code === "unsupported") return "notificationUnsupported";
+    if (error.code === "insecure-context")
+      return "notificationSecureContextRequired";
+    if (error.code === "missing-vapid-key")
+      return "notificationMissingConfiguration";
+  }
+  return "notificationRegistrationFailed";
 }
 
 function inferEditorKind(schedule: Schedule | undefined): EditorKind {

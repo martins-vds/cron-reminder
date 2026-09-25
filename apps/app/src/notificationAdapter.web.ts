@@ -3,6 +3,7 @@ import type {
   NotificationRegistration,
 } from "@cron-reminder/application";
 import type { Occurrence, Reminder } from "@cron-reminder/domain";
+import { NotificationRegistrationError } from "./notificationErrors";
 
 const scheduledNotifications = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -23,29 +24,42 @@ export class DeviceNotificationAdapter implements NotificationPort {
 
   async register(ownerId: string): Promise<NotificationRegistration | null> {
     if (
-      (await this.requestPermission()) === "denied" ||
-      !("serviceWorker" in navigator)
-    )
-      return null;
-    await navigator.serviceWorker.register("/sw.js");
-    const registration = await navigator.serviceWorker.ready;
+      !("Notification" in globalThis) ||
+      !("serviceWorker" in navigator) ||
+      !("PushManager" in globalThis)
+    ) {
+      throw new NotificationRegistrationError("unsupported");
+    }
+    if (!globalThis.isSecureContext) {
+      throw new NotificationRegistrationError("insecure-context");
+    }
+    if ((await this.requestPermission()) === "denied") return null;
+
     const publicKey = process.env.EXPO_PUBLIC_VAPID_PUBLIC_KEY;
-    const subscription =
-      (await registration.pushManager.getSubscription()) ??
-      (publicKey
-        ? await registration.pushManager.subscribe({
-            userVisibleOnly: true,
-            applicationServerKey: decodeVapidKey(publicKey),
-          })
-        : null);
-    return subscription
-      ? {
-          id: subscription.endpoint,
-          ownerId,
-          platform: "web",
-          token: JSON.stringify(subscription),
-        }
-      : null;
+    if (!publicKey) {
+      throw new NotificationRegistrationError("missing-vapid-key");
+    }
+
+    try {
+      await navigator.serviceWorker.register("/sw.js");
+      const registration = await navigator.serviceWorker.ready;
+      const subscription =
+        (await registration.pushManager.getSubscription()) ??
+        (await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: decodeVapidKey(publicKey),
+        }));
+      return {
+        id: subscription.endpoint,
+        ownerId,
+        platform: "web",
+        token: JSON.stringify(subscription),
+      };
+    } catch (error) {
+      throw new NotificationRegistrationError("subscription-failed", {
+        cause: error,
+      });
+    }
   }
 
   async schedule(reminder: Reminder, occurrence: Occurrence): Promise<void> {
