@@ -11,8 +11,8 @@
     "build": "npm run typecheck && npm run export:web",
     "export:web": "npm run export:web --workspace @cron-reminder/app",
     "format": "prettier --write .",
-    "format:check": "prettier --check .",
-    "lint": "eslint .",
+    "format:check": "prettier --check apps packages test supabase/functions .github/workflows package.json package-lock.json compose.integration.yml eslint.config.mjs tsconfig.base.json tsconfig.json vitest.config.ts vitest.integration.config.ts README.md",
+    "lint": "eslint apps packages test scripts/run-integration-tests.mjs vitest.config.ts vitest.integration.config.ts",
     "test": "vitest run",
     "test:integration": "node scripts/run-integration-tests.mjs",
     "test:integration:only": "vitest run --config vitest.integration.config.ts",
@@ -24,12 +24,14 @@
     "@types/node": "^24.10.13",
     "@types/pg": "^8.15.5",
     "eslint": "^10.11.0",
-    "prettier": "^3.9.0",
     "pg": "^8.16.3",
+    "prettier": "^3.9.0",
+    "supabase": "^2.117.0",
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.70.1",
     "uuid": "^11.1.1",
-    "vitest": "^5.0.1"
+    "vitest": "^5.0.1",
+    "wrangler": "^4.140.0"
   },
   "overrides": {
     "uuid": "$uuid"

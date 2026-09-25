@@ -1,0 +1,116 @@
+name: Production deployment
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-deployment
+  cancel-in-progress: false
+
+jobs:
+  select:
+    runs-on: ubuntu-latest
+    outputs:
+      should_deploy: ${{ steps.freshness.outputs.should_deploy }}
+      target_sha: ${{ steps.target.outputs.target_sha }}
+    steps:
+      - id: target
+        env:
+          TARGET_SHA: ${{ github.sha }}
+        run: echo "target_sha=$TARGET_SHA" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.target.outputs.target_sha }}
+      - id: freshness
+        env:
+          TARGET_SHA: ${{ steps.target.outputs.target_sha }}
+        run: |
+          git fetch origin main --depth=1
+          if [ "$TARGET_SHA" = "$(git rev-parse origin/main)" ]; then
+            echo "should_deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Skipping stale deployment for $TARGET_SHA."
+            echo "should_deploy=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  deploy:
+    needs: select
+    if: needs.select.outputs.should_deploy == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    env:
+      TARGET_SHA: ${{ needs.select.outputs.target_sha }}
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_PAGES_PROJECT: ${{ vars.CLOUDFLARE_PAGES_PROJECT }}
+      EXPO_PUBLIC_SUPABASE_URL: ${{ vars.EXPO_PUBLIC_SUPABASE_URL }}
+      EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
+      EXPO_PUBLIC_AUTH_PROVIDERS: ${{ vars.EXPO_PUBLIC_AUTH_PROVIDERS }}
+      EXPO_PUBLIC_VAPID_PUBLIC_KEY: ${{ vars.EXPO_PUBLIC_VAPID_PUBLIC_KEY }}
+      EXPO_PUBLIC_EAS_PROJECT_ID: ${{ vars.EXPO_PUBLIC_EAS_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.select.outputs.target_sha }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: v2.x
+      - run: npm ci
+      - name: Verify deployment configuration
+        run: |
+          : "${SUPABASE_ACCESS_TOKEN:?Configure SUPABASE_ACCESS_TOKEN in the production environment}"
+          : "${SUPABASE_DB_PASSWORD:?Configure SUPABASE_DB_PASSWORD in the production environment}"
+          : "${SUPABASE_PROJECT_ID:?Configure SUPABASE_PROJECT_ID in the production environment}"
+          : "${CLOUDFLARE_API_TOKEN:?Configure CLOUDFLARE_API_TOKEN in the production environment}"
+          : "${CLOUDFLARE_ACCOUNT_ID:?Configure CLOUDFLARE_ACCOUNT_ID in the production environment}"
+          : "${CLOUDFLARE_PAGES_PROJECT:?Configure CLOUDFLARE_PAGES_PROJECT in the production environment}"
+          : "${EXPO_PUBLIC_SUPABASE_URL:?Configure EXPO_PUBLIC_SUPABASE_URL in the production environment}"
+          : "${EXPO_PUBLIC_SUPABASE_ANON_KEY:?Configure EXPO_PUBLIC_SUPABASE_ANON_KEY in the production environment}"
+          : "${EXPO_PUBLIC_AUTH_PROVIDERS:?Configure EXPO_PUBLIC_AUTH_PROVIDERS in the production environment}"
+          : "${EXPO_PUBLIC_VAPID_PUBLIC_KEY:?Configure EXPO_PUBLIC_VAPID_PUBLIC_KEY in the production environment}"
+      - name: Validate application
+        run: |
+          npm test
+          npm run typecheck
+          npm run lint
+          deno lint --config supabase/functions/deno.json supabase/functions
+          deno check --no-lock --config supabase/functions/deno.json --node-modules-dir=auto \
+            supabase/functions/_shared/cors.ts \
+            supabase/functions/delete-account/index.ts \
+            supabase/functions/deregister-device/index.ts \
+            supabase/functions/dispatch-reminders/index.ts \
+            supabase/functions/occurrence-action/index.ts
+          npm run format:check
+          npm run test:integration
+      - name: Build web application
+        run: npm run export:web
+      - name: Link production Supabase project
+        run: npx supabase link --project-ref "$SUPABASE_PROJECT_ID"
+      - name: Apply database migrations
+        run: npx supabase db push
+      - name: Deploy Supabase Edge Functions
+        run: |
+          npx supabase functions deploy delete-account --project-ref "$SUPABASE_PROJECT_ID"
+          npx supabase functions deploy deregister-device --no-verify-jwt --project-ref "$SUPABASE_PROJECT_ID"
+          npx supabase functions deploy occurrence-action --project-ref "$SUPABASE_PROJECT_ID"
+          npx supabase functions deploy dispatch-reminders --no-verify-jwt --project-ref "$SUPABASE_PROJECT_ID"
+      - name: Deploy Cloudflare Pages
+        run: |
+          npx wrangler pages deploy apps/app/dist \
+            --project-name="$CLOUDFLARE_PAGES_PROJECT" \
+            --branch=main \
+            --commit-hash="$TARGET_SHA" \
+            --commit-message="$(git log -1 --pretty=%s)"
