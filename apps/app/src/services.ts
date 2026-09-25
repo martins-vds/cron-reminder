@@ -370,6 +370,7 @@ export async function flushNotificationActions(ownerId: string): Promise<void> {
           ),
         );
       });
+      if (error) throw error;
     }
   });
 }

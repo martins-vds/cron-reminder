@@ -28,6 +28,20 @@ jobs:
       - run: deno lint --config supabase/functions/deno.json supabase/functions
       - run: deno check --no-lock --config supabase/functions/deno.json --node-modules-dir=auto supabase/functions/_shared/cors.ts supabase/functions/delete-account/index.ts supabase/functions/deregister-device/index.ts supabase/functions/dispatch-reminders/index.ts supabase/functions/occurrence-action/index.ts
       - run: npm run format:check
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+      - name: Run browser UI tests
+        run: npm run test:ui
+      - name: Upload Playwright failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: playwright-report-ci
+          path: |
+            playwright-report/
+            test-results/
+          if-no-files-found: ignore
+          retention-days: 7
       - run: npm run export:web
 
   integration:
