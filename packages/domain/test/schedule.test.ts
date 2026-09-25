@@ -34,6 +34,59 @@ describe("cron schedule", () => {
     expect(occurrences[0]?.toISOString()).toBe("2026-09-24T12:00:00.000Z");
   });
 
+  it("supports multiple fixed times each day", () => {
+    const schedule = {
+      kind: "daily-times" as const,
+      times: ["09:15", "12:30", "18:00", "21:45"],
+    };
+    expect(() => validateSchedule(schedule)).not.toThrow();
+    expect(
+      nextOccurrences(
+        schedule,
+        "UTC",
+        new Date("2026-09-24T12:00:00.000Z"),
+        5,
+      ).map((value) => value.toISOString()),
+    ).toEqual([
+      "2026-09-24T12:30:00.000Z",
+      "2026-09-24T18:00:00.000Z",
+      "2026-09-24T21:45:00.000Z",
+      "2026-09-25T09:15:00.000Z",
+      "2026-09-25T12:30:00.000Z",
+    ]);
+    expect(describeSchedule(schedule, "en")).toBe(
+      "Every day at 09:15, 12:30, 18:00, and 21:45",
+    );
+  });
+
+  it("rejects invalid or duplicate daily times", () => {
+    expect(() =>
+      validateSchedule({ kind: "daily-times", times: ["09:00"] }),
+    ).toThrow("two");
+    expect(() =>
+      validateSchedule({
+        kind: "daily-times",
+        times: ["09:00", "9:00"],
+      }),
+    ).toThrow("HH:MM");
+    expect(() =>
+      validateSchedule({
+        kind: "daily-times",
+        times: ["09:00", "09:00"],
+      }),
+    ).toThrow("unique");
+    expect(() =>
+      validateSchedule({
+        kind: "daily-times",
+        times: Array.from(
+          { length: 25 },
+          (_value, index) =>
+            `${String(Math.floor(index / 2)).padStart(2, "0")}:${index % 2 ? "30" : "00"}`,
+        ),
+      }),
+    ).toThrow("24");
+  });
+
   it("includes a cron occurrence exactly at startAt", () => {
     const [occurrence] = nextOccurrences(
       {
@@ -55,6 +108,15 @@ describe("cron schedule", () => {
     expect(
       describeSchedule({ kind: "cron", expression: "0 9 * * *" }, "pt-BR"),
     ).toBe("Todos os dias às 09:00");
+    expect(
+      describeSchedule({ kind: "cron", expression: "30 8 * * 1-5" }, "en"),
+    ).toBe("Every weekday at 08:30");
+    expect(
+      describeSchedule({ kind: "cron", expression: "15 10 20 * *" }, "en"),
+    ).toBe("Every month on day 20 at 10:15");
+    expect(
+      describeSchedule({ kind: "cron", expression: "0 9 24 9 *" }, "pt-BR"),
+    ).toBe("Todos os anos em 24 de setembro às 09:00");
   });
 
   it("moves a nonexistent daylight-saving time to the next valid time", () => {

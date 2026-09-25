@@ -9,6 +9,7 @@ interface ReminderRow {
   notes: string;
   schedule:
     | { kind: 'once'; at: string }
+    | { kind: 'daily-times'; times: string[] }
     | {
         kind: 'cron';
         expression: string;
@@ -1035,6 +1036,14 @@ function nextDueAtCursor(
     const allowed = inclusive ? due >= boundary : due > boundary;
     return allowed ? due.toISOString() : null;
   }
+  if (reminder.schedule.kind === 'daily-times') {
+    return nextDailyTimeCursor(
+      reminder.schedule.times,
+      reminder.timezone,
+      boundary,
+      inclusive,
+    );
+  }
   try {
     const interval = CronExpressionParser.parse(reminder.schedule.expression, {
       currentDate: new Date(boundary.getTime() - (inclusive ? 1 : 0)),
@@ -1070,6 +1079,15 @@ function dueOccurrences(
       truncated: false,
     };
   }
+  if (reminder.schedule.kind === 'daily-times') {
+    return dailyTimeOccurrences(
+      reminder.schedule.times,
+      reminder.timezone,
+      lowerBound,
+      windowEnd,
+      limit,
+    );
+  }
   const results: Date[] = [];
   const interval = CronExpressionParser.parse(reminder.schedule.expression, {
     currentDate: new Date(lowerBound.getTime() - 1),
@@ -1095,6 +1113,65 @@ function dueOccurrences(
     };
   }
   return { occurrences: results, truncated: false };
+}
+
+function nextDailyTimeCursor(
+  times: string[],
+  timezone: string,
+  boundary: Date,
+  inclusive: boolean,
+): string | null {
+  let next: Date | null = null;
+  for (const time of times) {
+    const interval = CronExpressionParser.parse(dailyTimeExpression(time), {
+      currentDate: new Date(boundary.getTime() - (inclusive ? 1 : 0)),
+      tz: timezone,
+    });
+    const candidate = interval.next().toDate();
+    if (!next || candidate < next) next = candidate;
+  }
+  return next?.toISOString() ?? null;
+}
+
+function dailyTimeOccurrences(
+  times: string[],
+  timezone: string,
+  lowerBound: Date,
+  windowEnd: Date,
+  limit: number,
+): { occurrences: Date[]; truncated: boolean } {
+  const candidates: Date[] = [];
+  for (const time of times) {
+    const interval = CronExpressionParser.parse(dailyTimeExpression(time), {
+      currentDate: new Date(lowerBound.getTime() - 1),
+      tz: timezone,
+    });
+    for (let index = 0; index <= limit; index++) {
+      let candidate: Date;
+      try {
+        candidate = interval.next().toDate();
+      } catch {
+        break;
+      }
+      if (candidate < lowerBound) continue;
+      if (candidate >= windowEnd) break;
+      candidates.push(candidate);
+    }
+  }
+  const occurrences = [
+    ...new Map(
+      candidates.map((candidate) => [candidate.toISOString(), candidate]),
+    ).values(),
+  ].sort((left, right) => left.getTime() - right.getTime());
+  return {
+    occurrences: occurrences.slice(0, limit),
+    truncated: occurrences.length > limit,
+  };
+}
+
+function dailyTimeExpression(time: string): string {
+  const [hour, minute] = time.split(':');
+  return `${Number(minute)} ${Number(hour)} * * *`;
 }
 
 function inclusiveStartDate(value: string | undefined): Date | undefined {

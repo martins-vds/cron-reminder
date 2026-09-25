@@ -41,8 +41,8 @@ import {
 import { exportBackup, importBackup } from "@cron-reminder/infrastructure";
 import {
   describeSchedule,
+  MAX_DAILY_TIMES,
   nextOccurrences,
-  validateCronExpression,
   validateSchedule,
   type Reminder,
   type ReminderSound,
@@ -84,18 +84,18 @@ import {
   type,
   type AppColors as Colors,
 } from "./src/theme";
+import {
+  buildCronExpression,
+  createScheduleEditorState,
+  hasValidScheduleEditorValues,
+  normalizeDailyTimes,
+  type ScheduleEditorKind,
+  type ScheduleEditorState,
+} from "./src/scheduleEditor";
 
 type ThemePreference = "system" | "light" | "dark";
 type NotificationRegistrationStatus =
   "idle" | "registering" | "registered" | "error";
-type EditorKind =
-  | "once"
-  | "interval"
-  | "daily"
-  | "weekdays"
-  | "monthly"
-  | "yearly"
-  | "advanced";
 
 const service = new ReminderService(
   localRepository,
@@ -1206,18 +1206,8 @@ function ReminderEditor({
   const [title, setTitle] = useState(reminder?.title ?? "");
   const [notes, setNotes] = useState(reminder?.notes ?? "");
   const [tags, setTags] = useState(reminder?.tags.join(", ") ?? "");
-  const [kind, setKind] = useState<EditorKind>(
-    inferEditorKind(reminder?.schedule),
-  );
-  const [cron, setCron] = useState(
-    reminder?.schedule.kind === "cron"
-      ? reminder.schedule.expression
-      : "0 9 * * *",
-  );
-  const [onceAt, setOnceAt] = useState(
-    reminder?.schedule.kind === "once"
-      ? reminder.schedule.at
-      : new Date(Date.now() + 3_600_000).toISOString(),
+  const [scheduleEditor, setScheduleEditor] = useState<ScheduleEditorState>(
+    () => createScheduleEditorState(reminder?.schedule),
   );
   const [sound, setSound] = useState<ReminderSound>(
     reminder?.sound ?? { mode: "default" },
@@ -1227,37 +1217,68 @@ function ReminderEditor({
     Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
   const timezone = reminder?.timezone ?? deviceTimezone;
 
-  function chooseKind(next: EditorKind) {
-    setKind(next);
-    const expressions: Partial<Record<EditorKind, string>> = {
-      interval: "*/5 * * * *",
-      daily: "0 9 * * *",
-      weekdays: "0 9 * * 1-5",
-      monthly: "0 9 1 * *",
-      yearly: "0 9 1 1 *",
-    };
-    if (expressions[next]) setCron(expressions[next] ?? cron);
+  function chooseKind(next: ScheduleEditorKind) {
+    setScheduleEditor((current) => ({ ...current, kind: next }));
   }
 
+  function updateScheduleEditor(updates: Partial<ScheduleEditorState>) {
+    setScheduleEditor((current) => ({ ...current, ...updates }));
+  }
+
+  function updateDailyTime(index: number, value: string) {
+    setScheduleEditor((current) => ({
+      ...current,
+      dailyTimes: current.dailyTimes.map((time, timeIndex) =>
+        timeIndex === index ? value : time,
+      ),
+    }));
+  }
+
+  function addDailyTime() {
+    setScheduleEditor((current) => ({
+      ...current,
+      dailyTimes: [...current.dailyTimes, ""],
+    }));
+  }
+
+  function removeDailyTime(index: number) {
+    setScheduleEditor((current) => ({
+      ...current,
+      dailyTimes: current.dailyTimes.filter(
+        (_time, timeIndex) => timeIndex !== index,
+      ),
+    }));
+  }
+
+  const kind = scheduleEditor.kind;
   const existingCronSchedule =
     reminder?.schedule.kind === "cron" ? reminder.schedule : undefined;
+  const cronExpression = buildCronExpression(scheduleEditor);
   const schedule: Schedule =
     kind === "once"
-      ? { kind: "once", at: onceAt }
-      : kind === "advanced"
-        ? { ...existingCronSchedule, kind: "cron", expression: cron }
-        : { kind: "cron", expression: cron };
-  const validation =
-    schedule.kind === "cron"
-      ? validateCronExpression(schedule.expression)
-      : (() => {
-          try {
-            validateSchedule(schedule);
-            return { valid: true };
-          } catch {
-            return { valid: false };
+      ? { kind: "once", at: scheduleEditor.onceAt }
+      : kind === "multiple-daily"
+        ? {
+            kind: "daily-times",
+            times: normalizeDailyTimes(scheduleEditor.dailyTimes),
           }
-        })();
+        : kind === "advanced"
+          ? {
+              ...existingCronSchedule,
+              kind: "cron",
+              expression: cronExpression,
+            }
+          : { kind: "cron", expression: cronExpression };
+  const editorValuesValid = hasValidScheduleEditorValues(scheduleEditor);
+  const validation = (() => {
+    if (!editorValuesValid) return { valid: false };
+    try {
+      validateSchedule(schedule);
+      return { valid: true };
+    } catch {
+      return { valid: false };
+    }
+  })();
   let preview: Date[] = [];
   if (validation.valid) {
     try {
@@ -1368,8 +1389,8 @@ function ReminderEditor({
             title={t("schedule")}
             description={copy(
               locale,
-              "Choose a common rhythm or enter an advanced cron expression.",
-              "Escolha um ritmo comum ou insira uma expressão cron avançada.",
+              "Choose when it repeats. Cron syntax is only shown in Advanced cron.",
+              "Escolha quando repetir. A sintaxe cron só aparece em Cron avançado.",
             )}
             colors={colors}
           >
@@ -1377,21 +1398,25 @@ function ReminderEditor({
               <View style={styles.chips}>
                 {(
                   [
-                    "once",
-                    "interval",
-                    "daily",
-                    "weekdays",
-                    "monthly",
-                    "yearly",
-                    "advanced",
+                    { value: "once", label: t("once") },
+                    { value: "interval", label: t("interval") },
+                    { value: "daily", label: t("daily") },
+                    {
+                      value: "multiple-daily",
+                      label: t("multipleDaily"),
+                    },
+                    { value: "weekdays", label: t("weekdays") },
+                    { value: "monthly", label: t("monthly") },
+                    { value: "yearly", label: t("yearly") },
+                    { value: "advanced", label: t("advanced") },
                   ] as const
-                ).map((value) => (
+                ).map((option) => (
                   <Button
-                    key={value}
-                    label={t(value)}
-                    onPress={() => chooseKind(value)}
-                    active={kind === value}
-                    selected={kind === value}
+                    key={option.value}
+                    label={option.label}
+                    onPress={() => chooseKind(option.value)}
+                    active={kind === option.value}
+                    selected={kind === option.value}
                     colors={colors}
                     variant="chip"
                     compact
@@ -1400,18 +1425,216 @@ function ReminderEditor({
               </View>
               {kind === "once" ? (
                 <Field
-                  label={copy(locale, "ISO date and time", "Data e hora ISO")}
-                  value={onceAt}
-                  onChangeText={setOnceAt}
+                  label={copy(
+                    locale,
+                    "Date and time (ISO)",
+                    "Data e hora (ISO)",
+                  )}
+                  value={scheduleEditor.onceAt}
+                  onChangeText={(onceAt) => updateScheduleEditor({ onceAt })}
                   colors={colors}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+              ) : kind === "multiple-daily" ? (
+                <View style={styles.formStack}>
+                  <Text style={[styles.body, { color: colors.muted }]}>
+                    {copy(
+                      locale,
+                      "Add two or more times. Each time creates an occurrence for the same reminder.",
+                      "Adicione dois ou mais horários. Cada horário cria uma ocorrência do mesmo lembrete.",
+                    )}
+                  </Text>
+                  {scheduleEditor.dailyTimes.map((time, index) => (
+                    <View key={index} style={styles.dailyTimeRow}>
+                      <View style={styles.dailyTimeField}>
+                        <Field
+                          label={copy(
+                            locale,
+                            `Time ${index + 1} (24-hour)`,
+                            `Horário ${index + 1} (24 horas)`,
+                          )}
+                          value={time}
+                          onChangeText={(value) =>
+                            updateDailyTime(index, value)
+                          }
+                          colors={colors}
+                          placeholder="09:00"
+                        />
+                      </View>
+                      {scheduleEditor.dailyTimes.length > 2 && (
+                        <Button
+                          label={copy(locale, "Remove", "Remover")}
+                          accessibilityLabel={copy(
+                            locale,
+                            `Remove time ${index + 1}`,
+                            `Remover horário ${index + 1}`,
+                          )}
+                          onPress={() => removeDailyTime(index)}
+                          colors={colors}
+                          variant="danger"
+                          compact
+                        />
+                      )}
+                    </View>
+                  ))}
+                  <View style={styles.scheduleAddTime}>
+                    <Button
+                      label={copy(
+                        locale,
+                        "Add another time",
+                        "Adicionar outro horário",
+                      )}
+                      onPress={addDailyTime}
+                      colors={colors}
+                      variant="secondary"
+                      compact
+                      disabled={
+                        scheduleEditor.dailyTimes.length >= MAX_DAILY_TIMES
+                      }
+                    />
+                    <Text style={[styles.caption, { color: colors.subtle }]}>
+                      {copy(
+                        locale,
+                        `Up to ${MAX_DAILY_TIMES} times. Uses the ${timezone} timezone.`,
+                        `Até ${MAX_DAILY_TIMES} horários. Usa o fuso horário ${timezone}.`,
+                      )}
+                    </Text>
+                  </View>
+                </View>
+              ) : kind === "advanced" ? (
+                <Field
+                  label={t("advanced")}
+                  value={scheduleEditor.advancedCron}
+                  onChangeText={(advancedCron) =>
+                    updateScheduleEditor({ advancedCron })
+                  }
+                  colors={colors}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  hint={copy(
+                    locale,
+                    "Five fields: minute, hour, day, month, weekday.",
+                    "Cinco campos: minuto, hora, dia, mês e dia da semana.",
+                  )}
                 />
               ) : (
-                <Field
-                  label={kind === "advanced" ? t("advanced") : "Cron"}
-                  value={cron}
-                  onChangeText={setCron}
-                  colors={colors}
-                />
+                <View style={styles.formStack}>
+                  {kind === "interval" && (
+                    <Field
+                      label={copy(
+                        locale,
+                        "Repeat every (minutes)",
+                        "Repetir a cada (minutos)",
+                      )}
+                      value={scheduleEditor.intervalMinutes}
+                      onChangeText={(intervalMinutes) =>
+                        updateScheduleEditor({ intervalMinutes })
+                      }
+                      colors={colors}
+                      keyboardType="number-pad"
+                      hint={copy(
+                        locale,
+                        "Enter a value from 1 to 59.",
+                        "Insira um valor de 1 a 59.",
+                      )}
+                    />
+                  )}
+                  {(kind === "daily" || kind === "weekdays") && (
+                    <Field
+                      label={copy(
+                        locale,
+                        "Time (24-hour)",
+                        "Horário (24 horas)",
+                      )}
+                      value={scheduleEditor.time}
+                      onChangeText={(time) => updateScheduleEditor({ time })}
+                      colors={colors}
+                      placeholder="09:00"
+                      hint={copy(
+                        locale,
+                        `Uses the ${timezone} timezone.`,
+                        `Usa o fuso horário ${timezone}.`,
+                      )}
+                    />
+                  )}
+                  {kind === "monthly" && (
+                    <View style={styles.scheduleFieldsRow}>
+                      <View style={styles.scheduleField}>
+                        <Field
+                          label={copy(locale, "Day of month", "Dia do mês")}
+                          value={scheduleEditor.monthDay}
+                          onChangeText={(monthDay) =>
+                            updateScheduleEditor({ monthDay })
+                          }
+                          colors={colors}
+                          keyboardType="number-pad"
+                          hint={copy(locale, "1 to 31", "1 a 31")}
+                        />
+                      </View>
+                      <View style={styles.scheduleField}>
+                        <Field
+                          label={copy(
+                            locale,
+                            "Time (24-hour)",
+                            "Horário (24 horas)",
+                          )}
+                          value={scheduleEditor.time}
+                          onChangeText={(time) =>
+                            updateScheduleEditor({ time })
+                          }
+                          colors={colors}
+                          placeholder="09:00"
+                          hint={timezone}
+                        />
+                      </View>
+                    </View>
+                  )}
+                  {kind === "yearly" && (
+                    <View style={styles.scheduleFieldsRow}>
+                      <View style={styles.scheduleField}>
+                        <Field
+                          label={copy(locale, "Month", "Mês")}
+                          value={scheduleEditor.yearMonth}
+                          onChangeText={(yearMonth) =>
+                            updateScheduleEditor({ yearMonth })
+                          }
+                          colors={colors}
+                          keyboardType="number-pad"
+                          hint={copy(locale, "1 to 12", "1 a 12")}
+                        />
+                      </View>
+                      <View style={styles.scheduleField}>
+                        <Field
+                          label={copy(locale, "Day", "Dia")}
+                          value={scheduleEditor.yearDay}
+                          onChangeText={(yearDay) =>
+                            updateScheduleEditor({ yearDay })
+                          }
+                          colors={colors}
+                          keyboardType="number-pad"
+                          hint={copy(locale, "1 to 31", "1 a 31")}
+                        />
+                      </View>
+                      <View style={styles.scheduleField}>
+                        <Field
+                          label={copy(
+                            locale,
+                            "Time (24-hour)",
+                            "Horário (24 horas)",
+                          )}
+                          value={scheduleEditor.time}
+                          onChangeText={(time) =>
+                            updateScheduleEditor({ time })
+                          }
+                          colors={colors}
+                          placeholder="09:00"
+                          hint={timezone}
+                        />
+                      </View>
+                    </View>
+                  )}
+                </View>
               )}
               {!validation.valid && (
                 <Notice
@@ -1419,8 +1642,16 @@ function ReminderEditor({
                   colors={colors}
                   text={copy(
                     locale,
-                    "Enter a valid five-field schedule.",
-                    "Insira uma agenda válida de cinco campos.",
+                    kind === "advanced"
+                      ? "Enter a valid five-field cron expression."
+                      : kind === "multiple-daily"
+                        ? `Add 2 to ${MAX_DAILY_TIMES} unique times using HH:MM.`
+                        : "Check the schedule values. Times use HH:MM.",
+                    kind === "advanced"
+                      ? "Insira uma expressão cron válida de cinco campos."
+                      : kind === "multiple-daily"
+                        ? `Adicione de 2 a ${MAX_DAILY_TIMES} horários únicos usando HH:MM.`
+                        : "Revise os valores da agenda. Use HH:MM para horários.",
                   )}
                 />
               )}
@@ -1945,26 +2176,6 @@ function notificationErrorMessageKey(error: unknown): MessageKey {
   return "notificationRegistrationFailed";
 }
 
-function inferEditorKind(schedule: Schedule | undefined): EditorKind {
-  if (!schedule) return "daily";
-  if (schedule.kind === "once") return "once";
-  if (
-    schedule.startAt !== undefined ||
-    schedule.endAt !== undefined ||
-    schedule.occurrenceLimit !== undefined
-  ) {
-    return "advanced";
-  }
-  const presets: Record<string, EditorKind> = {
-    "*/5 * * * *": "interval",
-    "0 9 * * *": "daily",
-    "0 9 * * 1-5": "weekdays",
-    "0 9 1 * *": "monthly",
-    "0 9 1 1 *": "yearly",
-  };
-  return presets[schedule.expression.trim()] ?? "advanced";
-}
-
 function confirmDestructiveAction(
   title: string,
   message: string,
@@ -1986,6 +2197,7 @@ function Field({
   label,
   colors,
   placeholder,
+  hint,
   ...props
 }: {
   label: string;
@@ -1994,6 +2206,10 @@ function Field({
   onChangeText: (value: string) => void;
   multiline?: boolean;
   placeholder?: string;
+  hint?: string;
+  keyboardType?: "number-pad";
+  autoCapitalize?: "none" | "sentences" | "words" | "characters";
+  autoCorrect?: boolean;
 }) {
   const [focused, setFocused] = useState(false);
   return (
@@ -2016,6 +2232,9 @@ function Field({
         ]}
         {...props}
       />
+      {hint && (
+        <Text style={[styles.fieldHint, { color: colors.subtle }]}>{hint}</Text>
+      )}
     </View>
   );
 }
@@ -2025,6 +2244,7 @@ type ButtonVariant =
 
 function Button({
   label,
+  accessibilityLabel,
   onPress,
   colors,
   active,
@@ -2038,6 +2258,7 @@ function Button({
   grow = false,
 }: {
   label: string;
+  accessibilityLabel?: string;
   onPress: () => void;
   colors: Colors;
   active?: boolean;
@@ -2092,6 +2313,7 @@ function Button({
 
   return (
     <Pressable
+      accessibilityLabel={accessibilityLabel}
       accessibilityRole="button"
       accessibilityState={{
         busy: loading,
@@ -2516,6 +2738,35 @@ const styles = StyleSheet.create({
   sectionDivider: { width: "100%", height: 1 },
   formStack: { gap: space.lg },
   field: { minWidth: 0 },
+  fieldHint: {
+    marginTop: space.xs,
+    fontSize: type.caption,
+    lineHeight: type.captionLine,
+  },
+  scheduleFieldsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "flex-start",
+    gap: space.md,
+  },
+  scheduleField: {
+    flexGrow: 1,
+    flexBasis: 140,
+    minWidth: 0,
+  },
+  dailyTimeRow: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: space.sm,
+  },
+  dailyTimeField: {
+    flex: 1,
+    minWidth: 0,
+  },
+  scheduleAddTime: {
+    alignItems: "flex-start",
+    gap: space.sm,
+  },
   titleRow: {
     flexDirection: "row",
     alignItems: "flex-start",

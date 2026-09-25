@@ -108,6 +108,22 @@ describe("versioned JSON backup", () => {
     expect(result.merged).toEqual([local]);
   });
 
+  it("round-trips reminders with multiple daily times", () => {
+    const dailyTimesReminder = reminder({
+      schedule: {
+        kind: "daily-times",
+        times: ["09:15", "12:30", "18:00", "21:45"],
+      },
+    });
+    const result = importBackup(
+      exportBackup([dailyTimesReminder], new Date("2026-09-23T00:00:00.000Z")),
+      [],
+      "u1",
+    );
+    expect(result.invalid).toBe(0);
+    expect(result.merged[0]?.schedule).toEqual(dailyTimesReminder.schedule);
+  });
+
   it("rejects malformed imports", () => {
     expect(() => importBackup('{"version":99}', [], "u1")).toThrow("backup");
   });

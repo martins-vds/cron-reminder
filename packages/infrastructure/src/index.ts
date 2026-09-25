@@ -241,6 +241,12 @@ function isReminderSound(value: unknown): value is Reminder["sound"] {
 function isSchedule(value: unknown): value is Schedule {
   if (!isRecord(value)) return false;
   if (value.kind === "once") return typeof value.at === "string";
+  if (value.kind === "daily-times") {
+    return (
+      Array.isArray(value.times) &&
+      value.times.every((time) => typeof time === "string")
+    );
+  }
   if (value.kind !== "cron") return false;
   if (typeof value.expression !== "string") return false;
   if (value.startAt !== undefined && typeof value.startAt !== "string")
