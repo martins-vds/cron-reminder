@@ -85,27 +85,49 @@ Replace the placeholders in `supabase/configure-dispatch-cron.sql`, run it in
 the SQL Editor, and verify that `dispatch-cron-reminders` succeeds once per
 minute. The script also removes Cron run history older than seven days.
 
-### 2. Deploy the web app to Cloudflare Pages
+### 2. Configure the ordered production deployment
 
-Create a Pages project using Git integration and select this repository. Use:
+Create a Cloudflare Pages project using Git integration and select this
+repository. After the project exists, open **Build > Branch control** and turn
+off **Enable automatic production branch deployments**. GitHub Actions owns the
+production deployment so the frontend cannot go live before its database
+migrations and Edge Functions.
 
-```text
-Production branch: main
-Root directory: /
-Build command: npm ci && npm run build
-Build output directory: apps/app/dist
-Node version: 22
-```
-
-Set these Pages build variables for both production and preview:
+Create a GitHub environment named `production` with these secrets:
 
 ```text
-EXPO_PUBLIC_SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
-EXPO_PUBLIC_SUPABASE_ANON_KEY=YOUR_SUPABASE_PUBLIC_KEY
-EXPO_PUBLIC_AUTH_PROVIDERS=github
-EXPO_PUBLIC_VAPID_PUBLIC_KEY=YOUR_VAPID_PUBLIC_KEY
-EXPO_PUBLIC_EAS_PROJECT_ID=YOUR_EAS_PROJECT_ID
+SUPABASE_ACCESS_TOKEN
+SUPABASE_DB_PASSWORD
+SUPABASE_PROJECT_ID
+CLOUDFLARE_API_TOKEN
+CLOUDFLARE_ACCOUNT_ID
+EXPO_PUBLIC_SUPABASE_ANON_KEY
 ```
+
+Add these environment variables to the same `production` environment:
+
+```text
+CLOUDFLARE_PAGES_PROJECT
+EXPO_PUBLIC_SUPABASE_URL
+EXPO_PUBLIC_AUTH_PROVIDERS
+EXPO_PUBLIC_VAPID_PUBLIC_KEY
+EXPO_PUBLIC_EAS_PROJECT_ID
+```
+
+`EXPO_PUBLIC_EAS_PROJECT_ID` is optional for web-only deployments. A Cloudflare
+API token needs **Account > Cloudflare Pages > Edit** permission.
+
+After a commit reaches `main`, `.github/workflows/deploy-production.yml`
+validates and performs the production release in this order:
+
+1. Run application tests, type checking, source linting, formatting checks,
+   Deno checks, migration integration tests, and the production web build.
+2. Apply all pending Supabase database migrations.
+3. Deploy the Supabase Edge Functions.
+4. Upload `apps/app/dist` to Cloudflare Pages.
+
+The workflow refuses stale commits, uses a single production concurrency group,
+and stops before the frontend deployment if any backend step fails.
 
 `EXPO_PUBLIC_AUTH_PROVIDERS` is a comma-separated list containing any enabled
 Supabase OAuth providers: `google`, `apple`, `azure`, and `github`.
@@ -121,8 +143,8 @@ https://PROJECT.pages.dev/**
 cron-reminder://**
 ```
 
-Redeploy Pages after changing any `EXPO_PUBLIC_*` value because Expo embeds
-those values in the static JavaScript bundle.
+Run the production workflow again after changing any `EXPO_PUBLIC_*` value
+because Expo embeds those values in the static JavaScript bundle.
 
 The Supabase Free plan can pause low-activity projects and does not provide
 downloadable database backups. Treat this setup as a hobby or evaluation

@@ -26,7 +26,7 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: deno lint --config supabase/functions/deno.json supabase/functions
-      - run: deno check --config supabase/functions/deno.json --node-modules-dir=auto supabase/functions/_shared/cors.ts supabase/functions/delete-account/index.ts supabase/functions/deregister-device/index.ts supabase/functions/dispatch-reminders/index.ts supabase/functions/occurrence-action/index.ts
+      - run: deno check --no-lock --config supabase/functions/deno.json --node-modules-dir=auto supabase/functions/_shared/cors.ts supabase/functions/delete-account/index.ts supabase/functions/deregister-device/index.ts supabase/functions/dispatch-reminders/index.ts supabase/functions/occurrence-action/index.ts
       - run: npm run format:check
       - run: npm run export:web
 
