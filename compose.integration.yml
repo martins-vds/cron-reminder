@@ -1,0 +1,126 @@
+name: cron-reminder-integration
+
+services:
+  db:
+    image: postgres:17.6-alpine
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: postgres
+    ports:
+      - "55430:5432"
+    volumes:
+      - ./test/integration/sql/00-bootstrap.sql:/docker-entrypoint-initdb.d/00-bootstrap.sql:ro
+      - ./supabase/migrations/20260923000000_initial.sql:/docker-entrypoint-initdb.d/10-initial.sql:ro
+      - ./supabase/migrations/20260924000000_delivery_state_and_actions.sql:/docker-entrypoint-initdb.d/20-delivery.sql:ro
+      - ./test/integration/sql/30-grants.sql:/docker-entrypoint-initdb.d/30-grants.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  rest:
+    image: postgrest/postgrest:v12.2.12
+    environment:
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_DB_SCHEMAS: public
+      PGRST_DB_URI: postgres://authenticator:authenticator@db:5432/postgres
+      PGRST_JWT_SECRET: ${INTEGRATION_JWT_SECRET}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  gateway:
+    image: nginx:1.29.1-alpine
+    ports:
+      - "55421:8000"
+    volumes:
+      - ./test/integration/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - rest
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8000/rest/v1/"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  occurrence-action:
+    build:
+      context: .
+      dockerfile: test/integration/edge.Dockerfile
+    command:
+      - run
+      - --allow-all
+      - --config
+      - /app/supabase/functions/deno.json
+      - /app/supabase/functions/occurrence-action/index.ts
+    environment:
+      SUPABASE_ANON_KEY: integration-anon-key
+      SUPABASE_URL: http://gateway:8000
+    ports:
+      - "55431:8000"
+    depends_on:
+      gateway:
+        condition: service_healthy
+
+  dispatch-reminders:
+    build:
+      context: .
+      dockerfile: test/integration/edge.Dockerfile
+    command:
+      - run
+      - --allow-all
+      - --config
+      - /app/supabase/functions/deno.json
+      - /app/supabase/functions/dispatch-reminders/index.ts
+    environment:
+      CRON_SECRET: integration-cron-secret
+      SUPABASE_SERVICE_ROLE_KEY: ${INTEGRATION_SERVICE_ROLE_KEY}
+      SUPABASE_URL: http://gateway:8000
+      VAPID_PRIVATE_KEY: integration-unused-private-key
+      VAPID_PUBLIC_KEY: integration-unused-public-key
+      VAPID_SUBJECT: mailto:integration@example.com
+    ports:
+      - "55432:8000"
+    depends_on:
+      gateway:
+        condition: service_healthy
+
+  deregister-device:
+    build:
+      context: .
+      dockerfile: test/integration/edge.Dockerfile
+    command:
+      - run
+      - --allow-all
+      - --config
+      - /app/supabase/functions/deno.json
+      - /app/supabase/functions/deregister-device/index.ts
+    environment:
+      SUPABASE_SERVICE_ROLE_KEY: ${INTEGRATION_SERVICE_ROLE_KEY}
+      SUPABASE_URL: http://gateway:8000
+    ports:
+      - "55433:8000"
+    depends_on:
+      gateway:
+        condition: service_healthy
+
+  delete-account:
+    build:
+      context: .
+      dockerfile: test/integration/edge.Dockerfile
+    command:
+      - run
+      - --allow-all
+      - --config
+      - /app/supabase/functions/deno.json
+      - /app/supabase/functions/delete-account/index.ts
+    environment:
+      SUPABASE_ANON_KEY: integration-anon-key
+      SUPABASE_URL: http://gateway:8000
+    ports:
+      - "55434:8000"
+    depends_on:
+      gateway:
+        condition: service_healthy

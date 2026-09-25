@@ -1,0 +1,13 @@
+.git
+.github
+.expo
+.npm
+apps/app/dist
+coverage
+dist
+node_modules
+test/integration/.env.generated
+*.log
+
+!supabase/functions
+!supabase/functions/**

@@ -1,0 +1,37 @@
+{
+  "name": "cron-reminder",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run typecheck && npm run export:web",
+    "export:web": "npm run export:web --workspace @cron-reminder/app",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:integration": "node scripts/run-integration-tests.mjs",
+    "test:integration:only": "vitest run --config vitest.integration.config.ts",
+    "test:watch": "vitest",
+    "typecheck": "tsc --build && npm run typecheck --workspace @cron-reminder/app"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^24.10.13",
+    "@types/pg": "^8.15.5",
+    "eslint": "^10.11.0",
+    "prettier": "^3.9.0",
+    "pg": "^8.16.3",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.70.1",
+    "uuid": "^11.1.1",
+    "vitest": "^5.0.1"
+  },
+  "overrides": {
+    "uuid": "$uuid"
+  }
+}
