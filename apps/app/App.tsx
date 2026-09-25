@@ -10,6 +10,7 @@ import {
   useEffect,
   useMemo,
   useState,
+  type ReactNode,
 } from "react";
 import {
   Alert,
@@ -29,6 +30,7 @@ import {
   useWindowDimensions,
   Vibration,
   View,
+  ActivityIndicator,
 } from "react-native";
 import {
   ReminderService,
@@ -73,6 +75,15 @@ import {
   subscribeToPushTokenChanges,
 } from "./src/notificationAdapter";
 import { NotificationRegistrationError } from "./src/notificationErrors";
+import {
+  darkColors,
+  lightColors,
+  radius,
+  size,
+  space,
+  type,
+  type AppColors as Colors,
+} from "./src/theme";
 
 type ThemePreference = "system" | "light" | "dark";
 type NotificationRegistrationStatus =
@@ -135,6 +146,7 @@ export function RootNavigator() {
   const [loadingSession, setLoadingSession] = useState(true);
   const pathname = usePathname();
   const isDark = (theme === "system" ? systemTheme : theme) === "dark";
+  const isWide = width >= 880;
   const colors = isDark ? darkColors : lightColors;
   const t = createTranslator(locale);
 
@@ -327,7 +339,7 @@ export function RootNavigator() {
   }, [ownerId]);
 
   if (loadingSession) {
-    return <CenteredMessage text="Loading…" colors={colors} />;
+    return <CenteredMessage text="Loading..." colors={colors} />;
   }
   if (!ownerId) {
     return (
@@ -356,12 +368,31 @@ export function RootNavigator() {
         style={[styles.safe, { backgroundColor: colors.background }]}
       >
         <StatusBar style={isDark ? "light" : "dark"} />
-        <View style={[styles.shell, width > 900 && styles.wideShell]}>
-          <View style={[styles.navigation, { borderColor: colors.border }]}>
-            <Text style={[styles.brand, { color: colors.text }]}>
-              ⏱ Cron Reminder
-            </Text>
-            <View style={styles.navItems}>
+        <View style={[styles.shell, isWide && styles.wideShell]}>
+          <View
+            style={[
+              styles.navigation,
+              isWide ? styles.sideNavigation : styles.topNavigation,
+              {
+                backgroundColor: colors.surface,
+                borderColor: colors.border,
+              },
+            ]}
+          >
+            <View style={styles.brandLockup}>
+              <BrandMark colors={colors} />
+              <View style={styles.brandCopy}>
+                <Text style={[styles.brand, { color: colors.text }]}>
+                  Cron Reminder
+                </Text>
+                {isWide && (
+                  <Text style={[styles.brandMeta, { color: colors.subtle }]}>
+                    Scheduled, simply.
+                  </Text>
+                )}
+              </View>
+            </View>
+            <View style={[styles.navItems, isWide && styles.navItemsWide]}>
               {navigationItems.map((item) => (
                 <Button
                   key={item.key}
@@ -370,12 +401,23 @@ export function RootNavigator() {
                   active={pathname === item.path}
                   selected={pathname === item.path}
                   colors={colors}
+                  variant="nav"
+                  compact
+                  block={isWide}
+                  grow={!isWide}
                 />
               ))}
             </View>
           </View>
-          <View style={styles.content}>
-            <Stack screenOptions={{ headerShown: false }} />
+          <View
+            style={[styles.content, { backgroundColor: colors.background }]}
+          >
+            <Stack
+              screenOptions={{
+                headerShown: false,
+                contentStyle: { backgroundColor: colors.background },
+              }}
+            />
           </View>
         </View>
       </SafeAreaView>
@@ -498,46 +540,100 @@ function HistoryScreen({
       }}
       onEndReachedThreshold={0.5}
       ListHeaderComponent={
-        <>
-          <Text
-            accessibilityRole="header"
-            style={[styles.heading, { color: colors.text }]}
-          >
-            {t("history")}
-          </Text>
-          <Text style={[styles.body, { color: colors.muted }]}>
-            Triggered, dismissed, postponed, missed, and delivery failures are
-            retained for 30 days.
-          </Text>
-          <Field
-            label={t("search")}
-            value={query}
-            onChangeText={setQuery}
+        <View style={styles.listHeader}>
+          <PageHeader
+            eyebrow={copy(locale, "Activity", "Atividade")}
+            title={t("history")}
+            description={copy(
+              locale,
+              "A 30-day record of triggers, snoozes, dismissals, and delivery issues.",
+              "Um registro de 30 dias de disparos, adiamentos, dispensas e problemas de entrega.",
+            )}
             colors={colors}
           />
-        </>
+          <View
+            style={[
+              styles.controlPanel,
+              {
+                backgroundColor: colors.surface,
+                borderColor: colors.border,
+              },
+            ]}
+          >
+            <Field
+              label={t("search")}
+              value={query}
+              onChangeText={setQuery}
+              colors={colors}
+              placeholder={copy(
+                locale,
+                "Search by reminder or event",
+                "Busque por lembrete ou evento",
+              )}
+            />
+          </View>
+          {visible.length > 0 && (
+            <Text style={[styles.sectionLabel, { color: colors.subtle }]}>
+              {copy(locale, "Recent activity", "Atividade recente")}
+            </Text>
+          )}
+        </View>
       }
       ListEmptyComponent={
-        <EmptyState title={t("history")} message={t("empty")} colors={colors} />
+        <EmptyState
+          title={copy(locale, "No activity yet", "Nenhuma atividade ainda")}
+          message={copy(
+            locale,
+            "Events appear here after a reminder runs or you take an action.",
+            "Os eventos aparecem aqui depois que um lembrete é executado ou você realiza uma ação.",
+          )}
+          colors={colors}
+        />
       }
       renderItem={({ item: event }) => (
         <View
           style={[
-            styles.card,
-            { backgroundColor: colors.surface, borderColor: colors.border },
+            styles.historyRow,
+            {
+              backgroundColor: colors.surface,
+              borderColor: colors.border,
+            },
           ]}
         >
-          <Text style={[styles.cardTitle, { color: colors.text }]}>
-            {event.event_type}
-          </Text>
-          <Text style={[styles.body, { color: colors.muted }]}>
-            {event.reminder_id}
-          </Text>
-          <Text style={[styles.caption, { color: colors.muted }]}>
+          <View
+            style={[
+              styles.timelineMarker,
+              { backgroundColor: colors.accentSoft },
+            ]}
+          />
+          <View style={styles.flex}>
+            <Text style={[styles.cardTitle, { color: colors.text }]}>
+              {event.event_type.replace(/_/g, " ")}
+            </Text>
+            <Text
+              numberOfLines={1}
+              style={[styles.body, { color: colors.muted }]}
+            >
+              {event.reminder_id}
+            </Text>
+          </View>
+          <Text style={[styles.caption, { color: colors.subtle }]}>
             {new Date(event.occurred_at).toLocaleString(locale)}
           </Text>
         </View>
       )}
+      ListFooterComponent={
+        loading ? (
+          <ActivityIndicator
+            color={colors.accent}
+            accessibilityLabel={copy(
+              locale,
+              "Loading activity",
+              "Carregando atividade",
+            )}
+          />
+        ) : null
+      }
     />
   );
 }
@@ -552,6 +648,8 @@ function SignIn({
   configured: boolean;
 }) {
   const t = createTranslator(locale);
+  const { width } = useWindowDimensions();
+  const isWide = width >= 760;
   const enabledProviders = new Set(
     (process.env.EXPO_PUBLIC_AUTH_PROVIDERS ?? "google,apple,azure,github")
       .split(",")
@@ -569,44 +667,124 @@ function SignIn({
     <SafeAreaView
       style={[
         styles.safe,
-        styles.center,
+        styles.authShell,
+        isWide && styles.authShellWide,
         { backgroundColor: colors.background },
       ]}
     >
-      <View
-        style={[
-          styles.card,
-          styles.signInCard,
-          { backgroundColor: colors.surface, borderColor: colors.border },
-        ]}
-      >
-        <Text
-          accessibilityRole="header"
-          style={[styles.heading, { color: colors.text }]}
-        >
-          Cron Reminder
-        </Text>
-        <Text style={[styles.body, { color: colors.muted }]}>
-          {t("signIn")}
-        </Text>
-        {!configured && (
+      <View style={[styles.authLayout, isWide && styles.authLayoutWide]}>
+        <View style={[styles.authIntro, isWide && styles.authIntroWide]}>
+          <View style={styles.brandLockup}>
+            <BrandMark colors={colors} />
+            <Text style={[styles.brand, { color: colors.text }]}>
+              Cron Reminder
+            </Text>
+          </View>
           <Text
-            accessibilityRole="alert"
-            style={[styles.notice, { color: colors.warning }]}
+            accessibilityRole="header"
+            style={[
+              styles.authHeading,
+              isWide && styles.authHeadingWide,
+              { color: colors.text },
+            ]}
           >
-            Set EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY to
-            enable sign-in.
+            {copy(
+              locale,
+              "Make time-sensitive work hard to miss.",
+              "Torne tarefas com prazo difíceis de esquecer.",
+            )}
           </Text>
-        )}
-        {providers.map(([provider, label]) => (
-          <Button
-            key={provider}
-            label={label}
-            disabled={!configured}
-            onPress={() => void authentication?.signIn(provider)}
-            colors={colors}
-          />
-        ))}
+          <Text style={[styles.authBody, { color: colors.muted }]}>
+            {copy(
+              locale,
+              "Create precise recurring reminders, keep them synced, and review what happened from any device.",
+              "Crie lembretes recorrentes precisos, mantenha tudo sincronizado e consulte o histórico em qualquer dispositivo.",
+            )}
+          </Text>
+          <View style={styles.authFeatureList}>
+            {[
+              copy(locale, "Flexible schedules", "Agendas flexíveis"),
+              copy(locale, "Reliable notifications", "Notificações confiáveis"),
+              copy(
+                locale,
+                "Private synchronized history",
+                "Histórico privado e sincronizado",
+              ),
+            ].map((feature) => (
+              <View key={feature} style={styles.authFeature}>
+                <View
+                  style={[
+                    styles.featureMark,
+                    { backgroundColor: colors.accent },
+                  ]}
+                />
+                <Text style={[styles.body, { color: colors.text }]}>
+                  {feature}
+                </Text>
+              </View>
+            ))}
+          </View>
+        </View>
+        <View
+          style={[
+            styles.authCard,
+            {
+              backgroundColor: colors.surfaceElevated,
+              borderColor: colors.border,
+            },
+          ]}
+        >
+          <Text style={[styles.authCardTitle, { color: colors.text }]}>
+            {t("signIn")}
+          </Text>
+          <Text style={[styles.body, { color: colors.muted }]}>
+            {copy(
+              locale,
+              "Choose a provider to access your reminders.",
+              "Escolha um provedor para acessar seus lembretes.",
+            )}
+          </Text>
+          {!configured && (
+            <Notice
+              tone="warning"
+              colors={colors}
+              text={copy(
+                locale,
+                "Authentication is not configured for this deployment.",
+                "A autenticação não está configurada para esta implantação.",
+              )}
+            >
+              <Text style={[styles.caption, { color: colors.warning }]}>
+                Set EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY.
+              </Text>
+            </Notice>
+          )}
+          <View style={styles.authActions}>
+            {providers.map(([provider, label]) => (
+              <Button
+                key={provider}
+                label={copy(
+                  locale,
+                  `Continue with ${label}`,
+                  `Continuar com ${label}`,
+                )}
+                disabled={!configured}
+                onPress={() => void authentication?.signIn(provider)}
+                colors={colors}
+                variant={
+                  provider === providers[0]?.[0] ? "primary" : "secondary"
+                }
+              />
+            ))}
+          </View>
+          <Text style={[styles.caption, { color: colors.subtle }]}>
+            {copy(
+              locale,
+              "Your provider verifies your identity. Cron Reminder never receives your password.",
+              "Seu provedor verifica sua identidade. O Cron Reminder nunca recebe sua senha.",
+            )}
+          </Text>
+        </View>
       </View>
     </SafeAreaView>
   );
@@ -727,56 +905,60 @@ function ReminderList({
 
   return (
     <ScrollView contentContainerStyle={styles.page}>
-      <View style={styles.titleRow}>
-        <Text
-          accessibilityRole="header"
-          style={[styles.heading, { color: colors.text }]}
-        >
-          {t("reminders")}
-        </Text>
-        <Button
-          label={`＋ ${t("addReminder")}`}
-          onPress={() => setEditing("new")}
-          colors={colors}
-        />
-      </View>
+      <PageHeader
+        eyebrow={copy(locale, "Workspace", "Área de trabalho")}
+        title={t("reminders")}
+        description={copy(
+          locale,
+          "Create precise schedules and keep every important follow-up visible.",
+          "Crie agendas precisas e mantenha cada acompanhamento importante visível.",
+        )}
+        colors={colors}
+        action={
+          <Button
+            label={t("addReminder")}
+            onPress={() => setEditing("new")}
+            colors={colors}
+            variant="primary"
+          />
+        }
+      />
       {syncMessage && (
-        <Text
-          accessibilityRole="alert"
-          style={[styles.notice, { color: colors.warning }]}
-        >
-          {syncMessage}
-        </Text>
+        <Notice tone="warning" colors={colors} text={syncMessage} />
       )}
       {activeSyncConflicts.length > 0 && (
-        <Text
-          accessibilityRole="alert"
-          style={[styles.notice, { color: colors.warning }]}
-        >
-          {activeSyncConflicts.length} concurrent edit(s) need manual
-          resolution. Local versions are preserved.
-        </Text>
+        <Notice
+          tone="warning"
+          colors={colors}
+          text={`${activeSyncConflicts.length} concurrent edit(s) need manual resolution. Local versions are preserved.`}
+        />
       )}
       {activeSyncConflicts.map((conflict) => (
         <View
           key={conflict.id}
           style={[
-            styles.card,
-            { backgroundColor: colors.surface, borderColor: colors.warning },
+            styles.conflictCard,
+            {
+              backgroundColor: colors.warningSoft,
+              borderColor: colors.warning,
+            },
           ]}
         >
-          <Text style={[styles.cardTitle, { color: colors.text }]}>
-            Resolve concurrent edit: {conflict.local.title}
-          </Text>
-          <Text style={[styles.body, { color: colors.muted }]}>
-            Local: {conflict.local.title} · Remote: {conflict.remote.title}
-          </Text>
+          <View style={styles.flex}>
+            <Text style={[styles.cardTitle, { color: colors.text }]}>
+              Resolve concurrent edit
+            </Text>
+            <Text style={[styles.body, { color: colors.muted }]}>
+              Local: {conflict.local.title}. Remote: {conflict.remote.title}.
+            </Text>
+          </View>
           <View style={styles.actions}>
             {(["local", "remote"] as const).map((choice) => (
               <Button
                 key={choice}
                 label={`Keep ${choice}`}
                 colors={colors}
+                variant="secondary"
                 onPress={() =>
                   void resolveSynchronizationConflict(
                     conflict,
@@ -793,67 +975,161 @@ function ReminderList({
           </View>
         </View>
       ))}
-      <TextInput
-        accessibilityLabel={t("search")}
-        placeholder={t("search")}
-        placeholderTextColor={colors.muted}
-        value={query}
-        onChangeText={setQuery}
+      <View
         style={[
-          styles.input,
+          styles.controlPanel,
           {
-            color: colors.text,
-            borderColor: colors.border,
             backgroundColor: colors.surface,
+            borderColor: colors.border,
           },
         ]}
-      />
-      <View style={styles.chips}>
-        {(["all", "active", "disabled", "archived"] as const).map((item) => (
-          <Button
-            key={item}
-            label={item === "all" ? "All" : t(item)}
-            onPress={() => setStatus(item)}
-            active={status === item}
-            selected={status === item}
-            colors={colors}
-            compact
-          />
-        ))}
+      >
+        <Field
+          label={t("search")}
+          placeholder={copy(
+            locale,
+            "Search by title, schedule, or tag",
+            "Busque por título, agenda ou etiqueta",
+          )}
+          value={query}
+          onChangeText={setQuery}
+          colors={colors}
+        />
+        <View style={styles.filterGroup}>
+          <Text style={[styles.sectionLabel, { color: colors.subtle }]}>
+            {copy(locale, "Show", "Mostrar")}
+          </Text>
+          <View style={styles.chips}>
+            {(["all", "active", "disabled", "archived"] as const).map(
+              (item) => (
+                <Button
+                  key={item}
+                  label={
+                    item === "all" ? copy(locale, "All", "Todos") : t(item)
+                  }
+                  onPress={() => setStatus(item)}
+                  active={status === item}
+                  selected={status === item}
+                  colors={colors}
+                  variant="chip"
+                  compact
+                />
+              ),
+            )}
+          </View>
+        </View>
       </View>
       {visible.length === 0 && (
         <EmptyState
-          title={t("empty")}
-          message={t("addReminder")}
+          title={
+            reminders.length === 0
+              ? t("empty")
+              : copy(
+                  locale,
+                  "No matching reminders",
+                  "Nenhum lembrete encontrado",
+                )
+          }
+          message={
+            reminders.length === 0
+              ? copy(
+                  locale,
+                  "Start with the next thing you cannot afford to miss.",
+                  "Comece pela próxima coisa que você não pode esquecer.",
+                )
+              : copy(
+                  locale,
+                  "Try a different search or status filter.",
+                  "Tente outra busca ou filtro de status.",
+                )
+          }
           colors={colors}
+          action={
+            reminders.length === 0 ? (
+              <Button
+                label={t("addReminder")}
+                onPress={() => setEditing("new")}
+                colors={colors}
+                variant="primary"
+              />
+            ) : undefined
+          }
         />
+      )}
+      {visible.length > 0 && (
+        <View style={styles.sectionHeadingRow}>
+          <Text style={[styles.sectionLabel, { color: colors.subtle }]}>
+            {copy(locale, "Your schedules", "Suas agendas")}
+          </Text>
+          <Text style={[styles.caption, { color: colors.subtle }]}>
+            {visible.length} {copy(locale, "shown", "exibidos")}
+          </Text>
+        </View>
       )}
       {visible.map((reminder) => (
         <View
           key={reminder.id}
           style={[
-            styles.card,
-            { backgroundColor: colors.surface, borderColor: colors.border },
+            styles.reminderCard,
+            {
+              backgroundColor: colors.surface,
+              borderColor: colors.border,
+            },
           ]}
         >
           <View style={styles.titleRow}>
             <View style={styles.flex}>
-              <Text style={[styles.cardTitle, { color: colors.text }]}>
-                {reminder.title}
-              </Text>
+              <View style={styles.reminderTitleRow}>
+                <Text style={[styles.cardTitle, { color: colors.text }]}>
+                  {reminder.title}
+                </Text>
+                <StatusBadge
+                  label={t(reminder.status)}
+                  tone={
+                    reminder.status === "active"
+                      ? "success"
+                      : reminder.status === "archived"
+                        ? "neutral"
+                        : "warning"
+                  }
+                  colors={colors}
+                />
+              </View>
               <Text style={[styles.body, { color: colors.muted }]}>
                 {describeSchedule(reminder.schedule, locale)}
               </Text>
               {reminder.tags.length > 0 && (
-                <Text style={[styles.caption, { color: colors.accent }]}>
-                  #{reminder.tags.join(" #")}
-                </Text>
+                <View style={styles.tagRow}>
+                  {reminder.tags.map((tag) => (
+                    <Text
+                      key={tag}
+                      style={[
+                        styles.tag,
+                        {
+                          color: colors.accent,
+                          backgroundColor: colors.accentSoft,
+                        },
+                      ]}
+                    >
+                      {tag}
+                    </Text>
+                  ))}
+                </View>
               )}
             </View>
             {reminder.status !== "archived" && (
               <Switch
                 accessibilityLabel={`${reminder.title}: ${t("enabled")}`}
                 value={reminder.status === "active"}
+                trackColor={{
+                  false: colors.surfaceMuted,
+                  true: colors.accentSoft,
+                }}
+                thumbColor={
+                  reminder.status === "active"
+                    ? colors.accent
+                    : colors.borderStrong
+                }
                 onValueChange={(value) =>
                   void mutate(() =>
                     service.setEnabled(ownerId, reminder.id, value),
@@ -867,6 +1143,7 @@ function ReminderList({
               label={t("edit")}
               onPress={() => setEditing(reminder)}
               colors={colors}
+              variant="secondary"
               compact
             />
             <Button
@@ -875,6 +1152,7 @@ function ReminderList({
                 void mutate(() => service.duplicate(ownerId, reminder.id))
               }
               colors={colors}
+              variant="ghost"
               compact
             />
             <Button
@@ -889,6 +1167,7 @@ function ReminderList({
                 )
               }
               colors={colors}
+              variant="ghost"
               compact
             />
             <Button
@@ -896,6 +1175,7 @@ function ReminderList({
               onPress={() => remove(reminder)}
               colors={colors}
               danger
+              variant="danger"
               compact
             />
           </View>
@@ -1018,133 +1298,201 @@ function ReminderEditor({
       contentContainerStyle={styles.page}
       keyboardShouldPersistTaps="handled"
     >
-      <Text
-        accessibilityRole="header"
-        style={[styles.heading, { color: colors.text }]}
+      <PageHeader
+        eyebrow={copy(locale, "Reminder setup", "Configuração do lembrete")}
+        title={reminder ? t("edit") : t("addReminder")}
+        description={copy(
+          locale,
+          "Define what should happen and when. You can refine the schedule before saving.",
+          "Defina o que deve acontecer e quando. Você pode ajustar a agenda antes de salvar.",
+        )}
+        colors={colors}
+      />
+      <SectionCard
+        title={copy(locale, "Details", "Detalhes")}
+        description={copy(
+          locale,
+          "Give this reminder a clear name and optional context.",
+          "Dê um nome claro e um contexto opcional a este lembrete.",
+        )}
+        colors={colors}
       >
-        {reminder ? t("edit") : t("addReminder")}
-      </Text>
-      <Field
-        label={t("title")}
-        value={title}
-        onChangeText={setTitle}
-        colors={colors}
-      />
-      <Field
-        label={t("notes")}
-        value={notes}
-        onChangeText={setNotes}
-        colors={colors}
-        multiline
-      />
-      <Field
-        label={`${t("tags")} (comma separated)`}
-        value={tags}
-        onChangeText={setTags}
-        colors={colors}
-      />
-      <Text style={[styles.label, { color: colors.text }]}>
-        {t("schedule")}
-      </Text>
-      <View style={styles.chips}>
-        {(
-          [
-            "once",
-            "interval",
-            "daily",
-            "weekdays",
-            "monthly",
-            "yearly",
-            "advanced",
-          ] as const
-        ).map((value) => (
-          <Button
-            key={value}
-            label={t(value)}
-            onPress={() => chooseKind(value)}
-            active={kind === value}
-            selected={kind === value}
+        <View style={styles.formStack}>
+          <Field
+            label={t("title")}
+            value={title}
+            onChangeText={setTitle}
             colors={colors}
-            compact
+            placeholder={copy(
+              locale,
+              "For example, submit weekly report",
+              "Por exemplo, enviar relatório semanal",
+            )}
           />
-        ))}
-      </View>
-      {kind === "once" ? (
-        <Field
-          label="ISO date and time"
-          value={onceAt}
-          onChangeText={setOnceAt}
-          colors={colors}
-        />
-      ) : (
-        <Field
-          label={kind === "advanced" ? t("advanced") : "Cron"}
-          value={cron}
-          onChangeText={setCron}
-          colors={colors}
-        />
-      )}
-      {!validation.valid && (
-        <Text
-          accessibilityRole="alert"
-          style={[styles.notice, { color: colors.danger }]}
-        >
-          Enter a valid five-field schedule.
-        </Text>
-      )}
-      {validation.valid && (
-        <View style={[styles.preview, { borderColor: colors.border }]}>
-          <Text style={[styles.cardTitle, { color: colors.text }]}>
-            {describeSchedule(schedule, locale)}
-          </Text>
-          <Text style={[styles.label, { color: colors.text }]}>
-            {t("upcoming")}
-          </Text>
-          {preview.map((date) => (
-            <Text
-              key={date.toISOString()}
-              style={[styles.caption, { color: colors.muted }]}
-            >
-              {date.toLocaleString(locale, { timeZone: timezone })}
-            </Text>
-          ))}
+          <Field
+            label={t("notes")}
+            value={notes}
+            onChangeText={setNotes}
+            colors={colors}
+            multiline
+            placeholder={copy(
+              locale,
+              "Add useful context or a checklist",
+              "Adicione um contexto útil ou uma lista",
+            )}
+          />
+          <Field
+            label={`${t("tags")} (${copy(locale, "comma separated", "separadas por vírgula")})`}
+            value={tags}
+            onChangeText={setTags}
+            colors={colors}
+            placeholder={copy(locale, "work, finance", "trabalho, finanças")}
+          />
         </View>
-      )}
-      <Text style={[styles.label, { color: colors.text }]}>{t("sound")}</Text>
-      <View style={styles.chips}>
-        {(["default", "silent", "vibrate"] as const).map((mode) => (
+      </SectionCard>
+      <SectionCard
+        title={t("schedule")}
+        description={copy(
+          locale,
+          "Choose a common rhythm or enter an advanced cron expression.",
+          "Escolha um ritmo comum ou insira uma expressão cron avançada.",
+        )}
+        colors={colors}
+      >
+        <View style={styles.formStack}>
+          <View style={styles.chips}>
+            {(
+              [
+                "once",
+                "interval",
+                "daily",
+                "weekdays",
+                "monthly",
+                "yearly",
+                "advanced",
+              ] as const
+            ).map((value) => (
+              <Button
+                key={value}
+                label={t(value)}
+                onPress={() => chooseKind(value)}
+                active={kind === value}
+                selected={kind === value}
+                colors={colors}
+                variant="chip"
+                compact
+              />
+            ))}
+          </View>
+          {kind === "once" ? (
+            <Field
+              label={copy(locale, "ISO date and time", "Data e hora ISO")}
+              value={onceAt}
+              onChangeText={setOnceAt}
+              colors={colors}
+            />
+          ) : (
+            <Field
+              label={kind === "advanced" ? t("advanced") : "Cron"}
+              value={cron}
+              onChangeText={setCron}
+              colors={colors}
+            />
+          )}
+          {!validation.valid && (
+            <Notice
+              tone="danger"
+              colors={colors}
+              text={copy(
+                locale,
+                "Enter a valid five-field schedule.",
+                "Insira uma agenda válida de cinco campos.",
+              )}
+            />
+          )}
+          {validation.valid && (
+            <View
+              style={[
+                styles.preview,
+                {
+                  borderColor: colors.border,
+                  backgroundColor: colors.surfaceMuted,
+                },
+              ]}
+            >
+              <Text style={[styles.cardTitle, { color: colors.text }]}>
+                {describeSchedule(schedule, locale)}
+              </Text>
+              <Text style={[styles.sectionLabel, { color: colors.subtle }]}>
+                {t("upcoming")}
+              </Text>
+              <View style={styles.previewList}>
+                {preview.map((date, index) => (
+                  <View key={date.toISOString()} style={styles.previewRow}>
+                    <Text
+                      style={[styles.previewIndex, { color: colors.accent }]}
+                    >
+                      {index + 1}
+                    </Text>
+                    <Text style={[styles.caption, { color: colors.muted }]}>
+                      {date.toLocaleString(locale, { timeZone: timezone })}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            </View>
+          )}
+        </View>
+      </SectionCard>
+      <SectionCard
+        title={t("sound")}
+        description={copy(
+          locale,
+          "Choose how this reminder should get your attention.",
+          "Escolha como este lembrete deve chamar sua atenção.",
+        )}
+        colors={colors}
+      >
+        <View style={styles.chips}>
+          {(["default", "silent", "vibrate"] as const).map((mode) => (
+            <Button
+              key={mode}
+              label={mode}
+              onPress={() => setSound({ mode })}
+              active={sound.mode === mode}
+              selected={sound.mode === mode}
+              colors={colors}
+              variant="chip"
+              compact
+            />
+          ))}
           <Button
-            key={mode}
-            label={mode}
-            onPress={() => setSound({ mode })}
-            active={sound.mode === mode}
-            selected={sound.mode === mode}
+            label={copy(locale, "Preview sound", "Ouvir prévia")}
+            onPress={() => void previewSound(sound)}
             colors={colors}
+            variant="secondary"
             compact
           />
-        ))}
+        </View>
+      </SectionCard>
+      {error && <Notice tone="danger" colors={colors} text={error} />}
+      <View
+        style={[
+          styles.editorActions,
+          { borderColor: colors.border, backgroundColor: colors.background },
+        ]}
+      >
         <Button
-          label="▶ Preview"
-          onPress={() => void previewSound(sound)}
+          label={t("cancel")}
+          onPress={onCancel}
           colors={colors}
-          compact
+          variant="secondary"
         />
-      </View>
-      {error && (
-        <Text
-          accessibilityRole="alert"
-          style={[styles.notice, { color: colors.danger }]}
-        >
-          {error}
-        </Text>
-      )}
-      <View style={styles.actions}>
-        <Button label={t("cancel")} onPress={onCancel} colors={colors} />
         <Button
           label={t("save")}
           onPress={() => void save()}
           colors={colors}
-          active
+          variant="primary"
           disabled={!validation.valid || !title.trim()}
         />
       </View>
@@ -1314,150 +1662,243 @@ function Settings({
   }
   return (
     <ScrollView contentContainerStyle={styles.page}>
-      <Text
-        accessibilityRole="header"
-        style={[styles.heading, { color: colors.text }]}
+      <PageHeader
+        eyebrow={copy(locale, "Account", "Conta")}
+        title={t("settings")}
+        description={copy(
+          locale,
+          "Manage appearance, notifications, backups, and account access.",
+          "Gerencie aparência, notificações, backups e acesso à conta.",
+        )}
+        colors={colors}
+      />
+      <SectionCard
+        title={copy(locale, "Preferences", "Preferências")}
+        description={copy(
+          locale,
+          "Choose the language and appearance used on this device.",
+          "Escolha o idioma e a aparência usados neste dispositivo.",
+        )}
+        colors={colors}
       >
-        {t("settings")}
-      </Text>
-      <Text style={[styles.label, { color: colors.text }]}>
-        {t("language")}
-      </Text>
-      <View style={styles.chips}>
-        <Button
-          label="English"
-          onPress={() => updateLocale("en")}
-          active={locale === "en"}
-          selected={locale === "en"}
-          colors={colors}
-        />
-        <Button
-          label="Português (Brasil)"
-          onPress={() => updateLocale("pt-BR")}
-          active={locale === "pt-BR"}
-          selected={locale === "pt-BR"}
-          colors={colors}
-        />
-      </View>
-      <Text style={[styles.label, { color: colors.text }]}>{t("theme")}</Text>
-      <View style={styles.chips}>
-        {(["system", "light", "dark"] as const).map((value) => (
-          <Button
-            key={value}
-            label={value}
-            onPress={() => updateTheme(value)}
-            active={theme === value}
-            selected={theme === value}
-            colors={colors}
-          />
-        ))}
-      </View>
-      <Button
-        label="Export JSON"
-        onPress={() => void exportJson()}
-        colors={colors}
-      />
-      <Field
-        label={t("importBackupPrompt")}
-        value={backupText}
-        onChangeText={setBackupText}
-        colors={colors}
-        multiline
-      />
-      <Button
-        label={t("importBackup")}
-        onPress={() => void importJson()}
-        colors={colors}
-        disabled={!backupText.trim()}
-      />
-      {backupMessage && (
-        <Text accessibilityRole="alert" style={{ color: colors.muted }}>
-          {backupMessage}
-        </Text>
-      )}
-      {importConflicts.map((conflict) => (
-        <View
-          key={conflict.id}
-          style={[styles.card, { borderColor: colors.warning }]}
-        >
-          <Text style={[styles.cardTitle, { color: colors.text }]}>
-            {conflict.local.title}
-          </Text>
-          <View style={styles.actions}>
-            {(["local", "remote"] as const).map((choice) => (
+        <View style={styles.formStack}>
+          <View>
+            <Text style={[styles.label, { color: colors.text }]}>
+              {t("language")}
+            </Text>
+            <View style={styles.chips}>
               <Button
-                key={choice}
-                label={`Keep ${choice === "local" ? "existing" : "imported"}`}
+                label="English"
+                onPress={() => updateLocale("en")}
+                active={locale === "en"}
+                selected={locale === "en"}
                 colors={colors}
-                onPress={() =>
-                  void runReminderMutation(() =>
-                    localRepository.save({
-                      ...conflict[choice],
-                      revision:
-                        Math.max(
-                          conflict.local.revision,
-                          conflict.remote.revision,
-                        ) + 1,
-                      updatedAt: new Date().toISOString(),
-                    }),
-                  )
-                    .then(() => synchronizeReminders(ownerId).catch(() => []))
-                    .then(() =>
-                      setImportConflicts((items) =>
-                        items.filter(({ id }) => id !== conflict.id),
-                      ),
-                    )
-                }
+                variant="chip"
               />
-            ))}
+              <Button
+                label="Português (Brasil)"
+                onPress={() => updateLocale("pt-BR")}
+                active={locale === "pt-BR"}
+                selected={locale === "pt-BR"}
+                colors={colors}
+                variant="chip"
+              />
+            </View>
+          </View>
+          <View>
+            <Text style={[styles.label, { color: colors.text }]}>
+              {t("theme")}
+            </Text>
+            <View style={styles.chips}>
+              {(["system", "light", "dark"] as const).map((value) => (
+                <Button
+                  key={value}
+                  label={
+                    value === "system"
+                      ? copy(locale, "System", "Sistema")
+                      : value === "light"
+                        ? copy(locale, "Light", "Claro")
+                        : copy(locale, "Dark", "Escuro")
+                  }
+                  onPress={() => updateTheme(value)}
+                  active={theme === value}
+                  selected={theme === value}
+                  colors={colors}
+                  variant="chip"
+                />
+              ))}
+            </View>
           </View>
         </View>
-      ))}
-      <Button
-        label={
-          notificationStatus === "registering"
-            ? t("enablingNotifications")
-            : notificationStatus === "registered"
-              ? t("notificationsEnabled")
-              : t("enableNotifications")
-        }
-        onPress={() => void enableNotifications()}
+      </SectionCard>
+      <SectionCard
+        title={copy(locale, "Notifications", "Notificações")}
+        description={copy(
+          locale,
+          "Register this device to receive reminders when the app is closed.",
+          "Registre este dispositivo para receber lembretes quando o aplicativo estiver fechado.",
+        )}
         colors={colors}
-        active={notificationStatus === "registered"}
-        disabled={notificationStatus === "registering"}
-      />
-      {notificationMessageKey && (
-        <Text
-          accessibilityRole={
-            notificationStatus === "error" ? "alert" : undefined
-          }
-          style={{
-            color:
-              notificationStatus === "error" ? colors.warning : colors.muted,
-          }}
-        >
-          {t(notificationMessageKey)}
-        </Text>
-      )}
-      <Button
-        label={t("signOut")}
-        onPress={() => void authentication?.signOut()}
+      >
+        <View style={styles.formStack}>
+          <Button
+            label={
+              notificationStatus === "registering"
+                ? t("enablingNotifications")
+                : notificationStatus === "registered"
+                  ? t("notificationsEnabled")
+                  : t("enableNotifications")
+            }
+            onPress={() => void enableNotifications()}
+            colors={colors}
+            variant={
+              notificationStatus === "registered" ? "secondary" : "primary"
+            }
+            loading={notificationStatus === "registering"}
+            disabled={notificationStatus === "registering"}
+          />
+          {notificationMessageKey && (
+            <Notice
+              tone={notificationStatus === "error" ? "warning" : "success"}
+              colors={colors}
+              text={t(notificationMessageKey)}
+            />
+          )}
+        </View>
+      </SectionCard>
+      <SectionCard
+        title={copy(locale, "Backup and restore", "Backup e restauração")}
+        description={copy(
+          locale,
+          "Export your reminders or merge a JSON backup into this account.",
+          "Exporte seus lembretes ou mescle um backup JSON nesta conta.",
+        )}
         colors={colors}
-      />
-      <Button
-        label={t("deleteAccount")}
-        onPress={() =>
-          confirmDestructiveAction(
-            t("deleteAccountTitle"),
-            t("deleteAccountMessage"),
-            t("cancel"),
-            t("delete"),
-            () => void authentication?.deleteAccount(),
-          )
-        }
+      >
+        <View style={styles.formStack}>
+          <Button
+            label={copy(locale, "Export JSON backup", "Exportar backup JSON")}
+            onPress={() => void exportJson()}
+            colors={colors}
+            variant="secondary"
+          />
+          <Field
+            label={t("importBackupPrompt")}
+            value={backupText}
+            onChangeText={setBackupText}
+            colors={colors}
+            multiline
+            placeholder={copy(
+              locale,
+              "Paste the JSON backup here",
+              "Cole o backup JSON aqui",
+            )}
+          />
+          <Button
+            label={t("importBackup")}
+            onPress={() => void importJson()}
+            colors={colors}
+            variant="primary"
+            disabled={!backupText.trim()}
+          />
+          {backupMessage && (
+            <Notice tone="neutral" colors={colors} text={backupMessage} />
+          )}
+          {importConflicts.map((conflict) => (
+            <View
+              key={conflict.id}
+              style={[
+                styles.conflictCard,
+                {
+                  borderColor: colors.warning,
+                  backgroundColor: colors.warningSoft,
+                },
+              ]}
+            >
+              <View style={styles.flex}>
+                <Text style={[styles.cardTitle, { color: colors.text }]}>
+                  {conflict.local.title}
+                </Text>
+                <Text style={[styles.body, { color: colors.muted }]}>
+                  {copy(
+                    locale,
+                    "Choose which version to keep.",
+                    "Escolha qual versão manter.",
+                  )}
+                </Text>
+              </View>
+              <View style={styles.actions}>
+                {(["local", "remote"] as const).map((choice) => (
+                  <Button
+                    key={choice}
+                    label={
+                      choice === "local"
+                        ? copy(locale, "Keep existing", "Manter existente")
+                        : copy(locale, "Keep imported", "Manter importado")
+                    }
+                    colors={colors}
+                    variant="secondary"
+                    onPress={() =>
+                      void runReminderMutation(() =>
+                        localRepository.save({
+                          ...conflict[choice],
+                          revision:
+                            Math.max(
+                              conflict.local.revision,
+                              conflict.remote.revision,
+                            ) + 1,
+                          updatedAt: new Date().toISOString(),
+                        }),
+                      )
+                        .then(() =>
+                          synchronizeReminders(ownerId).catch(() => []),
+                        )
+                        .then(() =>
+                          setImportConflicts((items) =>
+                            items.filter(({ id }) => id !== conflict.id),
+                          ),
+                        )
+                    }
+                  />
+                ))}
+              </View>
+            </View>
+          ))}
+        </View>
+      </SectionCard>
+      <SectionCard
+        title={copy(locale, "Account access", "Acesso à conta")}
+        description={copy(
+          locale,
+          "Sign out on this device or permanently remove your synchronized data.",
+          "Saia neste dispositivo ou remova permanentemente seus dados sincronizados.",
+        )}
         colors={colors}
-        danger
-      />
+      >
+        <View style={styles.accountActions}>
+          <Button
+            label={t("signOut")}
+            onPress={() => void authentication?.signOut()}
+            colors={colors}
+            variant="secondary"
+          />
+          <Button
+            label={t("deleteAccount")}
+            onPress={() =>
+              confirmDestructiveAction(
+                t("deleteAccountTitle"),
+                t("deleteAccountMessage"),
+                t("cancel"),
+                t("deleteAccount"),
+                () => void authentication?.deleteAccount(),
+              )
+            }
+            colors={colors}
+            danger
+            variant="danger"
+          />
+        </View>
+      </SectionCard>
     </ScrollView>
   );
 }
@@ -1513,6 +1954,7 @@ function confirmDestructiveAction(
 function Field({
   label,
   colors,
+  placeholder,
   ...props
 }: {
   label: string;
@@ -1520,19 +1962,24 @@ function Field({
   value: string;
   onChangeText: (value: string) => void;
   multiline?: boolean;
+  placeholder?: string;
 }) {
+  const [focused, setFocused] = useState(false);
   return (
-    <View>
+    <View style={styles.field}>
       <Text style={[styles.label, { color: colors.text }]}>{label}</Text>
       <TextInput
         accessibilityLabel={label}
-        placeholderTextColor={colors.muted}
+        placeholder={placeholder}
+        placeholderTextColor={colors.subtle}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
         style={[
           styles.input,
           props.multiline && styles.multiline,
           {
             color: colors.text,
-            borderColor: colors.border,
+            borderColor: focused ? colors.focus : colors.borderStrong,
             backgroundColor: colors.surface,
           },
         ]}
@@ -1541,6 +1988,9 @@ function Field({
     </View>
   );
 }
+
+type ButtonVariant =
+  "primary" | "secondary" | "ghost" | "danger" | "chip" | "nav";
 
 function Button({
   label,
@@ -1551,6 +2001,10 @@ function Button({
   danger,
   compact,
   disabled,
+  loading = false,
+  variant,
+  block = false,
+  grow = false,
 }: {
   label: string;
   onPress: () => void;
@@ -1560,38 +2014,245 @@ function Button({
   danger?: boolean;
   compact?: boolean;
   disabled?: boolean;
+  loading?: boolean;
+  variant?: ButtonVariant;
+  block?: boolean;
+  grow?: boolean;
 }) {
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const resolvedVariant: ButtonVariant =
+    variant ?? (danger ? "danger" : active ? "primary" : "secondary");
+  const isSelected = selected || active;
+  const isUnavailable = disabled || loading;
+  const isPrimary = resolvedVariant === "primary";
+  const isDanger = resolvedVariant === "danger";
+  const isChip = resolvedVariant === "chip";
+  const isNav = resolvedVariant === "nav";
+  const backgroundColor = isPrimary
+    ? hovered
+      ? colors.accentHover
+      : colors.accent
+    : isDanger
+      ? hovered
+        ? colors.dangerHover
+        : colors.danger
+      : (isChip || isNav) && isSelected
+        ? colors.accentSoft
+        : hovered
+          ? colors.surfaceMuted
+          : resolvedVariant === "ghost" || isNav
+            ? "transparent"
+            : colors.surface;
+  const textColor =
+    isPrimary || isDanger
+      ? colors.onAccent
+      : (isChip || isNav) && isSelected
+        ? colors.accent
+        : colors.text;
+  const borderColor =
+    isPrimary || isDanger
+      ? backgroundColor
+      : isChip && isSelected
+        ? colors.accent
+        : resolvedVariant === "ghost" || isNav
+          ? "transparent"
+          : colors.borderStrong;
+
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityState={{ disabled, selected }}
-      disabled={disabled}
+      accessibilityState={{
+        busy: loading,
+        disabled: isUnavailable,
+        selected: isChip || isNav ? isSelected : undefined,
+      }}
+      disabled={isUnavailable}
       onPress={onPress}
+      onHoverIn={() => setHovered(true)}
+      onHoverOut={() => setHovered(false)}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
       style={({ pressed }) => [
         styles.button,
         compact && styles.compactButton,
+        block && styles.blockButton,
+        grow && styles.growButton,
         {
-          backgroundColor: active ? colors.accent : colors.surface,
-          borderColor: colors.border,
-          opacity: disabled ? 0.45 : pressed ? 0.75 : 1,
+          backgroundColor,
+          borderColor: focused ? colors.focus : borderColor,
+          opacity: disabled ? 0.48 : 1,
+          transform: [{ scale: pressed ? 0.985 : 1 }],
         },
       ]}
     >
-      <Text
-        style={[
-          styles.buttonText,
-          {
-            color: danger
-              ? colors.danger
-              : active
-                ? colors.background
-                : colors.text,
-          },
-        ]}
-      >
-        {label}
-      </Text>
+      {loading && <ActivityIndicator color={textColor} size="small" />}
+      <Text style={[styles.buttonText, { color: textColor }]}>{label}</Text>
     </Pressable>
+  );
+}
+
+function BrandMark({ colors }: { colors: Colors }) {
+  return (
+    <View
+      accessible={false}
+      style={[styles.brandMark, { backgroundColor: colors.accent }]}
+    >
+      <View
+        style={[styles.brandMarkHand, { backgroundColor: colors.onAccent }]}
+      />
+      <View
+        style={[
+          styles.brandMarkHand,
+          styles.brandMarkHandShort,
+          { backgroundColor: colors.onAccent },
+        ]}
+      />
+    </View>
+  );
+}
+
+function PageHeader({
+  eyebrow,
+  title,
+  description,
+  colors,
+  action,
+}: {
+  eyebrow: string;
+  title: string;
+  description: string;
+  colors: Colors;
+  action?: ReactNode;
+}) {
+  return (
+    <View style={styles.pageHeader}>
+      <View style={styles.pageHeaderCopy}>
+        <Text style={[styles.eyebrow, { color: colors.accent }]}>
+          {eyebrow}
+        </Text>
+        <Text
+          accessibilityRole="header"
+          style={[styles.heading, { color: colors.text }]}
+        >
+          {title}
+        </Text>
+        <Text style={[styles.lede, { color: colors.muted }]}>
+          {description}
+        </Text>
+      </View>
+      {action && <View style={styles.pageHeaderAction}>{action}</View>}
+    </View>
+  );
+}
+
+function SectionCard({
+  title,
+  description,
+  colors,
+  children,
+}: {
+  title: string;
+  description: string;
+  colors: Colors;
+  children: ReactNode;
+}) {
+  return (
+    <View
+      style={[
+        styles.sectionCard,
+        {
+          backgroundColor: colors.surface,
+          borderColor: colors.border,
+        },
+      ]}
+    >
+      <View style={styles.sectionCardHeader}>
+        <Text style={[styles.cardTitle, { color: colors.text }]}>{title}</Text>
+        <Text style={[styles.body, { color: colors.muted }]}>
+          {description}
+        </Text>
+      </View>
+      <View
+        style={[styles.sectionDivider, { backgroundColor: colors.border }]}
+      />
+      {children}
+    </View>
+  );
+}
+
+function Notice({
+  tone,
+  colors,
+  text,
+  children,
+}: {
+  tone: "neutral" | "success" | "warning" | "danger";
+  colors: Colors;
+  text: string;
+  children?: ReactNode;
+}) {
+  const toneColor =
+    tone === "success"
+      ? colors.success
+      : tone === "warning"
+        ? colors.warning
+        : tone === "danger"
+          ? colors.danger
+          : colors.muted;
+  const toneSurface =
+    tone === "success"
+      ? colors.successSoft
+      : tone === "warning"
+        ? colors.warningSoft
+        : tone === "danger"
+          ? colors.dangerSoft
+          : colors.surfaceMuted;
+  return (
+    <View
+      accessibilityRole={
+        tone === "danger" || tone === "warning" ? "alert" : undefined
+      }
+      style={[
+        styles.notice,
+        { backgroundColor: toneSurface, borderColor: toneColor },
+      ]}
+    >
+      <View style={[styles.noticeMark, { backgroundColor: toneColor }]} />
+      <View style={styles.flex}>
+        <Text style={[styles.noticeText, { color: colors.text }]}>{text}</Text>
+        {children}
+      </View>
+    </View>
+  );
+}
+
+function StatusBadge({
+  label,
+  tone,
+  colors,
+}: {
+  label: string;
+  tone: "success" | "warning" | "neutral";
+  colors: Colors;
+}) {
+  const textColor =
+    tone === "success"
+      ? colors.success
+      : tone === "warning"
+        ? colors.warning
+        : colors.muted;
+  const backgroundColor =
+    tone === "success"
+      ? colors.successSoft
+      : tone === "warning"
+        ? colors.warningSoft
+        : colors.surfaceMuted;
+  return (
+    <View style={[styles.badge, { backgroundColor }]}>
+      <View style={[styles.badgeDot, { backgroundColor: textColor }]} />
+      <Text style={[styles.badgeText, { color: textColor }]}>{label}</Text>
+    </View>
   );
 }
 
@@ -1599,15 +2260,38 @@ function EmptyState({
   title,
   message,
   colors,
+  action,
 }: {
   title: string;
   message: string;
   colors: Colors;
+  action?: ReactNode;
 }) {
   return (
-    <View style={[styles.empty, { borderColor: colors.border }]}>
+    <View
+      style={[
+        styles.empty,
+        {
+          borderColor: colors.border,
+          backgroundColor: colors.surface,
+        },
+      ]}
+    >
+      <View style={[styles.emptyMark, { backgroundColor: colors.accentSoft }]}>
+        <View
+          style={[styles.emptyMarkLine, { backgroundColor: colors.accent }]}
+        />
+        <View
+          style={[
+            styles.emptyMarkLine,
+            styles.emptyMarkLineShort,
+            { backgroundColor: colors.accent },
+          ]}
+        />
+      </View>
       <Text style={[styles.cardTitle, { color: colors.text }]}>{title}</Text>
-      <Text style={[styles.body, { color: colors.muted }]}>{message}</Text>
+      <Text style={[styles.emptyBody, { color: colors.muted }]}>{message}</Text>
+      {action}
     </View>
   );
 }
@@ -1621,100 +2305,441 @@ function CenteredMessage({ text, colors }: { text: string; colors: Colors }) {
         { backgroundColor: colors.background },
       ]}
     >
-      <Text style={{ color: colors.text }}>{text}</Text>
+      <ActivityIndicator color={colors.accent} />
+      <Text style={[styles.body, { color: colors.muted }]}>{text}</Text>
     </SafeAreaView>
   );
 }
 
-interface Colors {
-  background: string;
-  surface: string;
-  text: string;
-  muted: string;
-  border: string;
-  accent: string;
-  danger: string;
-  warning: string;
+function copy(locale: Locale, english: string, portuguese: string): string {
+  return locale === "pt-BR" ? portuguese : english;
 }
-const lightColors: Colors = {
-  background: "#f7f7fb",
-  surface: "#ffffff",
-  text: "#161622",
-  muted: "#616173",
-  border: "#d9d9e3",
-  accent: "#5b47d6",
-  danger: "#b42318",
-  warning: "#9a6700",
-};
-const darkColors: Colors = {
-  background: "#111118",
-  surface: "#1c1c26",
-  text: "#f6f6fa",
-  muted: "#a5a5b5",
-  border: "#393947",
-  accent: "#8878f2",
-  danger: "#ff8a80",
-  warning: "#f2cc60",
-};
 
 const styles = StyleSheet.create({
   safe: { flex: 1 },
   shell: { flex: 1 },
   wideShell: { flexDirection: "row" },
-  navigation: { padding: 16, borderBottomWidth: 1, gap: 14 },
-  brand: { fontSize: 20, fontWeight: "800" },
-  navItems: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  content: { flex: 1 },
-  page: {
-    width: "100%",
-    maxWidth: 850,
-    alignSelf: "center",
-    padding: 20,
-    gap: 16,
+  navigation: {
+    padding: space.lg,
+    gap: space.lg,
+    zIndex: 2,
   },
-  center: { alignItems: "center", justifyContent: "center", padding: 20 },
-  signInCard: { width: "100%", maxWidth: 420 },
-  heading: { fontSize: 30, fontWeight: "800" },
-  cardTitle: { fontSize: 18, fontWeight: "700" },
-  body: { fontSize: 15, lineHeight: 22 },
-  caption: { fontSize: 13, lineHeight: 20 },
-  label: { fontSize: 14, fontWeight: "700", marginBottom: 6 },
-  card: { borderWidth: 1, borderRadius: 16, padding: 16, gap: 12 },
-  titleRow: {
+  sideNavigation: {
+    width: size.navigationWide,
+    borderRightWidth: 1,
+    paddingVertical: space.xl,
+  },
+  topNavigation: {
+    borderBottomWidth: 1,
+    paddingVertical: space.md,
+  },
+  brandLockup: {
+    minWidth: 0,
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
+    gap: space.md,
   },
-  flex: { flex: 1 },
-  input: {
-    minHeight: 48,
-    borderWidth: 1,
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    fontSize: 16,
-  },
-  multiline: { minHeight: 90, paddingTop: 12, textAlignVertical: "top" },
-  button: {
-    minHeight: 44,
-    borderWidth: 1,
-    borderRadius: 10,
-    paddingHorizontal: 16,
+  brandCopy: { minWidth: 0, flex: 1 },
+  brandMark: {
+    width: size.controlSm,
+    height: size.controlSm,
+    borderRadius: radius.md,
     alignItems: "center",
     justifyContent: "center",
   },
-  compactButton: { minHeight: 36, paddingHorizontal: 11 },
-  buttonText: { fontWeight: "700" },
-  chips: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  actions: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  brandMarkHand: {
+    position: "absolute",
+    width: space.xs,
+    height: space.md,
+    borderRadius: radius.pill,
+    transform: [{ translateY: -space.xs }],
+  },
+  brandMarkHandShort: {
+    height: space.sm,
+    transform: [
+      { translateX: space.xs },
+      { translateY: space.xs },
+      { rotate: "-45deg" },
+    ],
+  },
+  brand: {
+    fontSize: type.title,
+    lineHeight: type.bodyLine,
+    fontWeight: "700",
+    letterSpacing: -0.35,
+  },
+  brandMeta: {
+    fontSize: type.caption,
+    lineHeight: type.captionLine,
+    fontWeight: "500",
+  },
+  navItems: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: space.sm,
+  },
+  navItemsWide: {
+    width: "100%",
+    flexDirection: "column",
+    flexWrap: "nowrap",
+  },
+  content: { flex: 1 },
+  page: {
+    width: "100%",
+    maxWidth: size.contentMax,
+    alignSelf: "center",
+    paddingHorizontal: space.lg,
+    paddingVertical: space["3xl"],
+    gap: space.xl,
+  },
+  listHeader: { gap: space.xl, marginBottom: space.xl },
+  center: {
+    alignItems: "center",
+    justifyContent: "center",
+    padding: space.xl,
+    gap: space.md,
+  },
+  pageHeader: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "flex-end",
+    justifyContent: "space-between",
+    gap: space.xl,
+    paddingVertical: space.md,
+  },
+  pageHeaderCopy: {
+    flexGrow: 1,
+    flexShrink: 1,
+    minWidth: 0,
+    maxWidth: size.readable,
+    gap: space.sm,
+  },
+  pageHeaderAction: { flexShrink: 0 },
+  eyebrow: {
+    fontSize: type.caption,
+    lineHeight: type.captionLine,
+    fontWeight: "700",
+    letterSpacing: 0.8,
+    textTransform: "uppercase",
+  },
+  heading: {
+    fontSize: type.display,
+    lineHeight: type.displayLine,
+    fontWeight: "700",
+    letterSpacing: -1.2,
+  },
+  lede: {
+    maxWidth: size.readable,
+    fontSize: type.body,
+    lineHeight: type.bodyLine,
+  },
+  cardTitle: {
+    fontSize: type.title,
+    lineHeight: type.bodyLine,
+    fontWeight: "700",
+    letterSpacing: -0.2,
+  },
+  body: { fontSize: type.body, lineHeight: type.bodyLine },
+  caption: { fontSize: type.caption, lineHeight: type.captionLine },
+  label: {
+    fontSize: type.label,
+    lineHeight: type.captionLine,
+    fontWeight: "700",
+    marginBottom: space.sm,
+  },
+  sectionLabel: {
+    fontSize: type.caption,
+    lineHeight: type.captionLine,
+    fontWeight: "700",
+    letterSpacing: 0.65,
+    textTransform: "uppercase",
+  },
+  sectionHeadingRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: space.md,
+  },
+  sectionCard: {
+    borderWidth: 1,
+    borderRadius: radius.lg,
+    padding: space.xl,
+    gap: space.xl,
+  },
+  sectionCardHeader: { maxWidth: size.readable, gap: space.xs },
+  sectionDivider: { width: "100%", height: 1 },
+  formStack: { gap: space.lg },
+  field: { minWidth: 0 },
+  titleRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: space.lg,
+  },
+  flex: { flex: 1, minWidth: 0 },
+  input: {
+    width: "100%",
+    minWidth: 0,
+    minHeight: size.controlLg,
+    borderWidth: 1,
+    borderRadius: radius.md,
+    paddingHorizontal: space.lg,
+    fontSize: type.body,
+  },
+  multiline: {
+    minHeight: size.controlLg * 2,
+    paddingTop: space.md,
+    paddingBottom: space.md,
+    textAlignVertical: "top",
+  },
+  button: {
+    minHeight: size.controlMd,
+    borderWidth: 1,
+    borderRadius: radius.md,
+    paddingHorizontal: space.lg,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: space.sm,
+  },
+  compactButton: {
+    minHeight: size.controlSm,
+    paddingHorizontal: space.md,
+  },
+  blockButton: {
+    width: "100%",
+    alignItems: "flex-start",
+  },
+  growButton: { flexGrow: 1 },
+  buttonText: {
+    fontSize: type.label,
+    lineHeight: type.captionLine,
+    fontWeight: "700",
+  },
+  chips: { flexDirection: "row", flexWrap: "wrap", gap: space.sm },
+  actions: { flexDirection: "row", flexWrap: "wrap", gap: space.sm },
+  accountActions: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "space-between",
+    gap: space.md,
+  },
+  controlPanel: {
+    borderWidth: 1,
+    borderRadius: radius.lg,
+    padding: space.lg,
+    gap: space.lg,
+  },
+  filterGroup: { gap: space.sm },
+  reminderCard: {
+    borderWidth: 1,
+    borderRadius: radius.lg,
+    padding: space.xl,
+    gap: space.lg,
+  },
+  reminderTitleRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: space.sm,
+    marginBottom: space.xs,
+  },
+  tagRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: space.xs,
+    marginTop: space.sm,
+  },
+  tag: {
+    borderRadius: radius.pill,
+    paddingHorizontal: space.sm,
+    paddingVertical: space.xs,
+    fontSize: type.caption,
+    lineHeight: type.captionLine,
+    fontWeight: "600",
+  },
+  badge: {
+    minHeight: space["2xl"],
+    borderRadius: radius.pill,
+    paddingHorizontal: space.sm,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.xs,
+  },
+  badgeDot: {
+    width: space.sm,
+    height: space.sm,
+    borderRadius: radius.pill,
+  },
+  badgeText: {
+    fontSize: type.caption,
+    lineHeight: type.captionLine,
+    fontWeight: "700",
+  },
+  conflictCard: {
+    borderWidth: 1,
+    borderRadius: radius.lg,
+    padding: space.lg,
+    gap: space.lg,
+  },
+  notice: {
+    minHeight: size.controlMd,
+    borderWidth: 1,
+    borderRadius: radius.md,
+    padding: space.md,
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: space.md,
+  },
+  noticeMark: {
+    width: space.sm,
+    height: space.sm,
+    borderRadius: radius.pill,
+    marginTop: space.sm,
+  },
+  noticeText: {
+    fontSize: type.label,
+    lineHeight: type.bodyLine,
+    fontWeight: "600",
+  },
   empty: {
     borderWidth: 1,
-    borderStyle: "dashed",
-    borderRadius: 16,
-    padding: 30,
+    borderRadius: radius.lg,
+    minHeight: 280,
+    padding: space["3xl"],
     alignItems: "center",
-    gap: 8,
+    justifyContent: "center",
+    gap: space.md,
   },
-  preview: { borderWidth: 1, borderRadius: 12, padding: 14, gap: 5 },
-  notice: { fontWeight: "600", lineHeight: 20 },
+  emptyMark: {
+    width: size.controlLg,
+    height: size.controlLg,
+    borderRadius: radius.lg,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: space.sm,
+  },
+  emptyMarkLine: {
+    width: space["2xl"],
+    height: space.xs,
+    borderRadius: radius.pill,
+  },
+  emptyMarkLineShort: {
+    width: space.md,
+    marginTop: space.sm,
+  },
+  emptyBody: {
+    maxWidth: 420,
+    textAlign: "center",
+    fontSize: type.body,
+    lineHeight: type.bodyLine,
+    marginBottom: space.sm,
+  },
+  preview: {
+    borderWidth: 1,
+    borderRadius: radius.md,
+    padding: space.lg,
+    gap: space.md,
+  },
+  previewList: { gap: space.sm },
+  previewRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.md,
+  },
+  previewIndex: {
+    width: space.xl,
+    fontSize: type.caption,
+    lineHeight: type.captionLine,
+    fontWeight: "700",
+    fontVariant: ["tabular-nums"],
+  },
+  editorActions: {
+    borderTopWidth: 1,
+    paddingTop: space.xl,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "flex-end",
+    gap: space.sm,
+  },
+  historyRow: {
+    borderWidth: 1,
+    borderRadius: radius.md,
+    padding: space.lg,
+    marginBottom: space.sm,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.md,
+  },
+  timelineMarker: {
+    width: space.md,
+    height: space.md,
+    borderRadius: radius.pill,
+  },
+  authShell: {
+    flex: 1,
+    justifyContent: "flex-start",
+    padding: space.lg,
+  },
+  authShellWide: { justifyContent: "center" },
+  authLayout: {
+    width: "100%",
+    maxWidth: 1080,
+    alignSelf: "center",
+    gap: space["3xl"],
+  },
+  authLayoutWide: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space["6xl"],
+  },
+  authIntro: {
+    flex: 1,
+    minWidth: 0,
+    gap: space.xl,
+  },
+  authIntroWide: { paddingRight: space.xl },
+  authHeading: {
+    maxWidth: 620,
+    fontSize: type.display,
+    lineHeight: type.displayLine,
+    fontWeight: "700",
+    letterSpacing: -1.2,
+  },
+  authHeadingWide: {
+    fontSize: type.displayLarge,
+    lineHeight: type.displayLargeLine,
+    letterSpacing: -1.6,
+  },
+  authBody: {
+    maxWidth: 580,
+    fontSize: type.title,
+    lineHeight: type.headingLine,
+  },
+  authFeatureList: { gap: space.md },
+  authFeature: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.md,
+  },
+  featureMark: {
+    width: space.sm,
+    height: space.sm,
+    borderRadius: radius.pill,
+  },
+  authCard: {
+    width: "100%",
+    maxWidth: 420,
+    borderWidth: 1,
+    borderRadius: radius.xl,
+    padding: space["2xl"],
+    gap: space.lg,
+  },
+  authCardTitle: {
+    fontSize: type.heading,
+    lineHeight: type.headingLine,
+    fontWeight: "700",
+    letterSpacing: -0.65,
+  },
+  authActions: { gap: space.sm },
 });
