@@ -13,6 +13,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint .",
+    "postinstall": "node scripts/patch-query-string.mjs",
     "test": "vitest run",
     "test:integration": "node scripts/run-integration-tests.mjs",
     "test:integration:only": "vitest run --config vitest.integration.config.ts",
@@ -24,14 +25,15 @@
     "@types/node": "^24.10.13",
     "@types/pg": "^8.15.5",
     "eslint": "^10.11.0",
-    "prettier": "^3.9.0",
     "pg": "^8.16.3",
+    "prettier": "^3.9.0",
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.70.1",
     "uuid": "^11.1.1",
     "vitest": "^5.0.1"
   },
   "overrides": {
+    "decode-uri-component": "0.5.0",
     "uuid": "$uuid"
   }
 }
