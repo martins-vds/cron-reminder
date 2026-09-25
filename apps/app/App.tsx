@@ -33,6 +33,7 @@ import {
 import {
   ReminderService,
   filterReminders,
+  sameReminder,
   type SyncConflict,
 } from "@cron-reminder/application";
 import { exportBackup, importBackup } from "@cron-reminder/infrastructure";
@@ -639,11 +640,7 @@ function ReminderList({
   );
   useEffect(() => {
     setSyncConflicts(backgroundSyncConflicts);
-    setSyncMessage(
-      backgroundSyncConflicts.length
-        ? `${backgroundSyncConflicts.length} concurrent edit(s) need manual resolution. Local versions are preserved.`
-        : "",
-    );
+    setSyncMessage("");
     refresh();
   }, [backgroundSyncConflicts, refresh, syncRevision]);
   useEffect(() => {
@@ -656,11 +653,7 @@ function ReminderList({
       .then((conflicts) => {
         if (!active) return;
         setSyncConflicts(conflicts);
-        setSyncMessage(
-          conflicts.length
-            ? `${conflicts.length} concurrent edit(s) need manual resolution. Local versions are preserved.`
-            : "",
-        );
+        setSyncMessage("");
         refresh();
       })
       .catch(() =>
@@ -678,6 +671,14 @@ function ReminderList({
     () => filterReminders(reminders, { query, status, sort: "updated" }),
     [query, reminders, status],
   );
+  const activeSyncConflicts = useMemo(
+    () =>
+      syncConflicts.filter((conflict) => {
+        const current = reminders.find(({ id }) => id === conflict.id);
+        return current !== undefined && sameReminder(current, conflict.local);
+      }),
+    [reminders, syncConflicts],
+  );
 
   if (editing) {
     return (
@@ -689,11 +690,7 @@ function ReminderList({
         onCancel={() => setEditing(null)}
         onSaved={(conflicts) => {
           setSyncConflicts(conflicts);
-          setSyncMessage(
-            conflicts.length
-              ? `${conflicts.length} concurrent edit(s) need manual resolution. Local versions are preserved.`
-              : "",
-          );
+          setSyncMessage("");
           setEditing(null);
           refresh();
         }}
@@ -709,6 +706,7 @@ function ReminderList({
     else await runReminderMutation(action);
     try {
       setSyncConflicts(await synchronizeReminders(ownerId));
+      setSyncMessage("");
     } catch {
       setSyncMessage(
         "Offline changes will synchronize when connectivity returns.",
@@ -750,7 +748,16 @@ function ReminderList({
           {syncMessage}
         </Text>
       )}
-      {syncConflicts.map((conflict) => (
+      {activeSyncConflicts.length > 0 && (
+        <Text
+          accessibilityRole="alert"
+          style={[styles.notice, { color: colors.warning }]}
+        >
+          {activeSyncConflicts.length} concurrent edit(s) need manual
+          resolution. Local versions are preserved.
+        </Text>
+      )}
+      {activeSyncConflicts.map((conflict) => (
         <View
           key={conflict.id}
           style={[
