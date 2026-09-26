@@ -11,6 +11,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -98,6 +99,7 @@ import {
   type AgendaReminderGroup,
   type StoredAgendaOccurrence,
 } from "./src/agenda";
+import { startAgendaAutoRefresh } from "./src/agendaAutoRefresh";
 import {
   buildCronExpression,
   createScheduleEditorState,
@@ -538,6 +540,7 @@ function AgendaScreen({
   const [refreshing, setRefreshing] = useState(false);
   const [actionKey, setActionKey] = useState("");
   const [error, setError] = useState("");
+  const refreshInFlight = useRef(false);
   const [expandedOverdueGroups, setExpandedOverdueGroups] = useState<
     ReadonlySet<string>
   >(new Set());
@@ -590,21 +593,31 @@ function AgendaScreen({
     void loadAgenda();
   }, [loadAgenda, syncRevision]);
 
-  async function refreshAgenda() {
-    setRefreshing(true);
-    try {
-      let syncError = "";
+  const refreshAgenda = useCallback(
+    async (showProgress: boolean) => {
+      if (refreshInFlight.current) return;
+      refreshInFlight.current = true;
+      if (showProgress) setRefreshing(true);
       try {
-        await synchronizeReminders(ownerId);
-      } catch {
-        syncError = await getSynchronizationFailureMessage(locale);
+        let syncError = "";
+        try {
+          await synchronizeReminders(ownerId);
+        } catch {
+          syncError = await getSynchronizationFailureMessage(locale);
+        }
+        await loadAgenda();
+        if (syncError) setError(syncError);
+      } finally {
+        refreshInFlight.current = false;
+        if (showProgress) setRefreshing(false);
       }
-      await loadAgenda();
-      if (syncError) setError(syncError);
-    } finally {
-      setRefreshing(false);
-    }
-  }
+    },
+    [loadAgenda, locale, ownerId],
+  );
+
+  useEffect(() => {
+    return startAgendaAutoRefresh(() => void refreshAgenda(false));
+  }, [refreshAgenda]);
 
   async function actOnOccurrence(
     item: AgendaItem,
@@ -750,7 +763,7 @@ function AgendaScreen({
               "Synchronize and refresh agenda",
               "Sincronizar e atualizar agenda",
             )}
-            onPress={() => void refreshAgenda()}
+            onPress={() => void refreshAgenda(true)}
             colors={colors}
             variant="secondary"
             loading={refreshing}
@@ -762,7 +775,7 @@ function AgendaScreen({
           <View style={styles.noticeActions}>
             <Button
               label={t("refresh")}
-              onPress={() => void refreshAgenda()}
+              onPress={() => void refreshAgenda(true)}
               colors={colors}
               variant="secondary"
               compact
