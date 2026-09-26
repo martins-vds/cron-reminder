@@ -3133,7 +3133,7 @@ const styles = StyleSheet.create({
     flexDirection: "column",
     flexWrap: "nowrap",
   },
-  content: { flex: 1 },
+  content: { flex: 1, minWidth: 0, minHeight: 0 },
   page: {
     width: "100%",
     maxWidth: size.contentMax,
@@ -3305,7 +3305,7 @@ const styles = StyleSheet.create({
   narrowButton: { paddingHorizontal: space.sm },
   blockButton: {
     width: "100%",
-    alignItems: "flex-start",
+    justifyContent: "flex-start",
   },
   growButton: { flex: 1 },
   buttonText: {

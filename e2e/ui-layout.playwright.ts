@@ -183,9 +183,54 @@ function captureLayoutConsoleErrors(page: Page): string[] {
 
 async function measureLayout(page: Page): Promise<LayoutReport> {
   return page.evaluate(() => {
+    interface VisibleRect {
+      left: number;
+      top: number;
+      right: number;
+      bottom: number;
+      width: number;
+      height: number;
+    }
+
+    const clips = (overflow: string) =>
+      overflow === "auto" ||
+      overflow === "clip" ||
+      overflow === "hidden" ||
+      overflow === "scroll";
+    const visibleRect = (element: Element): VisibleRect => {
+      const elementRect = element.getBoundingClientRect();
+      let left = Math.max(elementRect.left, 0);
+      let top = Math.max(elementRect.top, 0);
+      let right = Math.min(elementRect.right, innerWidth);
+      let bottom = Math.min(elementRect.bottom, innerHeight);
+      let ancestor = element.parentElement;
+
+      while (ancestor) {
+        const style = getComputedStyle(ancestor);
+        const ancestorRect = ancestor.getBoundingClientRect();
+        if (clips(style.overflowX)) {
+          left = Math.max(left, ancestorRect.left);
+          right = Math.min(right, ancestorRect.right);
+        }
+        if (clips(style.overflowY)) {
+          top = Math.max(top, ancestorRect.top);
+          bottom = Math.min(bottom, ancestorRect.bottom);
+        }
+        ancestor = ancestor.parentElement;
+      }
+
+      return {
+        left,
+        top,
+        right,
+        bottom,
+        width: Math.max(0, right - left),
+        height: Math.max(0, bottom - top),
+      };
+    };
     const isVisible = (element: Element) => {
       const style = getComputedStyle(element);
-      const rect = element.getBoundingClientRect();
+      const rect = visibleRect(element);
       return (
         style.display !== "none" &&
         style.visibility !== "hidden" &&
@@ -262,7 +307,7 @@ async function measureLayout(page: Page): Promise<LayoutReport> {
     ) {
       const first = overlapCandidates[firstIndex];
       if (!first) continue;
-      const firstRect = first.getBoundingClientRect();
+      const firstRect = visibleRect(first);
       for (
         let secondIndex = firstIndex + 1;
         secondIndex < overlapCandidates.length;
@@ -277,7 +322,7 @@ async function measureLayout(page: Page): Promise<LayoutReport> {
         ) {
           continue;
         }
-        const secondRect = second.getBoundingClientRect();
+        const secondRect = visibleRect(second);
         const overlapWidth =
           Math.min(firstRect.right, secondRect.right) -
           Math.max(firstRect.left, secondRect.left);
@@ -352,7 +397,6 @@ test.describe("responsive UI layout", () => {
         }, name),
       ),
     );
-
     expect(navigationItems[0]?.buttonTop).toBeLessThan(120);
     for (const item of navigationItems) {
       expect(Math.abs(item.buttonCenter - item.textCenter)).toBeLessThanOrEqual(
@@ -425,11 +469,16 @@ test.describe("responsive UI layout", () => {
       await expect(
         page.getByRole("heading", { name: "Add reminder" }),
       ).toBeVisible();
-      for (const label of ["Default", "Silent", "Vibrate"]) {
-        await expect(
-          page.getByRole("button", { name: label, exact: true }),
-        ).toBeVisible();
-      }
+      await expect(
+        page.getByRole("combobox", { name: "Alert style" }),
+      ).toHaveValue("default");
+      await expect(
+        page.getByRole("option", { name: "Default sound" }),
+      ).toHaveCount(1);
+      await expect(page.getByRole("option", { name: "Silent" })).toHaveCount(1);
+      await expect(
+        page.getByRole("option", { name: "Vibrate only" }),
+      ).toHaveCount(1);
       await expectSoundLayout(page, `reminder editor at ${width}px`);
     }
     expect(
