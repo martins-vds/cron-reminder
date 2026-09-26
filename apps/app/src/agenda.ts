@@ -23,7 +23,16 @@ export interface AgendaItem {
   scheduledAt: string;
   effectiveAt: string;
   status: AgendaItemStatus;
-  actionable: boolean;
+  dismissible: boolean;
+  snoozable: boolean;
+}
+
+export interface AgendaReminderGroup {
+  reminderId: string;
+  reminderTitle: string;
+  items: AgendaItem[];
+  firstEffectiveAt: string;
+  lastEffectiveAt: string;
 }
 
 export type AgendaGroups = Record<AgendaGroupKey, AgendaItem[]>;
@@ -58,7 +67,8 @@ export function buildAgendaItems(
             ? occurrence.snoozed_until
             : occurrence.scheduled_at,
         status: agendaStatus(occurrence.status),
-        actionable: actionableStatuses.has(occurrence.status),
+        dismissible: true,
+        snoozable: actionableStatuses.has(occurrence.status),
       },
     ];
   });
@@ -82,7 +92,8 @@ export function buildAgendaItems(
       scheduledAt,
       effectiveAt: scheduledAt,
       status: "upcoming",
-      actionable: false,
+      dismissible: false,
+      snoozable: false,
     });
   }
 
@@ -121,6 +132,49 @@ export function groupAgendaItems(
   }
 
   return groups;
+}
+
+export function groupAgendaItemsByReminder(
+  items: readonly AgendaItem[],
+): AgendaReminderGroup[] {
+  const grouped = new Map<string, AgendaReminderGroup>();
+
+  for (const item of items) {
+    const current = grouped.get(item.reminderId);
+    if (!current) {
+      grouped.set(item.reminderId, {
+        reminderId: item.reminderId,
+        reminderTitle: item.reminderTitle,
+        items: [item],
+        firstEffectiveAt: item.effectiveAt,
+        lastEffectiveAt: item.effectiveAt,
+      });
+      continue;
+    }
+
+    current.items.push(item);
+    if (Date.parse(item.effectiveAt) < Date.parse(current.firstEffectiveAt)) {
+      current.firstEffectiveAt = item.effectiveAt;
+    }
+    if (Date.parse(item.effectiveAt) > Date.parse(current.lastEffectiveAt)) {
+      current.lastEffectiveAt = item.effectiveAt;
+    }
+  }
+
+  return [...grouped.values()]
+    .map((group) => ({
+      ...group,
+      items: group.items.sort(
+        (left, right) =>
+          Date.parse(left.effectiveAt) - Date.parse(right.effectiveAt),
+      ),
+    }))
+    .sort(
+      (left, right) =>
+        Date.parse(left.firstEffectiveAt) -
+          Date.parse(right.firstEffectiveAt) ||
+        left.reminderTitle.localeCompare(right.reminderTitle),
+    );
 }
 
 function agendaStatus(status: OccurrenceStatus): AgendaItemStatus {

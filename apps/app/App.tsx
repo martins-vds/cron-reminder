@@ -76,6 +76,7 @@ import {
 } from "./src/notificationAdapter";
 import { NotificationRegistrationError } from "./src/notificationErrors";
 import { DateTimeField, TimeField } from "./src/NativeDateTimeField";
+import { NumberField } from "./src/NativeNumberField";
 import { OptionPicker } from "./src/OptionPicker";
 import {
   darkColors,
@@ -89,8 +90,10 @@ import {
 import {
   buildAgendaItems,
   groupAgendaItems,
+  groupAgendaItemsByReminder,
   type AgendaGroupKey,
   type AgendaItem,
+  type AgendaReminderGroup,
   type StoredAgendaOccurrence,
 } from "./src/agenda";
 import {
@@ -533,6 +536,9 @@ function AgendaScreen({
   const [refreshing, setRefreshing] = useState(false);
   const [actionKey, setActionKey] = useState("");
   const [error, setError] = useState("");
+  const [expandedOverdueGroups, setExpandedOverdueGroups] = useState<
+    ReadonlySet<string>
+  >(new Set());
 
   const loadAgenda = useCallback(async (): Promise<boolean> => {
     setLoading(true);
@@ -618,7 +624,8 @@ function AgendaScreen({
               ? {
                   ...candidate,
                   status: "postponed",
-                  actionable: false,
+                  dismissible: true,
+                  snoozable: false,
                   effectiveAt: new Date(Date.now() + 10 * 60_000).toISOString(),
                 }
               : candidate,
@@ -641,8 +648,83 @@ function AgendaScreen({
     }
   }
 
+  async function dismissOccurrences(
+    occurrences: readonly AgendaItem[],
+    pendingKey: string,
+  ) {
+    const dismissible = occurrences.filter((item) => item.dismissible);
+    if (dismissible.length === 0) return;
+    setActionKey(pendingKey);
+    setError("");
+    try {
+      for (const item of dismissible) {
+        await submitNotificationAction(item.id, "dismiss", ownerId);
+        setItems((current) =>
+          current.filter((candidate) => candidate.id !== item.id),
+        );
+      }
+      await loadAgenda();
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : copy(
+              locale,
+              "Some overdue occurrences could not be dismissed. Try again.",
+              "Não foi possível dispensar alguns itens atrasados. Tente novamente.",
+            ),
+      );
+    } finally {
+      setActionKey("");
+    }
+  }
+
+  function confirmDismissOccurrences(
+    occurrences: readonly AgendaItem[],
+    pendingKey: string,
+    reminderTitle?: string,
+  ) {
+    const dismissibleCount = occurrences.filter(
+      (item) => item.dismissible,
+    ).length;
+    if (dismissibleCount === 0) return;
+    const title = reminderTitle
+      ? copy(
+          locale,
+          `Dismiss overdue items for ${reminderTitle}?`,
+          `Dispensar itens atrasados de ${reminderTitle}?`,
+        )
+      : copy(
+          locale,
+          "Dismiss all overdue items?",
+          "Dispensar todos os itens atrasados?",
+        );
+    const message = copy(
+      locale,
+      `This will dismiss ${dismissibleCount} overdue ${dismissibleCount === 1 ? "occurrence" : "occurrences"}. This action cannot be undone.`,
+      `Isso dispensará ${dismissibleCount} ${dismissibleCount === 1 ? "ocorrência atrasada" : "ocorrências atrasadas"}. Esta ação não pode ser desfeita.`,
+    );
+    confirmDestructiveAction(
+      title,
+      message,
+      t("cancel"),
+      copy(locale, "Dismiss overdue", "Dispensar atrasados"),
+      () => void dismissOccurrences(occurrences, pendingKey),
+    );
+  }
+
+  function toggleOverdueGroup(reminderId: string) {
+    setExpandedOverdueGroups((current) => {
+      const next = new Set(current);
+      if (next.has(reminderId)) next.delete(reminderId);
+      else next.add(reminderId);
+      return next;
+    });
+  }
+
   const now = new Date();
   const groups = groupAgendaItems(items, now, timezone);
+  const overdueReminderGroups = groupAgendaItemsByReminder(groups.overdue);
   const visibleGroups = agendaGroupOrder.filter(
     (group) => groups[group].length > 0,
   );
@@ -721,95 +803,392 @@ function AgendaScreen({
           }
         />
       ) : (
-        visibleGroups.map((group) => (
-          <View key={group} style={styles.agendaGroup}>
-            <View style={styles.sectionHeadingRow}>
-              <Text style={[styles.agendaGroupTitle, { color: colors.text }]}>
-                {agendaGroupLabel(group, locale)}
-              </Text>
-              <Text style={[styles.caption, { color: colors.subtle }]}>
-                {groups[group].length}
-              </Text>
+        visibleGroups.map((group) =>
+          group === "overdue" ? (
+            <OverdueAgendaGroup
+              key={group}
+              groups={overdueReminderGroups}
+              totalCount={groups.overdue.length}
+              expandedGroups={expandedOverdueGroups}
+              actionKey={actionKey}
+              locale={locale}
+              colors={colors}
+              onToggle={toggleOverdueGroup}
+              onDismissItem={(item) => void actOnOccurrence(item, "dismiss")}
+              onSnoozeItem={(item) => void actOnOccurrence(item, "snooze")}
+              onDismissGroup={(reminderGroup) =>
+                confirmDismissOccurrences(
+                  reminderGroup.items,
+                  `overdue:${reminderGroup.reminderId}:dismiss-all`,
+                  reminderGroup.reminderTitle,
+                )
+              }
+              onDismissAll={() =>
+                confirmDismissOccurrences(groups.overdue, "overdue:dismiss-all")
+              }
+            />
+          ) : (
+            <View key={group} style={styles.agendaGroup}>
+              <View style={styles.sectionHeadingRow}>
+                <Text style={[styles.agendaGroupTitle, { color: colors.text }]}>
+                  {agendaGroupLabel(group, locale)}
+                </Text>
+                <Text style={[styles.caption, { color: colors.subtle }]}>
+                  {groups[group].length}
+                </Text>
+              </View>
+              <View style={styles.agendaList}>
+                {groups[group].map((item) => (
+                  <AgendaItemCard
+                    key={item.id}
+                    item={item}
+                    actionKey={actionKey}
+                    locale={locale}
+                    colors={colors}
+                    onDismiss={() => void actOnOccurrence(item, "dismiss")}
+                    onSnooze={() => void actOnOccurrence(item, "snooze")}
+                  />
+                ))}
+              </View>
             </View>
-            <View style={styles.agendaList}>
-              {groups[group].map((item) => (
-                <View
-                  key={item.id}
-                  style={[
-                    styles.agendaCard,
-                    {
-                      backgroundColor: colors.surface,
-                      borderColor:
-                        group === "overdue" ? colors.warning : colors.border,
-                    },
-                  ]}
-                >
-                  <View style={styles.agendaCardHeader}>
-                    <View style={styles.flex}>
-                      <Text style={[styles.cardTitle, { color: colors.text }]}>
-                        {item.reminderTitle}
-                      </Text>
-                      <Text style={[styles.body, { color: colors.muted }]}>
-                        {agendaItemDescription(item, locale)}
-                      </Text>
-                    </View>
-                    <StatusBadge
-                      label={agendaStatusLabel(item.status, locale)}
-                      tone={
-                        item.status === "missed"
-                          ? "danger"
-                          : item.status === "upcoming"
-                            ? "neutral"
-                            : "warning"
-                      }
-                      colors={colors}
-                    />
-                  </View>
-                  {item.actionable && (
-                    <View style={styles.actions}>
-                      <Button
-                        label={t("dismiss")}
-                        accessibilityLabel={copy(
-                          locale,
-                          `Dismiss ${item.reminderTitle}`,
-                          `Dispensar ${item.reminderTitle}`,
-                        )}
-                        onPress={() => void actOnOccurrence(item, "dismiss")}
-                        colors={colors}
-                        variant="secondary"
-                        compact
-                        loading={actionKey === `${item.id}:dismiss`}
-                        disabled={
-                          Boolean(actionKey) &&
-                          actionKey !== `${item.id}:dismiss`
-                        }
-                      />
-                      <Button
-                        label={`${t("snooze")} 10 min`}
-                        accessibilityLabel={copy(
-                          locale,
-                          `Snooze ${item.reminderTitle} for 10 minutes`,
-                          `Adiar ${item.reminderTitle} por 10 minutos`,
-                        )}
-                        onPress={() => void actOnOccurrence(item, "snooze")}
-                        colors={colors}
-                        variant="primary"
-                        compact
-                        loading={actionKey === `${item.id}:snooze`}
-                        disabled={
-                          Boolean(actionKey) &&
-                          actionKey !== `${item.id}:snooze`
-                        }
-                      />
-                    </View>
-                  )}
-                </View>
-              ))}
-            </View>
-          </View>
-        ))
+          ),
+        )
       )}
     </ScrollView>
+  );
+}
+
+function OverdueAgendaGroup({
+  groups,
+  totalCount,
+  expandedGroups,
+  actionKey,
+  locale,
+  colors,
+  onToggle,
+  onDismissItem,
+  onSnoozeItem,
+  onDismissGroup,
+  onDismissAll,
+}: {
+  groups: readonly AgendaReminderGroup[];
+  totalCount: number;
+  expandedGroups: ReadonlySet<string>;
+  actionKey: string;
+  locale: Locale;
+  colors: Colors;
+  onToggle: (reminderId: string) => void;
+  onDismissItem: (item: AgendaItem) => void;
+  onSnoozeItem: (item: AgendaItem) => void;
+  onDismissGroup: (group: AgendaReminderGroup) => void;
+  onDismissAll: () => void;
+}) {
+  const dismissibleCount = groups.reduce(
+    (count, group) =>
+      count + group.items.filter((item) => item.dismissible).length,
+    0,
+  );
+
+  return (
+    <View style={styles.agendaGroup}>
+      <View style={styles.agendaSectionHeader}>
+        <View style={styles.agendaSectionHeading}>
+          <Text style={[styles.agendaGroupTitle, { color: colors.text }]}>
+            {agendaGroupLabel("overdue", locale)}
+          </Text>
+          <Text
+            accessibilityLiveRegion="polite"
+            style={[styles.caption, { color: colors.subtle }]}
+          >
+            {totalCount}
+          </Text>
+        </View>
+        {dismissibleCount > 0 ? (
+          <Button
+            label={copy(
+              locale,
+              "Dismiss all overdue",
+              "Dispensar todos os atrasados",
+            )}
+            accessibilityLabel={copy(
+              locale,
+              `Dismiss all ${dismissibleCount} overdue occurrences`,
+              `Dispensar todas as ${dismissibleCount} ocorrências atrasadas`,
+            )}
+            onPress={onDismissAll}
+            colors={colors}
+            variant="danger"
+            compact
+            loading={actionKey === "overdue:dismiss-all"}
+            disabled={Boolean(actionKey) && actionKey !== "overdue:dismiss-all"}
+          />
+        ) : null}
+      </View>
+      <View style={styles.overdueGroupList}>
+        {groups.map((group) => {
+          const expanded = expandedGroups.has(group.reminderId);
+          const groupActionKey = `overdue:${group.reminderId}:dismiss-all`;
+          const groupDismissibleCount = group.items.filter(
+            (item) => item.dismissible,
+          ).length;
+          return (
+            <View
+              key={group.reminderId}
+              style={[
+                styles.overdueGroupCard,
+                {
+                  backgroundColor: colors.surface,
+                  borderColor: colors.warning,
+                },
+              ]}
+            >
+              <View style={styles.overdueGroupHeader}>
+                <View style={styles.overdueGroupSummary}>
+                  <View style={styles.overdueGroupTitleBlock}>
+                    <Text style={[styles.cardTitle, { color: colors.text }]}>
+                      {group.reminderTitle}
+                    </Text>
+                    <Text style={[styles.body, { color: colors.muted }]}>
+                      {overdueGroupDescription(group, locale)}
+                    </Text>
+                  </View>
+                  <StatusBadge
+                    label={copy(
+                      locale,
+                      `${group.items.length} overdue`,
+                      `${group.items.length} atrasado${group.items.length === 1 ? "" : "s"}`,
+                    )}
+                    tone="warning"
+                    colors={colors}
+                  />
+                </View>
+                <View style={styles.actions}>
+                  <Button
+                    label={copy(
+                      locale,
+                      expanded ? "Hide occurrences" : "Show occurrences",
+                      expanded ? "Ocultar ocorrências" : "Mostrar ocorrências",
+                    )}
+                    accessibilityLabel={copy(
+                      locale,
+                      `${expanded ? "Hide" : "Show"} ${group.items.length} overdue occurrences for ${group.reminderTitle}`,
+                      `${expanded ? "Ocultar" : "Mostrar"} ${group.items.length} ocorrências atrasadas de ${group.reminderTitle}`,
+                    )}
+                    onPress={() => onToggle(group.reminderId)}
+                    colors={colors}
+                    variant="secondary"
+                    compact
+                    expanded={expanded}
+                    controls={`overdue-${group.reminderId}`}
+                    disabled={Boolean(actionKey)}
+                  />
+                  {groupDismissibleCount > 0 ? (
+                    <Button
+                      label={copy(locale, "Dismiss all", "Dispensar todos")}
+                      accessibilityLabel={copy(
+                        locale,
+                        `Dismiss all ${groupDismissibleCount} overdue occurrences for ${group.reminderTitle}`,
+                        `Dispensar todas as ${groupDismissibleCount} ocorrências atrasadas de ${group.reminderTitle}`,
+                      )}
+                      onPress={() => onDismissGroup(group)}
+                      colors={colors}
+                      variant="danger"
+                      compact
+                      loading={actionKey === groupActionKey}
+                      disabled={
+                        Boolean(actionKey) && actionKey !== groupActionKey
+                      }
+                    />
+                  ) : null}
+                </View>
+              </View>
+              {expanded ? (
+                <View
+                  nativeID={`overdue-${group.reminderId}`}
+                  accessibilityLabel={copy(
+                    locale,
+                    `Overdue occurrences for ${group.reminderTitle}`,
+                    `Ocorrências atrasadas de ${group.reminderTitle}`,
+                  )}
+                  style={[
+                    styles.overdueOccurrenceList,
+                    { borderColor: colors.border },
+                  ]}
+                >
+                  {group.items.map((item, index) => (
+                    <View
+                      key={item.id}
+                      style={[
+                        styles.overdueOccurrence,
+                        index > 0 && {
+                          borderTopWidth: 1,
+                          borderColor: colors.border,
+                        },
+                      ]}
+                    >
+                      <View style={styles.agendaCardHeader}>
+                        <Text style={[styles.body, { color: colors.muted }]}>
+                          {agendaItemDescription(item, locale)}
+                        </Text>
+                        <StatusBadge
+                          label={agendaStatusLabel(item.status, locale)}
+                          tone={item.status === "missed" ? "danger" : "warning"}
+                          colors={colors}
+                        />
+                      </View>
+                      {item.dismissible || item.snoozable ? (
+                        <AgendaItemActions
+                          item={item}
+                          actionKey={actionKey}
+                          locale={locale}
+                          colors={colors}
+                          onDismiss={() => onDismissItem(item)}
+                          onSnooze={() => onSnoozeItem(item)}
+                        />
+                      ) : null}
+                    </View>
+                  ))}
+                </View>
+              ) : null}
+            </View>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+function AgendaItemCard({
+  item,
+  actionKey,
+  locale,
+  colors,
+  onDismiss,
+  onSnooze,
+}: {
+  item: AgendaItem;
+  actionKey: string;
+  locale: Locale;
+  colors: Colors;
+  onDismiss: () => void;
+  onSnooze: () => void;
+}) {
+  return (
+    <View
+      style={[
+        styles.agendaCard,
+        {
+          backgroundColor: colors.surface,
+          borderColor: colors.border,
+        },
+      ]}
+    >
+      <View style={styles.agendaCardHeader}>
+        <View style={styles.flex}>
+          <Text style={[styles.cardTitle, { color: colors.text }]}>
+            {item.reminderTitle}
+          </Text>
+          <Text style={[styles.body, { color: colors.muted }]}>
+            {agendaItemDescription(item, locale)}
+          </Text>
+        </View>
+        <StatusBadge
+          label={agendaStatusLabel(item.status, locale)}
+          tone={
+            item.status === "missed"
+              ? "danger"
+              : item.status === "upcoming"
+                ? "neutral"
+                : "warning"
+          }
+          colors={colors}
+        />
+      </View>
+      {item.dismissible || item.snoozable ? (
+        <AgendaItemActions
+          item={item}
+          actionKey={actionKey}
+          locale={locale}
+          colors={colors}
+          onDismiss={onDismiss}
+          onSnooze={onSnooze}
+        />
+      ) : null}
+    </View>
+  );
+}
+
+function AgendaItemActions({
+  item,
+  actionKey,
+  locale,
+  colors,
+  onDismiss,
+  onSnooze,
+}: {
+  item: AgendaItem;
+  actionKey: string;
+  locale: Locale;
+  colors: Colors;
+  onDismiss: () => void;
+  onSnooze: () => void;
+}) {
+  const description = agendaItemDescription(item, locale);
+  return (
+    <View style={styles.actions}>
+      {item.dismissible ? (
+        <Button
+          label={createTranslator(locale)("dismiss")}
+          accessibilityLabel={copy(
+            locale,
+            `Dismiss ${item.reminderTitle}, ${description}`,
+            `Dispensar ${item.reminderTitle}, ${description}`,
+          )}
+          onPress={onDismiss}
+          colors={colors}
+          variant="secondary"
+          compact
+          loading={actionKey === `${item.id}:dismiss`}
+          disabled={Boolean(actionKey) && actionKey !== `${item.id}:dismiss`}
+        />
+      ) : null}
+      {item.snoozable ? (
+        <Button
+          label={`${createTranslator(locale)("snooze")} 10 min`}
+          accessibilityLabel={copy(
+            locale,
+            `Snooze ${item.reminderTitle}, ${description}, for 10 minutes`,
+            `Adiar ${item.reminderTitle}, ${description}, por 10 minutos`,
+          )}
+          onPress={onSnooze}
+          colors={colors}
+          variant="primary"
+          compact
+          loading={actionKey === `${item.id}:snooze`}
+          disabled={Boolean(actionKey) && actionKey !== `${item.id}:snooze`}
+        />
+      ) : null}
+    </View>
+  );
+}
+
+function overdueGroupDescription(
+  group: AgendaReminderGroup,
+  locale: Locale,
+): string {
+  const formatter = new Intl.DateTimeFormat(locale, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+  const first = formatter.format(new Date(group.firstEffectiveAt));
+  if (group.firstEffectiveAt === group.lastEffectiveAt) {
+    return copy(locale, `Overdue since ${first}`, `Atrasado desde ${first}`);
+  }
+  const last = formatter.format(new Date(group.lastEffectiveAt));
+  return copy(
+    locale,
+    `Overdue from ${first} to ${last}`,
+    `Atrasado de ${first} até ${last}`,
   );
 }
 
@@ -1961,18 +2340,19 @@ function ReminderEditor({
                 ) : (
                   <View style={styles.formStack}>
                     {kind === "interval" && (
-                      <Field
+                      <NumberField
                         label={copy(
                           locale,
                           "Repeat every (minutes)",
                           "Repetir a cada (minutos)",
                         )}
                         value={scheduleEditor.intervalMinutes}
-                        onChangeText={(intervalMinutes) =>
+                        onChange={(intervalMinutes) =>
                           updateScheduleEditor({ intervalMinutes })
                         }
                         colors={colors}
-                        keyboardType="number-pad"
+                        minimum={1}
+                        maximum={59}
                         hint={copy(
                           locale,
                           "Enter a value from 1 to 59.",
@@ -1997,14 +2377,15 @@ function ReminderEditor({
                     {kind === "monthly" && (
                       <View style={styles.scheduleFieldsRow}>
                         <View style={styles.scheduleField}>
-                          <Field
+                          <NumberField
                             label={copy(locale, "Day of month", "Dia do mês")}
                             value={scheduleEditor.monthDay}
-                            onChangeText={(monthDay) =>
+                            onChange={(monthDay) =>
                               updateScheduleEditor({ monthDay })
                             }
                             colors={colors}
-                            keyboardType="number-pad"
+                            minimum={1}
+                            maximum={31}
                             hint={copy(locale, "1 to 31", "1 a 31")}
                           />
                         </View>
@@ -2023,26 +2404,28 @@ function ReminderEditor({
                     {kind === "yearly" && (
                       <View style={styles.scheduleFieldsRow}>
                         <View style={styles.scheduleField}>
-                          <Field
+                          <NumberField
                             label={copy(locale, "Month", "Mês")}
                             value={scheduleEditor.yearMonth}
-                            onChangeText={(yearMonth) =>
+                            onChange={(yearMonth) =>
                               updateScheduleEditor({ yearMonth })
                             }
                             colors={colors}
-                            keyboardType="number-pad"
+                            minimum={1}
+                            maximum={12}
                             hint={copy(locale, "1 to 12", "1 a 12")}
                           />
                         </View>
                         <View style={styles.scheduleField}>
-                          <Field
+                          <NumberField
                             label={copy(locale, "Day", "Dia")}
                             value={scheduleEditor.yearDay}
-                            onChangeText={(yearDay) =>
+                            onChange={(yearDay) =>
                               updateScheduleEditor({ yearDay })
                             }
                             colors={colors}
-                            keyboardType="number-pad"
+                            minimum={1}
+                            maximum={31}
                             hint={copy(locale, "1 to 31", "1 a 31")}
                           />
                         </View>
@@ -2715,6 +3098,8 @@ function Button({
   narrow,
   disabled,
   loading = false,
+  expanded,
+  controls,
   variant,
   block = false,
   grow = false,
@@ -2730,6 +3115,8 @@ function Button({
   narrow?: boolean;
   disabled?: boolean;
   loading?: boolean;
+  expanded?: boolean;
+  controls?: string;
   variant?: ButtonVariant;
   block?: boolean;
   grow?: boolean;
@@ -2781,8 +3168,11 @@ function Button({
       accessibilityState={{
         busy: loading,
         disabled: isUnavailable,
+        expanded,
         selected: isChip || isNav ? isSelected : undefined,
       }}
+      aria-controls={controls}
+      aria-expanded={expanded}
       disabled={isUnavailable}
       onPress={onPress}
       onHoverIn={() => setHovered(true)}
@@ -3484,6 +3874,18 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   agendaGroup: { gap: space.md },
+  agendaSectionHeader: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: space.md,
+  },
+  agendaSectionHeading: {
+    flexDirection: "row",
+    alignItems: "baseline",
+    gap: space.sm,
+  },
   agendaGroupTitle: {
     fontSize: type.heading,
     lineHeight: type.headingLine,
@@ -3491,6 +3893,34 @@ const styles = StyleSheet.create({
     letterSpacing: -0.65,
   },
   agendaList: { gap: space.sm },
+  overdueGroupList: { gap: space.md },
+  overdueGroupCard: {
+    borderWidth: 1,
+    borderRadius: radius.lg,
+  },
+  overdueGroupHeader: {
+    padding: space.xl,
+    gap: space.lg,
+  },
+  overdueGroupSummary: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: space.md,
+  },
+  overdueGroupTitleBlock: {
+    flex: 1,
+    minWidth: 0,
+    gap: space.xs,
+  },
+  overdueOccurrenceList: {
+    borderTopWidth: 1,
+  },
+  overdueOccurrence: {
+    padding: space.xl,
+    gap: space.md,
+  },
   agendaCard: {
     borderWidth: 1,
     borderRadius: radius.lg,

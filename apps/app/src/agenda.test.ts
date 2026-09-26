@@ -3,6 +3,7 @@ import type { Reminder } from "@cron-reminder/domain";
 import {
   buildAgendaItems,
   groupAgendaItems,
+  groupAgendaItemsByReminder,
   type StoredAgendaOccurrence,
 } from "./agenda";
 
@@ -62,7 +63,14 @@ describe("agenda", () => {
       "postponed",
       "upcoming",
     ]);
-    expect(items.find(({ status }) => status === "due")?.actionable).toBe(true);
+    expect(items.find(({ status }) => status === "due")).toMatchObject({
+      dismissible: true,
+      snoozable: true,
+    });
+    expect(items.find(({ status }) => status === "missed")).toMatchObject({
+      dismissible: true,
+      snoozable: false,
+    });
     expect(
       items.find(({ status }) => status === "postponed")?.effectiveAt,
     ).toBe("2026-09-25T11:00:00.000Z");
@@ -133,5 +141,54 @@ describe("agenda", () => {
       "tomorrow",
     ]);
     expect(groups.later.map(({ reminderId }) => reminderId)).toEqual(["later"]);
+  });
+
+  it("groups repeated agenda items by reminder with an effective time range", () => {
+    const grouped = groupAgendaItemsByReminder([
+      {
+        id: "report:later",
+        reminderId: "report",
+        reminderTitle: "Send report",
+        scheduledAt: "2026-09-25T09:30:00.000Z",
+        effectiveAt: "2026-09-25T09:30:00.000Z",
+        status: "due",
+        dismissible: true,
+        snoozable: true,
+      },
+      {
+        id: "backup",
+        reminderId: "backup",
+        reminderTitle: "Back up files",
+        scheduledAt: "2026-09-25T09:00:00.000Z",
+        effectiveAt: "2026-09-25T09:00:00.000Z",
+        status: "due",
+        dismissible: true,
+        snoozable: true,
+      },
+      {
+        id: "report:earlier",
+        reminderId: "report",
+        reminderTitle: "Send report",
+        scheduledAt: "2026-09-25T08:00:00.000Z",
+        effectiveAt: "2026-09-25T08:00:00.000Z",
+        status: "missed",
+        dismissible: true,
+        snoozable: false,
+      },
+    ]);
+
+    expect(grouped.map(({ reminderId }) => reminderId)).toEqual([
+      "report",
+      "backup",
+    ]);
+    expect(grouped[0]).toMatchObject({
+      reminderTitle: "Send report",
+      firstEffectiveAt: "2026-09-25T08:00:00.000Z",
+      lastEffectiveAt: "2026-09-25T09:30:00.000Z",
+    });
+    expect(grouped[0]?.items.map(({ id }) => id)).toEqual([
+      "report:earlier",
+      "report:later",
+    ]);
   });
 });

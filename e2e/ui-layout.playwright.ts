@@ -73,9 +73,25 @@ const history = [
 
 const occurrences = [
   {
+    id: "occurrence-older",
+    reminder_id: "daily-operations-review",
+    scheduled_at: "2026-09-25T09:00:00.000Z",
+    status: "triggered",
+    acted_at: null,
+    snoozed_until: null,
+  },
+  {
     id: "occurrence-1",
     reminder_id: "daily-operations-review",
     scheduled_at: "2026-09-25T16:30:00.000Z",
+    status: "triggered",
+    acted_at: null,
+    snoozed_until: null,
+  },
+  {
+    id: "occurrence-archive",
+    reminder_id: "weekly-archive-review",
+    scheduled_at: "2026-09-25T17:00:00.000Z",
     status: "triggered",
     acted_at: null,
     snoozed_until: null,
@@ -121,14 +137,28 @@ function fakeSession() {
   };
 }
 
-async function mockSupabase(page: Page): Promise<void> {
+async function mockSupabase(
+  page: Page,
+  notificationActions: Array<{
+    occurrenceId: string;
+    action: "dismiss" | "snooze";
+  }> = [],
+): Promise<void> {
   await page.route(`${supabaseOrigin}/**`, async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     const table = url.pathname.split("/").at(-1);
     let body: unknown = [];
 
-    if (table === "profiles") {
+    if (url.pathname.endsWith("/functions/v1/occurrence-action")) {
+      notificationActions.push(
+        request.postDataJSON() as {
+          occurrenceId: string;
+          action: "dismiss" | "snooze";
+        },
+      );
+      body = { updated: true };
+    } else if (table === "profiles") {
       body =
         request.method() === "GET" ? { locale: "en", theme: "light" } : null;
     } else if (table === "reminders") {
@@ -427,6 +457,65 @@ test.describe("responsive UI layout", () => {
     ).toEqual([]);
   });
 
+  test("overdue occurrences are grouped with bulk and individual actions", async ({
+    page,
+  }) => {
+    const notificationActions: Array<{
+      occurrenceId: string;
+      action: "dismiss" | "snooze";
+    }> = [];
+    await mockSupabase(page, notificationActions);
+    await authenticate(page);
+    await page.setViewportSize({ width: 390, height: 900 });
+    await page.goto("/");
+
+    const operationsTitle =
+      "Review critical customer operations and outstanding escalations";
+    const operationsToggle = page.getByRole("button", {
+      name: `Show 2 overdue occurrences for ${operationsTitle}`,
+    });
+
+    await expect(operationsToggle).toHaveAttribute("aria-expanded", "false");
+    await expect(
+      page.getByRole("button", {
+        name: "Dismiss all 3 overdue occurrences",
+      }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", {
+        name: `Dismiss all 2 overdue occurrences for ${operationsTitle}`,
+      }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", {
+        name: new RegExp(`^Dismiss ${operationsTitle},`),
+      }),
+    ).toHaveCount(0);
+
+    await operationsToggle.click();
+
+    await expect(
+      page.getByRole("button", {
+        name: `Hide 2 overdue occurrences for ${operationsTitle}`,
+      }),
+    ).toHaveAttribute("aria-expanded", "true");
+    await expect(
+      page.getByRole("button", {
+        name: new RegExp(`^Dismiss ${operationsTitle},`),
+      }),
+    ).toHaveCount(2);
+
+    page.once("dialog", (dialog) => void dialog.accept());
+    await page
+      .getByRole("button", {
+        name: `Dismiss all 2 overdue occurrences for ${operationsTitle}`,
+      })
+      .click();
+    await expect
+      .poll(() => notificationActions.map(({ occurrenceId }) => occurrenceId))
+      .toEqual(["occurrence-older", "occurrence-1"]);
+  });
+
   for (const route of [
     { path: "/", heading: "Today and upcoming", name: "agenda" },
     { path: "/reminders", heading: "Reminders", name: "reminders" },
@@ -485,5 +574,36 @@ test.describe("responsive UI layout", () => {
       consoleErrors,
       "reminder editor emitted layout console errors",
     ).toEqual([]);
+  });
+
+  test("schedule numbers use native constrained controls", async ({ page }) => {
+    await mockSupabase(page);
+    await authenticate(page);
+    await page.setViewportSize({ width: 390, height: 900 });
+    await page.goto("/reminders");
+    await page.getByRole("button", { name: "Add reminder" }).click();
+
+    const frequency = page.getByRole("combobox", { name: "Frequency" });
+
+    await frequency.selectOption("interval");
+    await expect(
+      page.getByRole("spinbutton", { name: "Repeat every (minutes)" }),
+    ).toHaveAttribute("min", "1");
+    await expect(
+      page.getByRole("spinbutton", { name: "Repeat every (minutes)" }),
+    ).toHaveAttribute("max", "59");
+
+    await frequency.selectOption("monthly");
+    await expect(
+      page.getByRole("spinbutton", { name: "Day of month" }),
+    ).toHaveAttribute("max", "31");
+
+    await frequency.selectOption("yearly");
+    await expect(
+      page.getByRole("spinbutton", { name: "Month", exact: true }),
+    ).toHaveAttribute("max", "12");
+    await expect(
+      page.getByRole("spinbutton", { name: "Day", exact: true }),
+    ).toHaveAttribute("max", "31");
   });
 });
