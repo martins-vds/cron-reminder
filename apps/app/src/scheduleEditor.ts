@@ -4,7 +4,6 @@ export type ScheduleEditorKind =
   | "once"
   | "interval"
   | "daily"
-  | "multiple-daily"
   | "weekdays"
   | "monthly"
   | "yearly"
@@ -33,7 +32,7 @@ export function createScheduleEditorState(
     onceAt: new Date(now.getTime() + 3_600_000).toISOString(),
     intervalMinutes: "5",
     time: "09:00",
-    dailyTimes: ["09:00", "18:00"],
+    dailyTimes: ["09:00"],
     monthDay: "1",
     yearMonth: "1",
     yearDay: "1",
@@ -47,7 +46,7 @@ export function createScheduleEditorState(
   if (schedule.kind === "daily-times") {
     return {
       ...defaults,
-      kind: "multiple-daily",
+      kind: "daily",
       dailyTimes: [...schedule.times],
     };
   }
@@ -64,7 +63,7 @@ export function createScheduleEditorState(
   if (dailyTimes) {
     return {
       ...defaults,
-      kind: "multiple-daily",
+      kind: "daily",
       dailyTimes,
     };
   }
@@ -88,10 +87,12 @@ export function createScheduleEditorState(
 
   const daily = expression.match(/^(\d{1,2}) (\d{1,2}) \* \* \*$/);
   if (daily && isValidTimeParts(daily[2], daily[1])) {
+    const time = formatTime(daily[2], daily[1]);
     return {
       ...defaults,
       kind: "daily",
-      time: formatTime(daily[2], daily[1]),
+      time,
+      dailyTimes: [time],
     };
   }
 
@@ -135,7 +136,9 @@ export function buildCronExpression(state: ScheduleEditorState): string {
     return `*/${state.intervalMinutes.trim()} * * * *`;
   }
 
-  const time = parseTime(state.time);
+  const time = parseTime(
+    state.kind === "daily" ? (state.dailyTimes[0] ?? "") : state.time,
+  );
   if (!time) return "";
   const prefix = `${time.minute} ${time.hour}`;
   if (state.kind === "daily") return `${prefix} * * *`;
@@ -153,10 +156,10 @@ export function hasValidScheduleEditorValues(
   state: ScheduleEditorState,
 ): boolean {
   if (state.kind === "once" || state.kind === "advanced") return true;
-  if (state.kind === "multiple-daily") {
+  if (state.kind === "daily") {
     const times = normalizeDailyTimes(state.dailyTimes);
     return (
-      times.length >= 2 &&
+      times.length >= 1 &&
       times.length <= MAX_DAILY_TIMES &&
       times.every((time) => /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(time)) &&
       new Set(times).size === times.length

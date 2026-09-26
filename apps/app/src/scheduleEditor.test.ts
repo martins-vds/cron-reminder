@@ -37,7 +37,7 @@ describe("schedule editor", () => {
         expression: "0 9,12,18,21 * * *",
       }),
     ).toMatchObject({
-      kind: "multiple-daily",
+      kind: "daily",
       dailyTimes: ["09:00", "12:00", "18:00", "21:00"],
     });
   });
@@ -51,6 +51,18 @@ describe("schedule editor", () => {
     ).toMatchObject({
       kind: "advanced",
       advancedCron: "0 9 * * MON,WED,FRI",
+    });
+  });
+
+  it("opens daily-times schedules under the daily frequency", () => {
+    expect(
+      createScheduleEditorState({
+        kind: "daily-times",
+        times: ["08:00", "12:30", "17:45"],
+      }),
+    ).toMatchObject({
+      kind: "daily",
+      dailyTimes: ["08:00", "12:30", "17:45"],
     });
   });
 
@@ -95,21 +107,21 @@ describe("schedule editor", () => {
     expect(
       hasValidScheduleEditorValues({
         ...state,
-        kind: "multiple-daily",
+        kind: "daily",
         dailyTimes: ["09:15", "12:30"],
       }),
     ).toBe(true);
     expect(
       hasValidScheduleEditorValues({
         ...state,
-        kind: "multiple-daily",
+        kind: "daily",
         dailyTimes: ["09:00", "09:00"],
       }),
     ).toBe(false);
     expect(
       hasValidScheduleEditorValues({
         ...state,
-        kind: "multiple-daily",
+        kind: "daily",
         dailyTimes: Array.from(
           { length: MAX_DAILY_TIMES + 1 },
           (_value, index) =>
@@ -117,5 +129,23 @@ describe("schedule editor", () => {
         ),
       }),
     ).toBe(false);
+  });
+
+  it("supports one or more daily times through the daily frequency", () => {
+    const state = createScheduleEditorState(undefined);
+    expect(
+      buildCronExpression({
+        ...state,
+        kind: "daily",
+        dailyTimes: ["07:45"],
+      }),
+    ).toBe("45 07 * * *");
+    expect(
+      hasValidScheduleEditorValues({
+        ...state,
+        kind: "daily",
+        dailyTimes: ["07:45"],
+      }),
+    ).toBe(true);
   });
 });

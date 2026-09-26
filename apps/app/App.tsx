@@ -75,6 +75,8 @@ import {
   subscribeToPushTokenChanges,
 } from "./src/notificationAdapter";
 import { NotificationRegistrationError } from "./src/notificationErrors";
+import { DateTimeField, TimeField } from "./src/NativeDateTimeField";
+import { OptionPicker } from "./src/OptionPicker";
 import {
   darkColors,
   lightColors,
@@ -362,6 +364,24 @@ export function RootNavigator() {
     setTheme,
     colors,
   };
+  const navigationButtons = (
+    <View style={[styles.navItems, isWide && styles.navItemsWide]}>
+      {navigationItems.map((item) => (
+        <Button
+          key={item.key}
+          label={t(item.key)}
+          onPress={() => router.navigate(item.path)}
+          active={pathname === item.path}
+          selected={pathname === item.path}
+          colors={colors}
+          variant="nav"
+          compact={isWide}
+          block={isWide}
+          grow={!isWide}
+        />
+      ))}
+    </View>
+  );
 
   return (
     <AppContext.Provider value={appContext}>
@@ -373,7 +393,7 @@ export function RootNavigator() {
           <View
             style={[
               styles.navigation,
-              isWide ? styles.sideNavigation : styles.topNavigation,
+              isWide ? styles.sideNavigation : styles.mobileHeader,
               {
                 backgroundColor: colors.surface,
                 borderColor: colors.border,
@@ -393,22 +413,7 @@ export function RootNavigator() {
                 )}
               </View>
             </View>
-            <View style={[styles.navItems, isWide && styles.navItemsWide]}>
-              {navigationItems.map((item) => (
-                <Button
-                  key={item.key}
-                  label={t(item.key)}
-                  onPress={() => router.navigate(item.path)}
-                  active={pathname === item.path}
-                  selected={pathname === item.path}
-                  colors={colors}
-                  variant="nav"
-                  compact
-                  block={isWide}
-                  grow={!isWide}
-                />
-              ))}
-            </View>
+            {isWide && navigationButtons}
           </View>
           <View
             style={[styles.content, { backgroundColor: colors.background }]}
@@ -420,6 +425,19 @@ export function RootNavigator() {
               }}
             />
           </View>
+          {!isWide && (
+            <View
+              style={[
+                styles.bottomNavigation,
+                {
+                  backgroundColor: colors.surface,
+                  borderColor: colors.border,
+                },
+              ]}
+            >
+              {navigationButtons}
+            </View>
+          )}
         </View>
       </SafeAreaView>
     </AppContext.Provider>
@@ -650,7 +668,7 @@ function SignIn({
 }) {
   const t = createTranslator(locale);
   const { width } = useWindowDimensions();
-  const isWide = width >= 760;
+  const isWide = width >= 768;
   const enabledProviders = new Set(
     (process.env.EXPO_PUBLIC_AUTH_PROVIDERS ?? "google,apple,azure,github")
       .split(",")
@@ -665,128 +683,134 @@ function SignIn({
     ] as const
   ).filter(([provider]) => enabledProviders.has(provider));
   return (
-    <SafeAreaView
-      style={[
-        styles.safe,
-        styles.authShell,
-        isWide && styles.authShellWide,
-        { backgroundColor: colors.background },
-      ]}
-    >
-      <View style={[styles.authLayout, isWide && styles.authLayoutWide]}>
-        <View style={[styles.authIntro, isWide && styles.authIntroWide]}>
-          <View style={styles.brandLockup}>
-            <BrandMark colors={colors} />
-            <Text style={[styles.brand, { color: colors.text }]}>
-              Cron Reminder
+    <SafeAreaView style={[styles.safe, { backgroundColor: colors.background }]}>
+      <ScrollView
+        contentContainerStyle={[
+          styles.authShell,
+          isWide && styles.authShellWide,
+        ]}
+      >
+        <View style={[styles.authLayout, isWide && styles.authLayoutWide]}>
+          <View style={[styles.authIntro, isWide && styles.authIntroWide]}>
+            <View style={styles.brandLockup}>
+              <BrandMark colors={colors} />
+              <Text style={[styles.brand, { color: colors.text }]}>
+                Cron Reminder
+              </Text>
+            </View>
+            <Text
+              accessibilityRole="header"
+              style={[
+                styles.authHeading,
+                isWide && styles.authHeadingWide,
+                { color: colors.text },
+              ]}
+            >
+              {copy(
+                locale,
+                "Make time-sensitive work hard to miss.",
+                "Torne tarefas com prazo difíceis de esquecer.",
+              )}
             </Text>
+            <Text style={[styles.authBody, { color: colors.muted }]}>
+              {copy(
+                locale,
+                "Create precise recurring reminders, keep them synced, and review what happened from any device.",
+                "Crie lembretes recorrentes precisos, mantenha tudo sincronizado e consulte o histórico em qualquer dispositivo.",
+              )}
+            </Text>
+            <View style={styles.authFeatureList}>
+              {[
+                copy(locale, "Flexible schedules", "Agendas flexíveis"),
+                copy(
+                  locale,
+                  "Reliable notifications",
+                  "Notificações confiáveis",
+                ),
+                copy(
+                  locale,
+                  "Private synchronized history",
+                  "Histórico privado e sincronizado",
+                ),
+              ].map((feature) => (
+                <View key={feature} style={styles.authFeature}>
+                  <View
+                    style={[
+                      styles.featureMark,
+                      { backgroundColor: colors.accent },
+                    ]}
+                  />
+                  <Text style={[styles.body, { color: colors.text }]}>
+                    {feature}
+                  </Text>
+                </View>
+              ))}
+            </View>
           </View>
-          <Text
-            accessibilityRole="header"
+          <View
             style={[
-              styles.authHeading,
-              isWide && styles.authHeadingWide,
-              { color: colors.text },
+              styles.authCard,
+              isWide && styles.authCardWide,
+              {
+                backgroundColor: colors.surfaceElevated,
+                borderColor: colors.border,
+              },
             ]}
           >
-            {copy(
-              locale,
-              "Make time-sensitive work hard to miss.",
-              "Torne tarefas com prazo difíceis de esquecer.",
-            )}
-          </Text>
-          <Text style={[styles.authBody, { color: colors.muted }]}>
-            {copy(
-              locale,
-              "Create precise recurring reminders, keep them synced, and review what happened from any device.",
-              "Crie lembretes recorrentes precisos, mantenha tudo sincronizado e consulte o histórico em qualquer dispositivo.",
-            )}
-          </Text>
-          <View style={styles.authFeatureList}>
-            {[
-              copy(locale, "Flexible schedules", "Agendas flexíveis"),
-              copy(locale, "Reliable notifications", "Notificações confiáveis"),
-              copy(
+            <Text style={[styles.authCardTitle, { color: colors.text }]}>
+              {t("signIn")}
+            </Text>
+            <Text style={[styles.body, { color: colors.muted }]}>
+              {copy(
                 locale,
-                "Private synchronized history",
-                "Histórico privado e sincronizado",
-              ),
-            ].map((feature) => (
-              <View key={feature} style={styles.authFeature}>
-                <View
-                  style={[
-                    styles.featureMark,
-                    { backgroundColor: colors.accent },
-                  ]}
-                />
-                <Text style={[styles.body, { color: colors.text }]}>
-                  {feature}
-                </Text>
-              </View>
-            ))}
-          </View>
-        </View>
-        <View
-          style={[
-            styles.authCard,
-            {
-              backgroundColor: colors.surfaceElevated,
-              borderColor: colors.border,
-            },
-          ]}
-        >
-          <Text style={[styles.authCardTitle, { color: colors.text }]}>
-            {t("signIn")}
-          </Text>
-          <Text style={[styles.body, { color: colors.muted }]}>
-            {copy(
-              locale,
-              "Choose a provider to access your reminders.",
-              "Escolha um provedor para acessar seus lembretes.",
-            )}
-          </Text>
-          {!configured && (
-            <Notice
-              tone="warning"
-              colors={colors}
-              text={copy(
-                locale,
-                "Authentication is not configured for this deployment.",
-                "A autenticação não está configurada para esta implantação.",
+                "Choose a provider to access your reminders.",
+                "Escolha um provedor para acessar seus lembretes.",
               )}
-            >
-              <Text style={[styles.caption, { color: colors.warning }]}>
-                Set EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY.
-              </Text>
-            </Notice>
-          )}
-          <View style={styles.authActions}>
-            {providers.map(([provider, label]) => (
-              <Button
-                key={provider}
-                label={copy(
-                  locale,
-                  `Continue with ${label}`,
-                  `Continuar com ${label}`,
-                )}
-                disabled={!configured}
-                onPress={() => void authentication?.signIn(provider)}
+            </Text>
+            {!configured && (
+              <Notice
+                tone="warning"
                 colors={colors}
-                variant={
-                  provider === providers[0]?.[0] ? "primary" : "secondary"
-                }
-              />
-            ))}
-          </View>
-          <Text style={[styles.caption, { color: colors.subtle }]}>
-            {copy(
-              locale,
-              "Your provider verifies your identity. Cron Reminder never receives your password.",
-              "Seu provedor verifica sua identidade. O Cron Reminder nunca recebe sua senha.",
+                text={copy(
+                  locale,
+                  "Authentication is not configured for this deployment.",
+                  "A autenticação não está configurada para esta implantação.",
+                )}
+              >
+                <Text style={[styles.caption, { color: colors.warning }]}>
+                  Set EXPO_PUBLIC_SUPABASE_URL and
+                  EXPO_PUBLIC_SUPABASE_ANON_KEY.
+                </Text>
+              </Notice>
             )}
-          </Text>
+            <View style={styles.authActions}>
+              {providers.map(([provider, label]) => (
+                <Button
+                  key={provider}
+                  label={copy(
+                    locale,
+                    `Continue with ${label}`,
+                    `Continuar com ${label}`,
+                  )}
+                  disabled={!configured}
+                  onPress={() => void authentication?.signIn(provider)}
+                  colors={colors}
+                  variant={
+                    provider === providers[0]?.[0] ? "primary" : "secondary"
+                  }
+                />
+              ))}
+            </View>
+            <Text style={[styles.caption, { color: colors.subtle }]}>
+              {copy(
+                locale,
+                "Your provider verifies your identity. Cron Reminder never receives your password.",
+                "Seu provedor verifica sua identidade. O Cron Reminder nunca recebe sua senha.",
+              )}
+            </Text>
+          </View>
         </View>
-      </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
@@ -933,7 +957,7 @@ function ReminderList({
           />
         }
       />
-      {syncMessage && (
+      {syncMessage ? (
         <Notice tone="warning" colors={colors} text={syncMessage}>
           <View style={styles.noticeActions}>
             <Button
@@ -946,7 +970,7 @@ function ReminderList({
             />
           </View>
         </Notice>
-      )}
+      ) : null}
       {activeSyncConflicts.length > 0 && (
         <Notice
           tone="warning"
@@ -1237,6 +1261,32 @@ function ReminderEditor({
   const deviceTimezone =
     Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
   const timezone = reminder?.timezone ?? deviceTimezone;
+  const frequencyOptions = [
+    { value: "once", label: t("once") },
+    {
+      value: "interval",
+      label: copy(locale, "Every few minutes", "A cada poucos minutos"),
+    },
+    { value: "daily", label: t("daily") },
+    { value: "weekdays", label: t("weekdays") },
+    { value: "monthly", label: t("monthly") },
+    { value: "yearly", label: t("yearly") },
+    {
+      value: "advanced",
+      label: copy(locale, "Custom schedule", "Agenda personalizada"),
+    },
+  ] as const;
+  const soundOptions = [
+    {
+      value: "default",
+      label: copy(locale, "Default sound", "Som padrão"),
+    },
+    { value: "silent", label: copy(locale, "Silent", "Silencioso") },
+    {
+      value: "vibrate",
+      label: copy(locale, "Vibrate only", "Somente vibrar"),
+    },
+  ] as const;
 
   function chooseKind(next: ScheduleEditorKind) {
     setScheduleEditor((current) => ({ ...current, kind: next }));
@@ -1275,13 +1325,14 @@ function ReminderEditor({
   const existingCronSchedule =
     reminder?.schedule.kind === "cron" ? reminder.schedule : undefined;
   const cronExpression = buildCronExpression(scheduleEditor);
+  const dailyTimes = normalizeDailyTimes(scheduleEditor.dailyTimes);
   const schedule: Schedule =
     kind === "once"
       ? { kind: "once", at: scheduleEditor.onceAt }
-      : kind === "multiple-daily"
+      : kind === "daily" && dailyTimes.length > 1
         ? {
             kind: "daily-times",
-            times: normalizeDailyTimes(scheduleEditor.dailyTimes),
+            times: dailyTimes,
           }
         : kind === "advanced"
           ? {
@@ -1416,253 +1467,224 @@ function ReminderEditor({
             title={t("schedule")}
             description={copy(
               locale,
-              "Choose when it repeats. Cron syntax is only shown in Advanced cron.",
-              "Escolha quando repetir. A sintaxe cron só aparece em Cron avançado.",
+              "Choose a frequency, then configure only the details it needs.",
+              "Escolha uma frequência e configure apenas os detalhes necessários.",
             )}
             colors={colors}
           >
             <View style={styles.formStack}>
-              <View style={styles.chips}>
-                {(
-                  [
-                    { value: "once", label: t("once") },
-                    { value: "interval", label: t("interval") },
-                    { value: "daily", label: t("daily") },
-                    {
-                      value: "multiple-daily",
-                      label: t("multipleDaily"),
-                    },
-                    { value: "weekdays", label: t("weekdays") },
-                    { value: "monthly", label: t("monthly") },
-                    { value: "yearly", label: t("yearly") },
-                    { value: "advanced", label: t("advanced") },
-                  ] as const
-                ).map((option) => (
-                  <Button
-                    key={option.value}
-                    label={option.label}
-                    onPress={() => chooseKind(option.value)}
-                    active={kind === option.value}
-                    selected={kind === option.value}
+              <OptionPicker
+                label={copy(locale, "Frequency", "Frequência")}
+                value={kind}
+                options={frequencyOptions}
+                onChange={(value) => chooseKind(value as ScheduleEditorKind)}
+                colors={colors}
+                cancelLabel={t("cancel")}
+                changeLabel={copy(locale, "Change", "Alterar")}
+                selectedLabel={copy(locale, "Selected", "Selecionado")}
+              />
+              <View
+                key={kind}
+                accessibilityLiveRegion="polite"
+                accessibilityLabel={copy(
+                  locale,
+                  `${frequencyOptions.find((option) => option.value === kind)?.label ?? ""} schedule settings`,
+                  `Configurações da agenda ${frequencyOptions.find((option) => option.value === kind)?.label ?? ""}`,
+                )}
+                style={styles.scheduleConfiguration}
+              >
+                {kind === "once" ? (
+                  <DateTimeField
+                    label={copy(locale, "Date and time", "Data e hora")}
+                    value={scheduleEditor.onceAt}
+                    onChange={(onceAt) => updateScheduleEditor({ onceAt })}
                     colors={colors}
-                    variant="chip"
-                    compact
+                    locale={locale}
+                    hint={timezone}
                   />
-                ))}
-              </View>
-              {kind === "once" ? (
-                <Field
-                  label={copy(
-                    locale,
-                    "Date and time (ISO)",
-                    "Data e hora (ISO)",
-                  )}
-                  value={scheduleEditor.onceAt}
-                  onChangeText={(onceAt) => updateScheduleEditor({ onceAt })}
-                  colors={colors}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                />
-              ) : kind === "multiple-daily" ? (
-                <View style={styles.formStack}>
-                  <Text style={[styles.body, { color: colors.muted }]}>
-                    {copy(
-                      locale,
-                      "Add two or more times. Each time creates an occurrence for the same reminder.",
-                      "Adicione dois ou mais horários. Cada horário cria uma ocorrência do mesmo lembrete.",
-                    )}
-                  </Text>
-                  {scheduleEditor.dailyTimes.map((time, index) => (
-                    <View key={index} style={styles.dailyTimeRow}>
-                      <View style={styles.dailyTimeField}>
-                        <Field
-                          label={copy(
-                            locale,
-                            `Time ${index + 1} (24-hour)`,
-                            `Horário ${index + 1} (24 horas)`,
-                          )}
-                          value={time}
-                          onChangeText={(value) =>
-                            updateDailyTime(index, value)
-                          }
-                          colors={colors}
-                          placeholder="09:00"
-                        />
-                      </View>
-                      {scheduleEditor.dailyTimes.length > 2 && (
-                        <Button
-                          label={copy(locale, "Remove", "Remover")}
-                          accessibilityLabel={copy(
-                            locale,
-                            `Remove time ${index + 1}`,
-                            `Remover horário ${index + 1}`,
-                          )}
-                          onPress={() => removeDailyTime(index)}
-                          colors={colors}
-                          variant="danger"
-                          compact
-                        />
-                      )}
-                    </View>
-                  ))}
-                  <View style={styles.scheduleAddTime}>
-                    <Button
-                      label={copy(
-                        locale,
-                        "Add another time",
-                        "Adicionar outro horário",
-                      )}
-                      onPress={addDailyTime}
-                      colors={colors}
-                      variant="secondary"
-                      compact
-                      disabled={
-                        scheduleEditor.dailyTimes.length >= MAX_DAILY_TIMES
-                      }
-                    />
-                    <Text style={[styles.caption, { color: colors.subtle }]}>
+                ) : kind === "daily" ? (
+                  <View style={styles.formStack}>
+                    <Text style={[styles.body, { color: colors.muted }]}>
                       {copy(
                         locale,
-                        `Up to ${MAX_DAILY_TIMES} times. Uses the ${timezone} timezone.`,
-                        `Até ${MAX_DAILY_TIMES} horários. Usa o fuso horário ${timezone}.`,
+                        "Choose one or more times for this daily reminder.",
+                        "Escolha um ou mais horários para este lembrete diário.",
                       )}
                     </Text>
+                    {scheduleEditor.dailyTimes.map((time, index) => (
+                      <View key={index} style={styles.dailyTimeRow}>
+                        <View style={styles.dailyTimeField}>
+                          <TimeField
+                            label={copy(
+                              locale,
+                              `Time ${index + 1}`,
+                              `Horário ${index + 1}`,
+                            )}
+                            value={time}
+                            onChange={(value) => updateDailyTime(index, value)}
+                            colors={colors}
+                            locale={locale}
+                          />
+                        </View>
+                        {index > 0 ? (
+                          <Button
+                            label={copy(locale, "Remove", "Remover")}
+                            accessibilityLabel={copy(
+                              locale,
+                              `Remove time ${index + 1}`,
+                              `Remover horário ${index + 1}`,
+                            )}
+                            onPress={() => removeDailyTime(index)}
+                            colors={colors}
+                            variant="danger"
+                            narrow
+                          />
+                        ) : null}
+                      </View>
+                    ))}
+                    <View style={styles.scheduleAddTime}>
+                      <Button
+                        label={copy(
+                          locale,
+                          "Add another time",
+                          "Adicionar outro horário",
+                        )}
+                        onPress={addDailyTime}
+                        colors={colors}
+                        variant="secondary"
+                        compact
+                        disabled={
+                          scheduleEditor.dailyTimes.length >= MAX_DAILY_TIMES
+                        }
+                      />
+                      <Text style={[styles.caption, { color: colors.subtle }]}>
+                        {copy(
+                          locale,
+                          `Up to ${MAX_DAILY_TIMES} times. Uses the ${timezone} timezone.`,
+                          `Até ${MAX_DAILY_TIMES} horários. Usa o fuso horário ${timezone}.`,
+                        )}
+                      </Text>
+                    </View>
                   </View>
-                </View>
-              ) : kind === "advanced" ? (
-                <Field
-                  label={t("advanced")}
-                  value={scheduleEditor.advancedCron}
-                  onChangeText={(advancedCron) =>
-                    updateScheduleEditor({ advancedCron })
-                  }
-                  colors={colors}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  hint={copy(
-                    locale,
-                    "Five fields: minute, hour, day, month, weekday.",
-                    "Cinco campos: minuto, hora, dia, mês e dia da semana.",
-                  )}
-                />
-              ) : (
-                <View style={styles.formStack}>
-                  {kind === "interval" && (
-                    <Field
-                      label={copy(
-                        locale,
-                        "Repeat every (minutes)",
-                        "Repetir a cada (minutos)",
-                      )}
-                      value={scheduleEditor.intervalMinutes}
-                      onChangeText={(intervalMinutes) =>
-                        updateScheduleEditor({ intervalMinutes })
-                      }
-                      colors={colors}
-                      keyboardType="number-pad"
-                      hint={copy(
-                        locale,
-                        "Enter a value from 1 to 59.",
-                        "Insira um valor de 1 a 59.",
-                      )}
-                    />
-                  )}
-                  {(kind === "daily" || kind === "weekdays") && (
-                    <Field
-                      label={copy(
-                        locale,
-                        "Time (24-hour)",
-                        "Horário (24 horas)",
-                      )}
-                      value={scheduleEditor.time}
-                      onChangeText={(time) => updateScheduleEditor({ time })}
-                      colors={colors}
-                      placeholder="09:00"
-                      hint={copy(
-                        locale,
-                        `Uses the ${timezone} timezone.`,
-                        `Usa o fuso horário ${timezone}.`,
-                      )}
-                    />
-                  )}
-                  {kind === "monthly" && (
-                    <View style={styles.scheduleFieldsRow}>
-                      <View style={styles.scheduleField}>
-                        <Field
-                          label={copy(locale, "Day of month", "Dia do mês")}
-                          value={scheduleEditor.monthDay}
-                          onChangeText={(monthDay) =>
-                            updateScheduleEditor({ monthDay })
-                          }
-                          colors={colors}
-                          keyboardType="number-pad"
-                          hint={copy(locale, "1 to 31", "1 a 31")}
-                        />
+                ) : kind === "advanced" ? (
+                  <Field
+                    label={copy(locale, "Advanced cron", "Cron avançado")}
+                    value={scheduleEditor.advancedCron}
+                    onChangeText={(advancedCron) =>
+                      updateScheduleEditor({ advancedCron })
+                    }
+                    colors={colors}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    hint={copy(
+                      locale,
+                      "Five fields: minute, hour, day, month, weekday.",
+                      "Cinco campos: minuto, hora, dia, mês e dia da semana.",
+                    )}
+                  />
+                ) : (
+                  <View style={styles.formStack}>
+                    {kind === "interval" && (
+                      <Field
+                        label={copy(
+                          locale,
+                          "Repeat every (minutes)",
+                          "Repetir a cada (minutos)",
+                        )}
+                        value={scheduleEditor.intervalMinutes}
+                        onChangeText={(intervalMinutes) =>
+                          updateScheduleEditor({ intervalMinutes })
+                        }
+                        colors={colors}
+                        keyboardType="number-pad"
+                        hint={copy(
+                          locale,
+                          "Enter a value from 1 to 59.",
+                          "Insira um valor de 1 a 59.",
+                        )}
+                      />
+                    )}
+                    {kind === "weekdays" && (
+                      <TimeField
+                        label={copy(locale, "Time", "Horário")}
+                        value={scheduleEditor.time}
+                        onChange={(time) => updateScheduleEditor({ time })}
+                        colors={colors}
+                        locale={locale}
+                        hint={copy(
+                          locale,
+                          `Uses the ${timezone} timezone.`,
+                          `Usa o fuso horário ${timezone}.`,
+                        )}
+                      />
+                    )}
+                    {kind === "monthly" && (
+                      <View style={styles.scheduleFieldsRow}>
+                        <View style={styles.scheduleField}>
+                          <Field
+                            label={copy(locale, "Day of month", "Dia do mês")}
+                            value={scheduleEditor.monthDay}
+                            onChangeText={(monthDay) =>
+                              updateScheduleEditor({ monthDay })
+                            }
+                            colors={colors}
+                            keyboardType="number-pad"
+                            hint={copy(locale, "1 to 31", "1 a 31")}
+                          />
+                        </View>
+                        <View style={styles.scheduleField}>
+                          <TimeField
+                            label={copy(locale, "Time", "Horário")}
+                            value={scheduleEditor.time}
+                            onChange={(time) => updateScheduleEditor({ time })}
+                            colors={colors}
+                            locale={locale}
+                            hint={timezone}
+                          />
+                        </View>
                       </View>
-                      <View style={styles.scheduleField}>
-                        <Field
-                          label={copy(
-                            locale,
-                            "Time (24-hour)",
-                            "Horário (24 horas)",
-                          )}
-                          value={scheduleEditor.time}
-                          onChangeText={(time) =>
-                            updateScheduleEditor({ time })
-                          }
-                          colors={colors}
-                          placeholder="09:00"
-                          hint={timezone}
-                        />
+                    )}
+                    {kind === "yearly" && (
+                      <View style={styles.scheduleFieldsRow}>
+                        <View style={styles.scheduleField}>
+                          <Field
+                            label={copy(locale, "Month", "Mês")}
+                            value={scheduleEditor.yearMonth}
+                            onChangeText={(yearMonth) =>
+                              updateScheduleEditor({ yearMonth })
+                            }
+                            colors={colors}
+                            keyboardType="number-pad"
+                            hint={copy(locale, "1 to 12", "1 a 12")}
+                          />
+                        </View>
+                        <View style={styles.scheduleField}>
+                          <Field
+                            label={copy(locale, "Day", "Dia")}
+                            value={scheduleEditor.yearDay}
+                            onChangeText={(yearDay) =>
+                              updateScheduleEditor({ yearDay })
+                            }
+                            colors={colors}
+                            keyboardType="number-pad"
+                            hint={copy(locale, "1 to 31", "1 a 31")}
+                          />
+                        </View>
+                        <View style={styles.scheduleField}>
+                          <TimeField
+                            label={copy(locale, "Time", "Horário")}
+                            value={scheduleEditor.time}
+                            onChange={(time) => updateScheduleEditor({ time })}
+                            colors={colors}
+                            locale={locale}
+                            hint={timezone}
+                          />
+                        </View>
                       </View>
-                    </View>
-                  )}
-                  {kind === "yearly" && (
-                    <View style={styles.scheduleFieldsRow}>
-                      <View style={styles.scheduleField}>
-                        <Field
-                          label={copy(locale, "Month", "Mês")}
-                          value={scheduleEditor.yearMonth}
-                          onChangeText={(yearMonth) =>
-                            updateScheduleEditor({ yearMonth })
-                          }
-                          colors={colors}
-                          keyboardType="number-pad"
-                          hint={copy(locale, "1 to 12", "1 a 12")}
-                        />
-                      </View>
-                      <View style={styles.scheduleField}>
-                        <Field
-                          label={copy(locale, "Day", "Dia")}
-                          value={scheduleEditor.yearDay}
-                          onChangeText={(yearDay) =>
-                            updateScheduleEditor({ yearDay })
-                          }
-                          colors={colors}
-                          keyboardType="number-pad"
-                          hint={copy(locale, "1 to 31", "1 a 31")}
-                        />
-                      </View>
-                      <View style={styles.scheduleField}>
-                        <Field
-                          label={copy(
-                            locale,
-                            "Time (24-hour)",
-                            "Horário (24 horas)",
-                          )}
-                          value={scheduleEditor.time}
-                          onChangeText={(time) =>
-                            updateScheduleEditor({ time })
-                          }
-                          colors={colors}
-                          placeholder="09:00"
-                          hint={timezone}
-                        />
-                      </View>
-                    </View>
-                  )}
-                </View>
-              )}
+                    )}
+                  </View>
+                )}
+              </View>
               {!validation.valid && (
                 <Notice
                   tone="danger"
@@ -1671,13 +1693,13 @@ function ReminderEditor({
                     locale,
                     kind === "advanced"
                       ? "Enter a valid five-field cron expression."
-                      : kind === "multiple-daily"
-                        ? `Add 2 to ${MAX_DAILY_TIMES} unique times using HH:MM.`
+                      : kind === "daily"
+                        ? `Add 1 to ${MAX_DAILY_TIMES} unique times.`
                         : "Check the schedule values. Times use HH:MM.",
                     kind === "advanced"
                       ? "Insira uma expressão cron válida de cinco campos."
-                      : kind === "multiple-daily"
-                        ? `Adicione de 2 a ${MAX_DAILY_TIMES} horários únicos usando HH:MM.`
+                      : kind === "daily"
+                        ? `Adicione de 1 a ${MAX_DAILY_TIMES} horários únicos.`
                         : "Revise os valores da agenda. Use HH:MM para horários.",
                   )}
                 />
@@ -1728,31 +1750,67 @@ function ReminderEditor({
             )}
             colors={colors}
           >
-            <View style={styles.chips}>
-              {(["default", "silent", "vibrate"] as const).map((mode) => (
-                <Button
-                  key={mode}
-                  label={mode}
-                  onPress={() => setSound({ mode })}
-                  active={sound.mode === mode}
-                  selected={sound.mode === mode}
-                  colors={colors}
-                  variant="chip"
-                  compact
-                />
-              ))}
-              <Button
-                label={copy(locale, "Preview sound", "Ouvir prévia")}
-                onPress={() => void previewSound(sound)}
+            <View style={styles.formStack}>
+              <OptionPicker
+                label={copy(locale, "Alert style", "Estilo do alerta")}
+                value={sound.mode}
+                options={soundOptions}
+                onChange={(value) =>
+                  setSound({ mode: value as ReminderSound["mode"] })
+                }
                 colors={colors}
-                variant="secondary"
-                compact
+                cancelLabel={t("cancel")}
+                changeLabel={copy(locale, "Change", "Alterar")}
+                selectedLabel={copy(locale, "Selected", "Selecionado")}
               />
+              <View
+                key={sound.mode}
+                accessibilityLiveRegion="polite"
+                accessibilityLabel={copy(
+                  locale,
+                  `${soundOptions.find((option) => option.value === sound.mode)?.label ?? ""} alert settings`,
+                  `Configurações do alerta ${soundOptions.find((option) => option.value === sound.mode)?.label ?? ""}`,
+                )}
+                style={styles.soundConfiguration}
+              >
+                <Text style={[styles.body, { color: colors.muted }]}>
+                  {sound.mode === "silent"
+                    ? copy(
+                        locale,
+                        "Notifications appear without sound or vibration.",
+                        "As notificações aparecem sem som ou vibração.",
+                      )
+                    : sound.mode === "vibrate"
+                      ? copy(
+                          locale,
+                          "Uses vibration when the device supports it.",
+                          "Usa vibração quando o dispositivo oferece suporte.",
+                        )
+                      : copy(
+                          locale,
+                          "Uses the device's standard notification sound.",
+                          "Usa o som de notificação padrão do dispositivo.",
+                        )}
+                </Text>
+                {sound.mode !== "silent" ? (
+                  <Button
+                    label={
+                      sound.mode === "vibrate"
+                        ? copy(locale, "Preview vibration", "Testar vibração")
+                        : copy(locale, "Preview sound", "Ouvir prévia")
+                    }
+                    onPress={() => void previewSound(sound)}
+                    colors={colors}
+                    variant="secondary"
+                    compact
+                  />
+                ) : null}
+              </View>
             </View>
           </SectionCard>
         </View>
       </View>
-      {error && <Notice tone="danger" colors={colors} text={error} />}
+      {error ? <Notice tone="danger" colors={colors} text={error} /> : null}
       <View
         style={[
           styles.editorActions,
@@ -1952,7 +2010,7 @@ function Settings({
         colors={colors}
       />
       <View style={[styles.screenGrid, isWide && styles.screenGridWide]}>
-        <View style={styles.screenColumn}>
+        <View style={[styles.screenColumn, isWide && styles.screenColumnWide]}>
           <SectionCard
             title={copy(locale, "Preferences", "Preferências")}
             description={copy(
@@ -2038,17 +2096,17 @@ function Settings({
                 loading={notificationStatus === "registering"}
                 disabled={notificationStatus === "registering"}
               />
-              {notificationMessageKey && (
+              {notificationMessageKey ? (
                 <Notice
                   tone={notificationStatus === "error" ? "warning" : "success"}
                   colors={colors}
                   text={t(notificationMessageKey)}
                 />
-              )}
+              ) : null}
             </View>
           </SectionCard>
         </View>
-        <View style={styles.screenColumn}>
+        <View style={[styles.screenColumn, isWide && styles.screenColumnWide]}>
           <SectionCard
             title={copy(locale, "Backup and restore", "Backup e restauração")}
             description={copy(
@@ -2088,9 +2146,9 @@ function Settings({
                 variant="primary"
                 disabled={!backupText.trim()}
               />
-              {backupMessage && (
+              {backupMessage ? (
                 <Notice tone="neutral" colors={colors} text={backupMessage} />
-              )}
+              ) : null}
               {importConflicts.map((conflict) => (
                 <View
                   key={conflict.id}
@@ -2259,9 +2317,9 @@ function Field({
         ]}
         {...props}
       />
-      {hint && (
+      {hint ? (
         <Text style={[styles.fieldHint, { color: colors.subtle }]}>{hint}</Text>
-      )}
+      ) : null}
     </View>
   );
 }
@@ -2278,6 +2336,7 @@ function Button({
   selected = false,
   danger,
   compact,
+  narrow,
   disabled,
   loading = false,
   variant,
@@ -2292,6 +2351,7 @@ function Button({
   selected?: boolean;
   danger?: boolean;
   compact?: boolean;
+  narrow?: boolean;
   disabled?: boolean;
   loading?: boolean;
   variant?: ButtonVariant;
@@ -2356,6 +2416,7 @@ function Button({
       style={({ pressed }) => [
         styles.button,
         compact && styles.compactButton,
+        narrow && styles.narrowButton,
         block && styles.blockButton,
         grow && styles.growButton,
         {
@@ -2632,9 +2693,15 @@ const styles = StyleSheet.create({
     borderRightWidth: 1,
     paddingVertical: space.xl,
   },
-  topNavigation: {
+  mobileHeader: {
     borderBottomWidth: 1,
     paddingVertical: space.md,
+  },
+  bottomNavigation: {
+    borderTopWidth: 1,
+    paddingHorizontal: space.lg,
+    paddingVertical: space.sm,
+    zIndex: 2,
   },
   brandLockup: {
     minWidth: 0,
@@ -2704,10 +2771,10 @@ const styles = StyleSheet.create({
     alignItems: "flex-start",
   },
   screenColumn: {
-    flex: 1,
     minWidth: 0,
     gap: space.xl,
   },
+  screenColumnWide: { flex: 1 },
   editorDetailsColumn: { flex: 0.9 },
   editorScheduleColumn: { flex: 1.1 },
   listHeader: { gap: space.xl, marginBottom: space.xl },
@@ -2787,6 +2854,8 @@ const styles = StyleSheet.create({
   sectionCardHeader: { maxWidth: size.readable, gap: space.xs },
   sectionDivider: { width: "100%", height: 1 },
   formStack: { gap: space.lg },
+  scheduleConfiguration: { gap: space.lg },
+  soundConfiguration: { alignItems: "flex-start", gap: space.md },
   field: { minWidth: 0 },
   fieldHint: {
     marginTop: space.xs,
@@ -2853,11 +2922,12 @@ const styles = StyleSheet.create({
     minHeight: size.controlSm,
     paddingHorizontal: space.md,
   },
+  narrowButton: { paddingHorizontal: space.sm },
   blockButton: {
     width: "100%",
     alignItems: "flex-start",
   },
-  growButton: { flexGrow: 1 },
+  growButton: { flex: 1 },
   buttonText: {
     fontSize: type.label,
     lineHeight: type.captionLine,
@@ -3028,28 +3098,31 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
   },
   authShell: {
-    flex: 1,
+    flexGrow: 1,
     justifyContent: "flex-start",
-    padding: space.lg,
+    paddingHorizontal: space.xl,
+    paddingVertical: space["2xl"],
   },
   authShellWide: { justifyContent: "center" },
   authLayout: {
     width: "100%",
     maxWidth: 1080,
     alignSelf: "center",
+    alignItems: "center",
     gap: space["3xl"],
   },
   authLayoutWide: {
     flexDirection: "row",
     alignItems: "center",
-    gap: space["6xl"],
+    gap: space["4xl"],
   },
   authIntro: {
-    flex: 1,
+    width: "100%",
+    maxWidth: size.readable,
     minWidth: 0,
     gap: space.xl,
   },
-  authIntroWide: { paddingRight: space.xl },
+  authIntroWide: { flex: 1 },
   authHeading: {
     maxWidth: 620,
     fontSize: type.display,
@@ -3081,11 +3154,13 @@ const styles = StyleSheet.create({
   authCard: {
     width: "100%",
     maxWidth: 420,
+    alignSelf: "center",
     borderWidth: 1,
     borderRadius: radius.xl,
     padding: space["2xl"],
     gap: space.lg,
   },
+  authCardWide: { width: "42%" },
   authCardTitle: {
     fontSize: type.heading,
     lineHeight: type.headingLine,

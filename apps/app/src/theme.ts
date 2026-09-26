@@ -107,6 +107,7 @@ export const size = {
 } as const;
 
 export const type = {
+  family: "system-ui",
   displayLarge: 48,
   display: 40,
   heading: 28,
