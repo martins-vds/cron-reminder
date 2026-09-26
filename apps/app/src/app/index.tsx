@@ -1,3 +1,3 @@
-import { RemindersRoute } from "../../App";
+import { AgendaRoute } from "../../App";
 
-export default RemindersRoute;
+export default AgendaRoute;

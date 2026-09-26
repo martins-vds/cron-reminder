@@ -87,6 +87,13 @@ import {
   type AppColors as Colors,
 } from "./src/theme";
 import {
+  buildAgendaItems,
+  groupAgendaItems,
+  type AgendaGroupKey,
+  type AgendaItem,
+  type StoredAgendaOccurrence,
+} from "./src/agenda";
+import {
   buildCronExpression,
   createScheduleEditorState,
   hasValidScheduleEditorValues,
@@ -119,7 +126,8 @@ interface AppContextValue {
 
 const AppContext = createContext<AppContextValue | null>(null);
 const navigationItems = [
-  { key: "reminders", path: "/" },
+  { key: "agenda", path: "/" },
+  { key: "reminders", path: "/reminders" },
   { key: "history", path: "/history" },
   { key: "settings", path: "/settings" },
 ] as const;
@@ -260,6 +268,7 @@ export function RootNavigator() {
             data.action,
             ownerId,
           );
+          setSyncRevision((revision) => revision + 1);
           queued = true;
         }
         if (queued && typeof data.cacheKey === "string") {
@@ -317,8 +326,10 @@ export function RootNavigator() {
           notificationOwnerId === ownerId &&
           typeof occurrenceId === "string" &&
           (action === "dismiss" || action === "snooze")
-        )
+        ) {
           await submitNotificationAction(occurrenceId, action, ownerId);
+          setSyncRevision((revision) => revision + 1);
+        }
       };
       void Notifications.getLastNotificationResponseAsync().then((response) => {
         if (cancelled || !response) return;
@@ -458,6 +469,18 @@ export function RemindersRoute() {
   );
 }
 
+export function AgendaRoute() {
+  const { ownerId, syncRevision, locale, colors } = useAppContext();
+  return (
+    <AgendaScreen
+      ownerId={ownerId}
+      syncRevision={syncRevision}
+      locale={locale}
+      colors={colors}
+    />
+  );
+}
+
 export function HistoryRoute() {
   const { ownerId, locale, colors } = useAppContext();
   return <HistoryScreen ownerId={ownerId} locale={locale} colors={colors} />;
@@ -483,6 +506,358 @@ interface HistoryRow {
   reminder_id: string;
   event_type: string;
   occurred_at: string;
+}
+
+const agendaGroupOrder: readonly AgendaGroupKey[] = [
+  "overdue",
+  "today",
+  "tomorrow",
+  "later",
+];
+
+function AgendaScreen({
+  ownerId,
+  syncRevision,
+  locale,
+  colors,
+}: {
+  ownerId: string;
+  syncRevision: number;
+  locale: Locale;
+  colors: Colors;
+}) {
+  const t = createTranslator(locale);
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  const [items, setItems] = useState<AgendaItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [actionKey, setActionKey] = useState("");
+  const [error, setError] = useState("");
+
+  const loadAgenda = useCallback(async (): Promise<boolean> => {
+    setLoading(true);
+    try {
+      const now = new Date();
+      const reminders = await localRepository.list(ownerId);
+      let occurrences: StoredAgendaOccurrence[] = [];
+      if (supabase) {
+        const cutoff = new Date(now.getTime() - 30 * 86_400_000).toISOString();
+        const { data, error: occurrenceError } = await supabase
+          .from("occurrences")
+          .select("id,reminder_id,scheduled_at,status,acted_at,snoozed_until")
+          .eq("owner_id", ownerId)
+          .gte("scheduled_at", cutoff)
+          .in("status", [
+            "scheduled",
+            "triggered",
+            "delivering",
+            "postponed",
+            "missed",
+            "delivery-failed",
+          ])
+          .order("scheduled_at", { ascending: true });
+        if (occurrenceError) throw occurrenceError;
+        occurrences = (data ?? []) as StoredAgendaOccurrence[];
+      }
+      setItems(buildAgendaItems(reminders, occurrences, now));
+      setError("");
+      return true;
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : copy(
+              locale,
+              "The agenda could not be loaded.",
+              "Não foi possível carregar a agenda.",
+            ),
+      );
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  }, [locale, ownerId]);
+
+  useEffect(() => {
+    void loadAgenda();
+  }, [loadAgenda, syncRevision]);
+
+  async function refreshAgenda() {
+    setRefreshing(true);
+    try {
+      let syncError = "";
+      try {
+        await synchronizeReminders(ownerId);
+      } catch {
+        syncError = await getSynchronizationFailureMessage(locale);
+      }
+      await loadAgenda();
+      if (syncError) setError(syncError);
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  async function actOnOccurrence(
+    item: AgendaItem,
+    action: "dismiss" | "snooze",
+  ) {
+    const pendingKey = `${item.id}:${action}`;
+    setActionKey(pendingKey);
+    setError("");
+    try {
+      await submitNotificationAction(item.id, action, ownerId);
+      if (action === "dismiss") {
+        setItems((current) =>
+          current.filter((candidate) => candidate.id !== item.id),
+        );
+      } else {
+        setItems((current) =>
+          current.map((candidate) =>
+            candidate.id === item.id
+              ? {
+                  ...candidate,
+                  status: "postponed",
+                  actionable: false,
+                  effectiveAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+                }
+              : candidate,
+          ),
+        );
+      }
+      await loadAgenda();
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : copy(
+              locale,
+              "The occurrence action could not be completed.",
+              "Não foi possível concluir a ação da ocorrência.",
+            ),
+      );
+    } finally {
+      setActionKey("");
+    }
+  }
+
+  const now = new Date();
+  const groups = groupAgendaItems(items, now, timezone);
+  const visibleGroups = agendaGroupOrder.filter(
+    (group) => groups[group].length > 0,
+  );
+
+  return (
+    <ScrollView contentContainerStyle={styles.page}>
+      <PageHeader
+        eyebrow={copy(locale, "Daily command center", "Central do dia")}
+        title={copy(locale, "Today and upcoming", "Hoje e próximos")}
+        description={copy(
+          locale,
+          "See what needs attention now and what is coming next across every active reminder.",
+          "Veja o que precisa de atenção agora e o que vem a seguir em todos os lembretes ativos.",
+        )}
+        colors={colors}
+        action={
+          <Button
+            label={t("refresh")}
+            accessibilityLabel={copy(
+              locale,
+              "Synchronize and refresh agenda",
+              "Sincronizar e atualizar agenda",
+            )}
+            onPress={() => void refreshAgenda()}
+            colors={colors}
+            variant="secondary"
+            loading={refreshing}
+          />
+        }
+      />
+      {Boolean(error) && (
+        <Notice tone="warning" colors={colors} text={error}>
+          <View style={styles.noticeActions}>
+            <Button
+              label={t("refresh")}
+              onPress={() => void refreshAgenda()}
+              colors={colors}
+              variant="secondary"
+              compact
+              loading={refreshing}
+            />
+          </View>
+        </Notice>
+      )}
+      {loading && items.length === 0 ? (
+        <View style={styles.agendaLoading}>
+          <ActivityIndicator
+            color={colors.accent}
+            accessibilityLabel={copy(
+              locale,
+              "Loading agenda",
+              "Carregando agenda",
+            )}
+          />
+        </View>
+      ) : visibleGroups.length === 0 ? (
+        <EmptyState
+          title={copy(
+            locale,
+            "Nothing needs attention",
+            "Nada precisa de atenção",
+          )}
+          message={copy(
+            locale,
+            "Create or enable a reminder to see its next occurrence here.",
+            "Crie ou ative um lembrete para ver a próxima ocorrência aqui.",
+          )}
+          colors={colors}
+          action={
+            <Button
+              label={t("addReminder")}
+              onPress={() => router.navigate("/reminders")}
+              colors={colors}
+              variant="primary"
+            />
+          }
+        />
+      ) : (
+        visibleGroups.map((group) => (
+          <View key={group} style={styles.agendaGroup}>
+            <View style={styles.sectionHeadingRow}>
+              <Text style={[styles.agendaGroupTitle, { color: colors.text }]}>
+                {agendaGroupLabel(group, locale)}
+              </Text>
+              <Text style={[styles.caption, { color: colors.subtle }]}>
+                {groups[group].length}
+              </Text>
+            </View>
+            <View style={styles.agendaList}>
+              {groups[group].map((item) => (
+                <View
+                  key={item.id}
+                  style={[
+                    styles.agendaCard,
+                    {
+                      backgroundColor: colors.surface,
+                      borderColor:
+                        group === "overdue" ? colors.warning : colors.border,
+                    },
+                  ]}
+                >
+                  <View style={styles.agendaCardHeader}>
+                    <View style={styles.flex}>
+                      <Text style={[styles.cardTitle, { color: colors.text }]}>
+                        {item.reminderTitle}
+                      </Text>
+                      <Text style={[styles.body, { color: colors.muted }]}>
+                        {agendaItemDescription(item, locale)}
+                      </Text>
+                    </View>
+                    <StatusBadge
+                      label={agendaStatusLabel(item.status, locale)}
+                      tone={
+                        item.status === "missed"
+                          ? "danger"
+                          : item.status === "upcoming"
+                            ? "neutral"
+                            : "warning"
+                      }
+                      colors={colors}
+                    />
+                  </View>
+                  {item.actionable && (
+                    <View style={styles.actions}>
+                      <Button
+                        label={t("dismiss")}
+                        accessibilityLabel={copy(
+                          locale,
+                          `Dismiss ${item.reminderTitle}`,
+                          `Dispensar ${item.reminderTitle}`,
+                        )}
+                        onPress={() => void actOnOccurrence(item, "dismiss")}
+                        colors={colors}
+                        variant="secondary"
+                        compact
+                        loading={actionKey === `${item.id}:dismiss`}
+                        disabled={
+                          Boolean(actionKey) &&
+                          actionKey !== `${item.id}:dismiss`
+                        }
+                      />
+                      <Button
+                        label={`${t("snooze")} 10 min`}
+                        accessibilityLabel={copy(
+                          locale,
+                          `Snooze ${item.reminderTitle} for 10 minutes`,
+                          `Adiar ${item.reminderTitle} por 10 minutos`,
+                        )}
+                        onPress={() => void actOnOccurrence(item, "snooze")}
+                        colors={colors}
+                        variant="primary"
+                        compact
+                        loading={actionKey === `${item.id}:snooze`}
+                        disabled={
+                          Boolean(actionKey) &&
+                          actionKey !== `${item.id}:snooze`
+                        }
+                      />
+                    </View>
+                  )}
+                </View>
+              ))}
+            </View>
+          </View>
+        ))
+      )}
+    </ScrollView>
+  );
+}
+
+function agendaGroupLabel(group: AgendaGroupKey, locale: Locale): string {
+  const labels: Record<AgendaGroupKey, readonly [string, string]> = {
+    overdue: ["Overdue", "Atrasados"],
+    today: ["Today", "Hoje"],
+    tomorrow: ["Tomorrow", "Amanhã"],
+    later: ["Later", "Mais tarde"],
+  };
+  const [english, portuguese] = labels[group];
+  return copy(locale, english, portuguese);
+}
+
+function agendaStatusLabel(
+  status: AgendaItem["status"],
+  locale: Locale,
+): string {
+  const labels: Record<AgendaItem["status"], readonly [string, string]> = {
+    due: ["Due", "Pendente"],
+    missed: ["Missed", "Perdido"],
+    postponed: ["Postponed", "Adiado"],
+    upcoming: ["Upcoming", "Próximo"],
+  };
+  const [english, portuguese] = labels[status];
+  return copy(locale, english, portuguese);
+}
+
+function agendaItemDescription(item: AgendaItem, locale: Locale): string {
+  const formatted = new Intl.DateTimeFormat(locale, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(item.effectiveAt));
+  if (item.status === "postponed")
+    return copy(
+      locale,
+      `Postponed to ${formatted}`,
+      `Adiado para ${formatted}`,
+    );
+  if (item.status === "missed")
+    return copy(locale, `Missed at ${formatted}`, `Perdido em ${formatted}`);
+  if (item.status === "due")
+    return copy(locale, `Due at ${formatted}`, `Pendente desde ${formatted}`);
+  return copy(
+    locale,
+    `Scheduled for ${formatted}`,
+    `Agendado para ${formatted}`,
+  );
 }
 
 interface HistoryCursor {
@@ -1164,6 +1539,7 @@ function ReminderList({
             </View>
             {reminder.status !== "archived" && (
               <Switch
+                style={styles.reminderSwitch}
                 accessibilityLabel={`${reminder.title}: ${t("enabled")}`}
                 value={reminder.status === "active"}
                 trackColor={{
@@ -2574,7 +2950,7 @@ function StatusBadge({
   colors,
 }: {
   label: string;
-  tone: "success" | "warning" | "neutral";
+  tone: "success" | "warning" | "danger" | "neutral";
   colors: Colors;
 }) {
   const textColor =
@@ -2582,13 +2958,17 @@ function StatusBadge({
       ? colors.success
       : tone === "warning"
         ? colors.warning
-        : colors.muted;
+        : tone === "danger"
+          ? colors.danger
+          : colors.muted;
   const backgroundColor =
     tone === "success"
       ? colors.successSoft
       : tone === "warning"
         ? colors.warningSoft
-        : colors.surfaceMuted;
+        : tone === "danger"
+          ? colors.dangerSoft
+          : colors.surfaceMuted;
   return (
     <View style={[styles.badge, { backgroundColor }]}>
       <View style={[styles.badgeDot, { backgroundColor: textColor }]} />
@@ -2954,6 +3334,7 @@ const styles = StyleSheet.create({
     padding: space.xl,
     gap: space.lg,
   },
+  reminderSwitch: { minHeight: space["2xl"] },
   reminderTitleRow: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -3096,6 +3477,32 @@ const styles = StyleSheet.create({
     width: space.md,
     height: space.md,
     borderRadius: radius.pill,
+  },
+  agendaLoading: {
+    minHeight: size.controlLg * 5 + space.xl,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  agendaGroup: { gap: space.md },
+  agendaGroupTitle: {
+    fontSize: type.heading,
+    lineHeight: type.headingLine,
+    fontWeight: "700",
+    letterSpacing: -0.65,
+  },
+  agendaList: { gap: space.sm },
+  agendaCard: {
+    borderWidth: 1,
+    borderRadius: radius.lg,
+    padding: space.xl,
+    gap: space.lg,
+  },
+  agendaCardHeader: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: space.md,
   },
   authShell: {
     flexGrow: 1,

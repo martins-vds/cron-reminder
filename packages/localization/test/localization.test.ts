@@ -5,6 +5,8 @@ describe("localization", () => {
   it("supports English and Brazilian Portuguese", () => {
     expect(createTranslator("en")("reminders")).toBe("Reminders");
     expect(createTranslator("pt-BR")("reminders")).toBe("Lembretes");
+    expect(createTranslator("en")("agenda")).toBe("Today");
+    expect(createTranslator("pt-BR")("agenda")).toBe("Hoje");
     expect(createTranslator("en")("monthly")).toBe("Monthly");
     expect(createTranslator("en")("multipleDaily")).toBe(
       "Multiple times daily",
