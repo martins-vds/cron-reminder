@@ -544,6 +544,50 @@ test.describe("responsive UI layout", () => {
     });
   }
 
+  test("settings imports a backup from a JSON file", async ({ page }) => {
+    await mockSupabase(page);
+    await authenticate(page);
+    await page.goto("/settings");
+
+    const importButton = page.getByRole("button", {
+      name: "Import JSON",
+      exact: true,
+    });
+    await expect(page.locator("textarea")).toHaveCount(0);
+    await expect(importButton).toBeDisabled();
+
+    const fileChooserPromise = page.waitForEvent("filechooser");
+    await page.getByRole("button", { name: "Choose JSON backup file" }).click();
+    const fileChooser = await fileChooserPromise;
+    await fileChooser.setFiles({
+      name: "cron-reminder-backup.json",
+      mimeType: "application/json",
+      buffer: Buffer.from(
+        JSON.stringify({
+          version: 1,
+          exportedAt: "2026-09-26T12:00:00.000Z",
+          reminders: [
+            {
+              ...reminders[0],
+              id: "imported-reminder",
+              title: "Imported reminder",
+            },
+          ],
+        }),
+      ),
+    });
+
+    await expect(
+      page.getByText("Selected file: cron-reminder-backup.json"),
+    ).toBeVisible();
+    await expect(importButton).toBeEnabled();
+    await importButton.click();
+    await expect(
+      page.getByText(/1 imported, 0 skipped, 0 invalid/),
+    ).toBeVisible();
+    await expect(page.getByText("No JSON file selected.")).toBeVisible();
+  });
+
   test("reminder editor has no overflow, clipping, or overlap", async ({
     page,
   }) => {

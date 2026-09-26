@@ -2,6 +2,8 @@ import { StatusBar } from "expo-status-bar";
 import { Stack, router, usePathname } from "expo-router";
 import { getLocales } from "expo-localization";
 import * as Crypto from "expo-crypto";
+import * as DocumentPicker from "expo-document-picker";
+import { File as ExpoFile } from "expo-file-system";
 import NetInfo from "@react-native-community/netinfo";
 import {
   createContext,
@@ -2638,8 +2640,13 @@ function Settings({
   const t = createTranslator(locale);
   const { width } = useWindowDimensions();
   const isWide = width >= 1120;
-  const [backupText, setBackupText] = useState("");
+  const [backupFile, setBackupFile] = useState<{
+    name: string;
+    contents: string;
+  } | null>(null);
   const [backupMessage, setBackupMessage] = useState("");
+  const [isSelectingBackupFile, setIsSelectingBackupFile] = useState(false);
+  const [isImportingBackup, setIsImportingBackup] = useState(false);
   const [importConflicts, setImportConflicts] = useState<
     readonly SyncConflict[]
   >([]);
@@ -2678,11 +2685,57 @@ function Settings({
     }
   }
 
+  async function selectBackupFile() {
+    if (isSelectingBackupFile || isImportingBackup) return;
+    setIsSelectingBackupFile(true);
+    setBackupMessage("");
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: "application/json",
+        copyToCacheDirectory: true,
+        multiple: false,
+        base64: false,
+      });
+      if (result.canceled) return;
+      const asset = result.assets[0];
+      if (!asset) throw new Error("The document picker returned no file.");
+      if (!asset.name.toLowerCase().endsWith(".json")) {
+        setBackupFile(null);
+        setBackupMessage(
+          copy(
+            locale,
+            "Choose a file with a .json extension.",
+            "Selecione um arquivo com a extensão .json.",
+          ),
+        );
+        return;
+      }
+      const contents = asset.file
+        ? await asset.file.text()
+        : await new ExpoFile(asset.uri).text();
+      setBackupFile({ name: asset.name, contents });
+    } catch (error) {
+      console.error("Backup file selection failed.", error);
+      setBackupFile(null);
+      setBackupMessage(
+        copy(
+          locale,
+          "The selected file could not be read.",
+          "Não foi possível ler o arquivo selecionado.",
+        ),
+      );
+    } finally {
+      setIsSelectingBackupFile(false);
+    }
+  }
+
   async function importJson() {
+    if (!backupFile || isImportingBackup) return;
+    setIsImportingBackup(true);
     try {
       const result = await runReminderMutation(async () => {
         const current = await localRepository.list(ownerId);
-        const imported = importBackup(backupText, current, ownerId);
+        const imported = importBackup(backupFile.contents, current, ownerId);
         await Promise.all(
           imported.merged.map((item) => localRepository.save(item)),
         );
@@ -2691,10 +2744,24 @@ function Settings({
       await synchronizeReminders(ownerId).catch(() => []);
       setImportConflicts(result.conflicts);
       setBackupMessage(
-        `${result.imported} imported, ${result.skipped} skipped, ${result.invalid} invalid, ${result.conflicts.length} conflict(s) require manual resolution.`,
+        copy(
+          locale,
+          `${result.imported} imported, ${result.skipped} skipped, ${result.invalid} invalid, ${result.conflicts.length} conflict(s) require manual resolution.`,
+          `${result.imported} importado(s), ${result.skipped} ignorado(s), ${result.invalid} inválido(s), ${result.conflicts.length} conflito(s) exigem resolução manual.`,
+        ),
       );
-    } catch {
-      setBackupMessage("The backup is invalid or unsupported.");
+      setBackupFile(null);
+    } catch (error) {
+      console.error("Backup import failed.", error);
+      setBackupMessage(
+        copy(
+          locale,
+          "The backup is invalid or unsupported.",
+          "O backup é inválido ou não é compatível.",
+        ),
+      );
+    } finally {
+      setIsImportingBackup(false);
     }
   }
 
@@ -2886,24 +2953,39 @@ function Settings({
                 colors={colors}
                 variant="secondary"
               />
-              <Field
+              <Button
                 label={t("importBackupPrompt")}
-                value={backupText}
-                onChangeText={setBackupText}
+                onPress={() => void selectBackupFile()}
                 colors={colors}
-                multiline
-                placeholder={copy(
-                  locale,
-                  "Paste the JSON backup here",
-                  "Cole o backup JSON aqui",
-                )}
+                variant="secondary"
+                loading={isSelectingBackupFile}
+                disabled={isSelectingBackupFile || isImportingBackup}
               />
+              <Text
+                accessibilityLiveRegion="polite"
+                style={[styles.body, { color: colors.muted }]}
+              >
+                {backupFile
+                  ? copy(
+                      locale,
+                      `Selected file: ${backupFile.name}`,
+                      `Arquivo selecionado: ${backupFile.name}`,
+                    )
+                  : copy(
+                      locale,
+                      "No JSON file selected.",
+                      "Nenhum arquivo JSON selecionado.",
+                    )}
+              </Text>
               <Button
                 label={t("importBackup")}
                 onPress={() => void importJson()}
                 colors={colors}
                 variant="primary"
-                disabled={!backupText.trim()}
+                loading={isImportingBackup}
+                disabled={
+                  !backupFile || isSelectingBackupFile || isImportingBackup
+                }
               />
               {backupMessage ? (
                 <Notice tone="neutral" colors={colors} text={backupMessage} />
