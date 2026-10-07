@@ -26,6 +26,7 @@ describe("browser notification registration", () => {
   const cleanups: Array<() => void> = [];
 
   beforeEach(() => {
+    oldSubscription.unsubscribe.mockReset().mockResolvedValue(true);
     windowEvents = new EventTarget();
     documentEvents = new EventTarget();
     notification = {
@@ -138,6 +139,20 @@ describe("browser notification registration", () => {
     expect(oldSubscription.unsubscribe).toHaveBeenCalled();
     expect(subscribe).toHaveBeenCalledTimes(1);
     expect(registration?.token).toBe(JSON.stringify(newSubscription));
+  });
+
+  it("reuses a retained subscription even when the push service cannot replace it", async () => {
+    oldSubscription.unsubscribe.mockRejectedValue(
+      new Error("Replacement unavailable"),
+    );
+    subscribe.mockRejectedValue(new Error("Replacement unavailable"));
+    const registration = await new DeviceNotificationAdapter().register(
+      "owner",
+      false,
+    );
+    expect(registration?.token).toBe(JSON.stringify(oldSubscription));
+    expect(oldSubscription.unsubscribe).not.toHaveBeenCalled();
+    expect(subscribe).not.toHaveBeenCalled();
   });
 
   it("does not subscribe when this browser has never registered a service worker", async () => {

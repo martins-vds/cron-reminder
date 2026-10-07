@@ -232,23 +232,55 @@ export async function getRememberedDeviceRegistration(): Promise<StoredDeviceReg
   return readDeviceRegistration();
 }
 
+async function readDeviceNotificationRegistration(
+  ownerId: string,
+  deviceId: string,
+) {
+  if (!supabase) throw new Error("Supabase is not configured.");
+  const { data, error } = await supabase
+    .from("devices")
+    .select("enabled,token,user_disabled")
+    .eq("id", deviceId)
+    .eq("owner_id", ownerId)
+    .maybeSingle<{
+      enabled: boolean;
+      token: string;
+      user_disabled: boolean;
+    }>();
+  if (error) throw error;
+  return data;
+}
+
 export async function isRememberedDeviceRegistered(
   ownerId: string,
   currentToken?: string | null,
 ): Promise<boolean> {
   const device = await readDeviceRegistration();
   if (!device || currentToken === null) return false;
-  if (!supabase) throw new Error("Supabase is not configured.");
-  const { data, error } = await supabase
-    .from("devices")
-    .select("enabled,token")
-    .eq("id", device.id)
-    .eq("owner_id", ownerId)
-    .maybeSingle();
-  if (error) throw error;
+  const data = await readDeviceNotificationRegistration(ownerId, device.id);
   return (
     data?.enabled === true &&
     (currentToken === undefined || data.token === currentToken)
+  );
+}
+
+export async function shouldRenewBrowserSubscription(
+  ownerId: string,
+  currentToken: string,
+): Promise<boolean> {
+  const device = await readDeviceRegistration();
+  if (!device) return true;
+  const registration = await readDeviceNotificationRegistration(
+    ownerId,
+    device.id,
+  );
+  if (
+    registration?.user_disabled === true &&
+    registration.token === currentToken
+  )
+    return false;
+  return !(
+    registration?.enabled === true && registration.token === currentToken
   );
 }
 
@@ -302,13 +334,10 @@ export async function flushPendingPushTokenUpdate(): Promise<void> {
       await AsyncStorage.removeItem(pendingPushTokenKey);
       return;
     }
-    const { data: registration, error: registrationError } = await supabase
-      .from("devices")
-      .select("enabled,token,user_disabled")
-      .eq("id", device.id)
-      .eq("owner_id", pending.ownerId)
-      .maybeSingle();
-    if (registrationError) throw registrationError;
+    const registration = await readDeviceNotificationRegistration(
+      pending.ownerId,
+      device.id,
+    );
     if (registration?.user_disabled === true) {
       await AsyncStorage.removeItem(pendingPushTokenKey);
       return;

@@ -289,9 +289,10 @@ async function authenticate(
 async function mockBrowserPush(
   page: Page,
   subscription: { endpoint: string; keys: { auth: string; p256dh: string } },
+  rejectSubscriptionReplacement = false,
 ) {
   await page.addInitScript(
-    ({ subscription }) => {
+    ({ subscription, rejectSubscriptionReplacement }) => {
       if (localStorage.getItem("cron-reminder:device-id") === null)
         localStorage.setItem(
           "cron-reminder:device-id",
@@ -315,11 +316,19 @@ async function mockBrowserPush(
             current && {
               ...current,
               unsubscribe: async () => {
+                if (rejectSubscriptionReplacement)
+                  throw new Error(
+                    "The push service cannot replace this subscription.",
+                  );
                 current = null;
                 return true;
               },
             },
           subscribe: async () => {
+            if (rejectSubscriptionReplacement)
+              throw new Error(
+                "The push service cannot create a replacement subscription.",
+              );
             current = {
               ...subscription,
               endpoint: "https://push.example/repaired",
@@ -338,7 +347,7 @@ async function mockBrowserPush(
         value: Promise.resolve(registration),
       });
     },
-    { subscription },
+    { subscription, rejectSubscriptionReplacement },
   );
 }
 
@@ -783,7 +792,7 @@ test.describe("responsive UI layout", () => {
       const claims: Array<{ p_enable: boolean }> = [];
       await mockSupabase(page, [], theme);
       await authenticate(page);
-      await mockBrowserPush(page, subscription);
+      await mockBrowserPush(page, subscription, true);
       await page.route(`${supabaseOrigin}/rest/v1/devices*`, async (route) => {
         const request = route.request();
         const url = new URL(request.url());
@@ -893,7 +902,17 @@ test.describe("responsive UI layout", () => {
       await expect(disable).toBeVisible();
       expect(device.enabled).toBe(true);
       expect(device.user_disabled).toBe(false);
+      expect(device.token).toBe(JSON.stringify(subscription));
       expect(claims.some(({ p_enable }) => p_enable)).toBe(true);
+      await page.reload();
+      await expect(disable).toBeVisible();
+      await page
+        .getByText("Notifications are enabled on this device.", { exact: true })
+        .scrollIntoViewIfNeeded();
+      await page.mouse.move(0, 0);
+      await page.screenshot({
+        path: testInfo.outputPath("notification-reenabled.png"),
+      });
     });
   }
 
@@ -1057,6 +1076,7 @@ test.describe("responsive UI layout", () => {
       "disabled",
       "missing",
       "mismatched",
+      "paused-mismatched",
       "unavailable",
     ] as const) {
       test(`browser notification status verifies a ${state} registration in ${theme} mode`, async ({
@@ -1094,11 +1114,17 @@ test.describe("responsive UI layout", () => {
                     : [
                         {
                           enabled:
-                            repairedToken !== null || state !== "disabled",
+                            repairedToken !== null ||
+                            (state !== "disabled" &&
+                              state !== "paused-mismatched"),
+                          user_disabled:
+                            repairedToken === null &&
+                            state === "paused-mismatched",
                           token:
                             repairedToken ??
                             JSON.stringify(
-                              state === "mismatched"
+                              state === "mismatched" ||
+                                state === "paused-mismatched"
                                 ? {
                                     ...subscription,
                                     endpoint: "https://push.example/old",
@@ -1111,7 +1137,7 @@ test.describe("responsive UI layout", () => {
             });
           },
         );
-        if (state === "disabled") {
+        if (state === "disabled" || state === "paused-mismatched") {
           await page.route(
             `${supabaseOrigin}/rest/v1/rpc/claim_device_token`,
             async (route) => {
@@ -1155,7 +1181,7 @@ test.describe("responsive UI layout", () => {
               ),
             ).toBeVisible();
         }
-        if (state === "disabled") {
+        if (state === "disabled" || state === "paused-mismatched") {
           await expectControlContrast(
             page.getByRole("button", {
               name: "Enable notifications on this device",

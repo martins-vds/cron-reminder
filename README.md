@@ -63,6 +63,8 @@ In Settings, **Disable notifications on this device** opts out only the current
 device. Browser notification permission is unchanged, and other devices keep
 receiving reminders. Token refresh, app reload, and reconnection do not undo this
 choice; use **Enable notifications on this device** to opt back in.
+Opting back in reuses the retained browser subscription rather than deleting it.
+Provider-rejected registrations are repaired separately.
 
 ## Web app installation
 

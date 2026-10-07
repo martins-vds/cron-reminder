@@ -77,6 +77,7 @@ import {
   getPendingNotificationActions,
   localRepository,
   rememberDevice,
+  shouldRenewBrowserSubscription,
   resolveSynchronizationConflict,
   runReminderMutation,
   submitNotificationAction,
@@ -3084,7 +3085,7 @@ function Settings({
         const currentToken = await adapter.currentToken();
         renew =
           currentToken !== null &&
-          !(await isRememberedDeviceRegistered(ownerId, currentToken));
+          (await shouldRenewBrowserSubscription(ownerId, currentToken));
       }
       const registration =
         Platform.OS === "web"
