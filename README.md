@@ -49,6 +49,29 @@ Web and native push notifications request these same three actions; the browser
 or operating system may limit how many notification buttons it displays. All
 applicable actions remain available in Today.
 
+## Web app installation
+
+The web export includes a linked PWA manifest and install icons. On a supported
+desktop version of Microsoft Edge, open the HTTPS site and use the address-bar
+install icon or **Settings and more > Apps > Install this site as an app**.
+The browser controls whether it shows an installation prompt; it may not offer
+installation in a private window, when the app is already installed, or when an
+organization policy disables it.
+
+Installation does not grant notification permission. Sign in and enable
+notifications separately in each browser or installed app. The existing service
+worker handles push notifications; installation does not add offline page caching.
+
+App icons use a scalable Lucide clock on the existing brand background, with
+high-resolution native, PWA, maskable, Apple touch, and favicon exports. Android
+foreground and monochrome layers leave the launcher mask's safe area clear.
+Regenerate them with `npm run icons:generate` after changing the clock vector or
+brand tokens. Icon licensing is in `apps/app/public/icon-LICENSE.txt` and is also
+embedded in the generated SVG and PNG artwork.
+
+After an icon update is deployed, an existing installation may retain its cached
+icon. If it does not update, remove the installed app and install it again.
+
 ## Prerequisites
 
 - Node.js 22 or newer

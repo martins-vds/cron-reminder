@@ -1,0 +1,23 @@
+{
+  "id": "/",
+  "name": "Cron Reminder",
+  "short_name": "Cron Reminder",
+  "description": "Schedule reminders and manage their occurrences.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "type": "image/png",
+      "sizes": "192x192",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "type": "image/png",
+      "sizes": "512x512",
+      "purpose": "any maskable"
+    }
+  ]
+}
