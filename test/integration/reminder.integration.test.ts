@@ -128,6 +128,234 @@ afterAll(async () => {
 });
 
 describe("database migrations and delivery RPCs", () => {
+  it("completes an entire reminder, cancels pending work, preserves History, and reopens without old postponements", async () => {
+    const { id, scheduledAt } = await insertReminder({
+      schedule: { kind: "cron", expression: "* * * * *" },
+    });
+    const lease = crypto.randomUUID();
+    const statuses = [
+      "scheduled",
+      "triggered",
+      "delivering",
+      "delivery-failed",
+      "postponed",
+      "missed",
+      "completed",
+    ];
+    for (const status of statuses) {
+      await pool.query(
+        `insert into public.occurrences(
+          id, reminder_id, owner_id, reminder_revision, scheduled_at, status,
+          snoozed_until, delivery_lease_id
+        ) values ($1, $2, $3, 1, $4, $5, $6, $7)`,
+        [
+          `${id}:${status}`,
+          id,
+          ownerId,
+          new Date(
+            scheduledAt.getTime() - statuses.indexOf(status) * 60_000,
+          ).toISOString(),
+          status,
+          status === "postponed"
+            ? new Date(Date.now() + 60_000).toISOString()
+            : null,
+          status === "delivering" ? lease : null,
+        ],
+      );
+    }
+    await pool.query(
+      "insert into public.history(reminder_id, occurrence_id, owner_id, event_type) values ($1, $2, $3, 'triggered')",
+      [id, `${id}:triggered`, ownerId],
+    );
+    const historyBefore = (await pool.query("select * from public.history"))
+      .rows;
+    const url = `http://127.0.0.1:55421/rest/v1/reminders?id=eq.${id}&owner_id=eq.${ownerId}`;
+    const update = async (status: string, revision: number) => {
+      const response = await fetch(url, {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bearer ${jwt("authenticated", ownerId)}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ status, revision, next_due_at: null }),
+      });
+      expect(response.status).toBe(204);
+    };
+    await update("completed", 2);
+    const dispatched = await fetch("http://127.0.0.1:55432/", {
+      method: "POST",
+      headers: { "x-cron-secret": "integration-cron-secret" },
+    });
+    expect(dispatched.status).toBe(200);
+    expect(await dispatched.json()).toMatchObject({ delivered: 0 });
+    expect(
+      (
+        await pool.query(
+          "select count(*)::integer as count from public.occurrences where reminder_id = $1 and owner_id = $2",
+          [id, ownerId],
+        )
+      ).rows[0].count,
+    ).toBe(statuses.length);
+    const rows = (
+      await pool.query<{
+        id: string;
+        status: string;
+        snoozed_until: Date | null;
+        delivery_lease_id: string | null;
+      }>(
+        "select id, status, snoozed_until, delivery_lease_id from public.occurrences order by id",
+      )
+    ).rows;
+    for (const row of rows) {
+      const originalStatus = row.id.split(":").at(-1)!;
+      expect(row.status).toBe(
+        originalStatus === "completed" ? originalStatus : "dismissed",
+      );
+      expect(row.snoozed_until).toBeNull();
+      expect(row.delivery_lease_id).toBeNull();
+    }
+    expect((await pool.query("select * from public.history")).rows).toEqual(
+      historyBefore,
+    );
+    expect(
+      (
+        await pool.query(
+          "select public.renew_occurrence_delivery_lease($1, $2, $3, now()) as renewed",
+          [`${id}:delivering`, ownerId, lease],
+        )
+      ).rows[0].renewed,
+    ).toBe(false);
+    expect(
+      (
+        await pool.query(
+          "select public.complete_occurrence_delivery($1, $2, $3, now()) as completed",
+          [`${id}:delivering`, ownerId, lease],
+        )
+      ).rows[0].completed,
+    ).toBe(false);
+    for (const postponed of [false, true]) {
+      expect(
+        (
+          await pool.query(
+            "select * from public.list_deliverable_occurrences(now(), now() - interval '5 minutes', 100, $1)",
+            [postponed],
+          )
+        ).rows,
+      ).toEqual([]);
+    }
+    expect(
+      (
+        await pool.query(
+          "select public.prepare_occurrence_delivery($1, $2, $3, 2, $4, $5, now(), now() - interval '5 minutes') as prepared",
+          [
+            `${id}:future`,
+            id,
+            ownerId,
+            new Date().toISOString(),
+            crypto.randomUUID(),
+          ],
+        )
+      ).rows[0].prepared,
+    ).toBe(false);
+    await update("active", 3);
+    expect(
+      (
+        await pool.query(
+          "select * from public.list_deliverable_occurrences(now(), now() - interval '5 minutes', 100, true)",
+        )
+      ).rows,
+    ).toEqual([]);
+    expect(
+      (
+        await pool.query(
+          "select public.prepare_occurrence_delivery($1, $2, $3, 3, $4, $5, now(), now() - interval '5 minutes') as prepared",
+          [
+            `${id}:resumed`,
+            id,
+            ownerId,
+            new Date().toISOString(),
+            crypto.randomUUID(),
+          ],
+        )
+      ).rows[0].prepared,
+    ).toBe(true);
+  });
+
+  it.each(["web", "ios", "android"])(
+    "preserves device opt-out across %s token refresh until explicit re-enable",
+    async (platform) => {
+      const revocationToken = crypto.randomUUID();
+      await pool.query(
+        `insert into public.devices(id, owner_id, platform, token, deregistration_token)
+       values ('opt-out-device', $1, $2, 'original-token', $3), ('other-device', $1, $2, 'other-token', $3)`,
+        [ownerId, platform, revocationToken],
+      );
+      const headers = {
+        Authorization: `Bearer ${jwt("authenticated", ownerId)}`,
+        "Content-Type": "application/json",
+      };
+      const disable = await fetch(
+        `http://127.0.0.1:55421/rest/v1/devices?id=eq.opt-out-device&owner_id=eq.${ownerId}`,
+        {
+          method: "PATCH",
+          headers,
+          body: JSON.stringify({ enabled: false, user_disabled: true }),
+        },
+      );
+      expect(disable.status).toBe(204);
+      const claim = async (enable?: boolean) => {
+        const response = await fetch(
+          "http://127.0.0.1:55421/rest/v1/rpc/claim_device_token",
+          {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              p_device_id: "opt-out-device",
+              p_platform: platform,
+              p_token: "refreshed-token",
+              p_deregistration_token: revocationToken,
+              p_existing_deregistration_token: revocationToken,
+              ...(enable === undefined ? {} : { p_enable: enable }),
+            }),
+          },
+        );
+        expect(response.status).toBe(200);
+        expect(await response.json()).toBe(true);
+      };
+      const device = async () =>
+        (
+          await pool.query(
+            "select enabled, user_disabled, token from public.devices where id = 'opt-out-device'",
+          )
+        ).rows[0];
+      await claim();
+      expect(await device()).toEqual({
+        enabled: false,
+        user_disabled: true,
+        token: "refreshed-token",
+      });
+      await claim(false);
+      expect(await device()).toEqual({
+        enabled: false,
+        user_disabled: true,
+        token: "refreshed-token",
+      });
+      expect(
+        (
+          await pool.query(
+            "select enabled from public.devices where id = 'other-device'",
+          )
+        ).rows[0].enabled,
+      ).toBe(true);
+      await claim(true);
+      expect(await device()).toEqual({
+        enabled: true,
+        user_disabled: false,
+        token: "refreshed-token",
+      });
+    },
+  );
+
   it.each([5, 10, 15, 75])(
     "allows %i minutes for a one-time reminder with no next occurrence",
     async (minutes) => {

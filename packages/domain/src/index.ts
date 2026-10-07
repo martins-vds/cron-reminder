@@ -1,6 +1,6 @@
 import { CronExpressionParser } from "cron-parser";
 
-export type ReminderStatus = "active" | "disabled" | "archived";
+export type ReminderStatus = "active" | "disabled" | "archived" | "completed";
 export type OccurrenceStatus =
   | "scheduled"
   | "triggered"
@@ -349,6 +349,8 @@ export function setReminderEnabled(
 ): Reminder {
   if (reminder.status === "archived")
     throw new Error("Restore an archived reminder first.");
+  if (reminder.status === "completed")
+    throw new Error("Reopen a completed reminder first.");
   return transition(reminder, enabled ? "active" : "disabled", now);
 }
 
@@ -356,8 +358,16 @@ export function archiveReminder(reminder: Reminder, now?: string): Reminder {
   return transition(reminder, "archived", now);
 }
 
+export function completeReminder(reminder: Reminder, now?: string): Reminder {
+  if (reminder.status === "archived")
+    throw new Error("Restore an archived reminder first.");
+  if (reminder.status === "completed") return reminder;
+  return transition(reminder, "completed", now);
+}
+
 export function restoreReminder(reminder: Reminder, now?: string): Reminder {
-  if (reminder.status !== "archived") return reminder;
+  if (reminder.status !== "archived" && reminder.status !== "completed")
+    return reminder;
   return transition(reminder, "active", now);
 }
 

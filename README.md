@@ -32,7 +32,7 @@ Today shows the latest overdue occurrence per reminder instead of a backlog of
 repeated missed occurrences. Earlier occurrences remain in the 30-day History;
 dismissing, postponing, or completing the latest does not bring old missed items
 back. Explicitly postponed occurrences remain visible until handled.
-Archived reminders do not appear in Today, including their existing overdue,
+Archived and completed reminders do not appear in Today, including their existing overdue,
 postponed, or scheduled occurrences. Their past events remain in History.
 
 Reminder actions are **Dismiss** (skip this occurrence), **Postpone**, and
@@ -50,6 +50,19 @@ These actions never disable a recurring reminder or change its future schedule.
 Web and native push notifications request these same three actions; the browser
 or operating system may limit how many notification buttons it displays. All
 applicable actions remain available in Today.
+
+In **Reminders**, **Complete reminder** finishes the entire schedule and stops
+future notifications. It is separate from completing one occurrence in Today.
+Pending occurrences are canceled when completion synchronizes; existing History
+is preserved. Completed reminders remain in Your schedules under the Completed
+filter and can be reopened, edited, duplicated, archived, or deleted. Reopening
+resumes the schedule without reviving canceled postponed occurrences. Status
+filters sit with Your schedules and remain available when a filter has no results.
+
+In Settings, **Disable notifications on this device** opts out only the current
+device. Browser notification permission is unchanged, and other devices keep
+receiving reminders. Token refresh, app reload, and reconnection do not undo this
+choice; use **Enable notifications on this device** to opt back in.
 
 ## Web app installation
 

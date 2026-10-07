@@ -80,6 +80,31 @@ describe("ReminderService", () => {
     expect(result.map(({ title }) => title)).toEqual(["Water plants"]);
   });
 
+  it("persists whole-reminder completion, filters it, and requires explicit reopening", async () => {
+    const repository = new MemoryRepository();
+    const service = new ReminderService(repository, clock, () => "finished");
+    const reminder = await service.create({
+      ownerId: "user-1",
+      title: "Finish the project",
+      schedule: { kind: "cron", expression: "0 9 * * *" },
+      timezone: "UTC",
+    });
+    await expect(service.complete("another-user", reminder.id)).rejects.toThrow(
+      "not found",
+    );
+    const completed = await service.complete("user-1", reminder.id);
+    expect(await repository.get("user-1", reminder.id)).toEqual(completed);
+    expect(
+      filterReminders(await repository.list("user-1"), { status: "completed" }),
+    ).toEqual([completed]);
+    expect(
+      filterReminders(await repository.list("user-1"), { status: "active" }),
+    ).toEqual([]);
+    expect((await service.restore("user-1", reminder.id)).status).toBe(
+      "active",
+    );
+  });
+
   it("detects concurrent revisions for manual resolution", () => {
     const base = {
       id: "r1",

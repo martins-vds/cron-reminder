@@ -19,6 +19,8 @@ services:
       - ./supabase/migrations/20261007000001_complete_and_postpone_occurrences.sql:/docker-entrypoint-initdb.d/28-occurrence-actions.sql:ro
       - ./supabase/migrations/20261007000002_bounded_postponement.sql:/docker-entrypoint-initdb.d/29-bounded-postponement.sql:ro
       - ./supabase/migrations/20261007000003_recurring_schedule_endings.sql:/docker-entrypoint-initdb.d/29a-recurring-endings.sql:ro
+      - ./supabase/migrations/20261007000004_completed_reminder_status.sql:/docker-entrypoint-initdb.d/29b-completed-reminder-status.sql:ro
+      - ./supabase/migrations/20261007000005_reminder_completion_and_notification_opt_out.sql:/docker-entrypoint-initdb.d/29c-reminder-completion-and-notification-opt-out.sql:ro
       - ./test/integration/sql/30-grants.sql:/docker-entrypoint-initdb.d/30-grants.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]

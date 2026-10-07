@@ -252,6 +252,31 @@ export async function isRememberedDeviceRegistered(
   );
 }
 
+export async function disableDeviceNotifications(
+  ownerId: string,
+): Promise<void> {
+  if (!supabase) throw new Error("Supabase is not configured.");
+  await withPushToken(async () => {
+    const device = await readDeviceRegistration();
+    if (!device) throw new Error("No device registration was found.");
+    const { data, error } = await supabase
+      .from("devices")
+      .update({
+        enabled: false,
+        user_disabled: true,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", device.id)
+      .eq("owner_id", ownerId)
+      .select("id")
+      .maybeSingle();
+    if (error) throw error;
+    if (!data)
+      throw new Error("The device registration could not be disabled.");
+    await AsyncStorage.removeItem(pendingPushTokenKey);
+  });
+}
+
 export async function updateRememberedDeviceToken(
   ownerId: string,
   token: string,
@@ -277,14 +302,18 @@ export async function flushPendingPushTokenUpdate(): Promise<void> {
       await AsyncStorage.removeItem(pendingPushTokenKey);
       return;
     }
+    const { data: registration, error: registrationError } = await supabase
+      .from("devices")
+      .select("enabled,token,user_disabled")
+      .eq("id", device.id)
+      .eq("owner_id", pending.ownerId)
+      .maybeSingle();
+    if (registrationError) throw registrationError;
+    if (registration?.user_disabled === true) {
+      await AsyncStorage.removeItem(pendingPushTokenKey);
+      return;
+    }
     if (Platform.OS === "web") {
-      const { data: registration, error: registrationError } = await supabase
-        .from("devices")
-        .select("enabled,token")
-        .eq("id", device.id)
-        .eq("owner_id", pending.ownerId)
-        .maybeSingle();
-      if (registrationError) throw registrationError;
       if (
         registration?.enabled === false &&
         registration.token === pending.token
@@ -304,6 +333,7 @@ export async function flushPendingPushTokenUpdate(): Promise<void> {
       p_token: pending.token,
       p_deregistration_token: device.token,
       p_existing_deregistration_token: device.token,
+      p_enable: false,
     });
     if (error) throw error;
     if (!data) throw new Error("Unable to refresh the device push token.");

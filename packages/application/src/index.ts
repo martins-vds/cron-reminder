@@ -1,5 +1,6 @@
 import {
   archiveReminder,
+  completeReminder,
   createReminder,
   duplicateReminder,
   restoreReminder,
@@ -133,6 +134,15 @@ export class ReminderService {
   async archive(ownerId: string, id: string): Promise<Reminder> {
     return this.save(
       archiveReminder(
+        await this.require(ownerId, id),
+        this.clock.now().toISOString(),
+      ),
+    );
+  }
+
+  async complete(ownerId: string, id: string): Promise<Reminder> {
+    return this.save(
+      completeReminder(
         await this.require(ownerId, id),
         this.clock.now().toISOString(),
       ),

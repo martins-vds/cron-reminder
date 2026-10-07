@@ -78,7 +78,12 @@ export function buildAgendaItems(
     )
       return [];
     const reminder = remindersById.get(occurrence.reminder_id);
-    if (!reminder || reminder.status === "archived") return [];
+    if (
+      !reminder ||
+      reminder.status === "archived" ||
+      reminder.status === "completed"
+    )
+      return [];
     return [
       {
         id: occurrence.id,

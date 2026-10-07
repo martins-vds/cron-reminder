@@ -282,7 +282,8 @@ function isReminder(value: unknown): value is Reminder {
     !isValidScheduleTimestamp(value.updatedAt) ||
     (value.status !== "active" &&
       value.status !== "disabled" &&
-      value.status !== "archived") ||
+      value.status !== "archived" &&
+      value.status !== "completed") ||
     !isReminderSound(value.sound) ||
     !isSchedule(value.schedule)
   ) {

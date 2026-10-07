@@ -216,7 +216,27 @@ async function mockSupabase(
         const updates = request.postDataJSON() as Record<string, unknown>;
         reminderWrites.push(updates);
         for (const reminder of storedReminders) {
-          if (reminder.id === id) Object.assign(reminder, updates);
+          if (reminder.id === id) {
+            Object.assign(reminder, updates);
+            if (updates.status === "completed") {
+              for (const occurrence of storedOccurrences) {
+                if (
+                  occurrence.reminder_id === id &&
+                  [
+                    "scheduled",
+                    "triggered",
+                    "delivering",
+                    "delivery-failed",
+                    "postponed",
+                    "missed",
+                  ].includes(occurrence.status)
+                ) {
+                  occurrence.status = "dismissed";
+                  occurrence.snoozed_until = null;
+                }
+              }
+            }
+          }
         }
       }
       const selected = storedReminders.filter(
@@ -252,10 +272,11 @@ async function authenticate(
   await page.addInitScript(
     ({ session, seededReminders, sessionStorageKey }) => {
       localStorage.setItem(sessionStorageKey, JSON.stringify(session));
-      localStorage.setItem(
-        "cron-reminder:reminders",
-        JSON.stringify(seededReminders),
-      );
+      if (localStorage.getItem("cron-reminder:reminders") === null)
+        localStorage.setItem(
+          "cron-reminder:reminders",
+          JSON.stringify(seededReminders),
+        );
     },
     {
       session: fakeSession(),
@@ -263,6 +284,72 @@ async function authenticate(
       sessionStorageKey: storageKey,
     },
   );
+}
+
+async function mockBrowserPush(
+  page: Page,
+  subscription: { endpoint: string; keys: { auth: string; p256dh: string } },
+) {
+  await page.addInitScript(
+    ({ subscription }) => {
+      if (localStorage.getItem("cron-reminder:device-id") === null)
+        localStorage.setItem(
+          "cron-reminder:device-id",
+          JSON.stringify({
+            id: "this-browser",
+            token: "00000000-0000-4000-8000-000000000002",
+          }),
+        );
+      Object.defineProperty(Notification, "permission", {
+        value: "granted",
+        configurable: true,
+      });
+      Object.defineProperty(Notification, "requestPermission", {
+        value: async () => "granted",
+        configurable: true,
+      });
+      let current: typeof subscription | null = subscription;
+      const registration = {
+        pushManager: {
+          getSubscription: async () =>
+            current && {
+              ...current,
+              unsubscribe: async () => {
+                current = null;
+                return true;
+              },
+            },
+          subscribe: async () => {
+            current = {
+              ...subscription,
+              endpoint: "https://push.example/repaired",
+            };
+            return current;
+          },
+        },
+      };
+      Object.defineProperty(navigator.serviceWorker, "getRegistration", {
+        value: async () => registration,
+      });
+      Object.defineProperty(navigator.serviceWorker, "register", {
+        value: async () => registration,
+      });
+      Object.defineProperty(navigator.serviceWorker, "ready", {
+        value: Promise.resolve(registration),
+      });
+    },
+    { subscription },
+  );
+}
+
+function reminderCard(page: Page, title: string) {
+  return page
+    .getByText(title, { exact: true })
+    .filter({ visible: true })
+    .locator("..")
+    .locator("..")
+    .locator("..")
+    .locator("..");
 }
 
 function captureLayoutConsoleErrors(page: Page): string[] {
@@ -544,6 +631,364 @@ async function expectControlContrast(
 
 test.describe("responsive UI layout", () => {
   for (const theme of ["light", "dark"] as const) {
+    test(`whole-reminder completion and schedule filters work in ${theme} mode`, async ({
+      page,
+    }, testInfo) => {
+      const writes: Array<Record<string, unknown>> = [];
+      await mockSupabase(page, [], theme, reminders, writes);
+      await authenticate(page);
+      await page.goto("/reminders");
+      const filters = page.getByTestId("schedule-filters");
+      const search = page.getByTestId("reminder-search-panel");
+      await expect(
+        filters.getByRole("heading", { name: "Your schedules" }),
+      ).toBeVisible();
+      await expect(
+        search.getByRole("textbox", { name: "Search reminders" }),
+      ).toBeVisible();
+      await expect(search.getByRole("button")).toHaveCount(0);
+      await filters
+        .getByRole("button", { name: "Completed", exact: true })
+        .click();
+      await expect(
+        page.getByText("No matching reminders", { exact: true }),
+      ).toBeVisible();
+      await expect(
+        filters.getByRole("button", { name: "Completed", exact: true }),
+      ).toHaveAttribute("aria-pressed", "true");
+      await expectControlContrast(
+        filters.getByRole("button", { name: "Completed", exact: true }),
+        `${theme} selected schedule filter`,
+      );
+      await filters
+        .getByRole("button", { name: "Enabled", exact: true })
+        .click();
+      const complete = reminderCard(page, reminders[0]!.title).getByRole(
+        "button",
+        { name: "Complete reminder", exact: true },
+      );
+      await expectControlContrast(
+        complete,
+        `${theme} whole-reminder completion`,
+      );
+      await page.setViewportSize({ width: 390, height: 900 });
+      await complete.blur();
+      await page.mouse.move(0, 0);
+      await page.screenshot({
+        path: testInfo.outputPath("active-reminder.png"),
+      });
+      await complete.focus();
+      await complete.press("Enter");
+      await expect
+        .poll(() => writes.some(({ status }) => status === "completed"))
+        .toBe(true);
+      await expect(
+        page.getByText("No matching reminders", { exact: true }),
+      ).toBeVisible();
+      await filters
+        .getByRole("button", { name: "Completed", exact: true })
+        .click();
+      const card = reminderCard(page, reminders[0]!.title);
+      await expect(card.getByText("Completed", { exact: true })).toBeVisible();
+      await expect(card.getByRole("switch")).toHaveCount(0);
+      await expect(
+        card.getByRole("button", { name: "Complete reminder", exact: true }),
+      ).toHaveCount(0);
+      await expect(
+        card.getByRole("button", { name: "Reopen", exact: true }),
+      ).toBeVisible();
+      await search.getByRole("textbox").fill("no such reminder");
+      await expect(
+        page.getByText("No matching reminders", { exact: true }),
+      ).toBeVisible();
+      await expect(
+        filters.getByRole("button", { name: "All", exact: true }),
+      ).toBeVisible();
+      await search.getByRole("textbox").fill("");
+      for (const width of [280, 320, 414, 1120]) {
+        await page.setViewportSize({ width, height: 900 });
+        await expect
+          .poll(() => measureLayout(page))
+          .toEqual({
+            documentWidth: width,
+            viewportWidth: width,
+            outsideViewport: [],
+            clipped: [],
+            undersizedTargets: [],
+            overlaps: [],
+          });
+      }
+      await page.setViewportSize({ width: 390, height: 900 });
+      await search.getByRole("textbox").blur();
+      await page.mouse.move(0, 0);
+      await page.screenshot({
+        path: testInfo.outputPath("completed-reminder.png"),
+      });
+      await writeFile(
+        testInfo.outputPath("completed-reminder.html"),
+        await page.content(),
+      );
+      await page.getByRole("button", { name: "Today", exact: true }).click();
+      await expect(
+        page
+          .getByText(reminders[0]!.title, { exact: true })
+          .filter({ visible: true }),
+      ).toHaveCount(0);
+      await page.getByRole("button", { name: "History", exact: true }).click();
+      await expect(
+        page.getByText(reminders[0]!.id, { exact: true }),
+      ).toBeVisible();
+      await page
+        .getByRole("button", { name: "Reminders", exact: true })
+        .click();
+      await page.reload();
+      await expect(
+        reminderCard(page, reminders[0]!.title).getByText("Completed", {
+          exact: true,
+        }),
+      ).toBeVisible();
+      await reminderCard(page, reminders[0]!.title)
+        .getByRole("button", { name: "Reopen", exact: true })
+        .click();
+      await expect
+        .poll(() => writes.some(({ status }) => status === "active"))
+        .toBe(true);
+      await expect(
+        reminderCard(page, reminders[0]!.title).getByRole("switch"),
+      ).toBeChecked();
+      await page.getByRole("button", { name: "Today", exact: true }).click();
+      await expect(
+        page.getByRole("heading", { name: "Today and upcoming" }),
+      ).toBeVisible();
+      await expect(
+        page.getByRole("button", {
+          name: new RegExp(`^Dismiss ${reminders[0]!.title},`),
+        }),
+      ).toHaveCount(0);
+    });
+
+    test(`device notification opt-out survives reload and refresh in ${theme} mode`, async ({
+      page,
+    }, testInfo) => {
+      const subscription = {
+        endpoint: "https://push.example/current",
+        keys: { auth: "auth", p256dh: "key" },
+      };
+      const device = {
+        id: "this-browser",
+        enabled: true,
+        user_disabled: false,
+        token: JSON.stringify(subscription),
+      };
+      const claims: Array<{ p_enable: boolean }> = [];
+      await mockSupabase(page, [], theme);
+      await authenticate(page);
+      await mockBrowserPush(page, subscription);
+      await page.route(`${supabaseOrigin}/rest/v1/devices*`, async (route) => {
+        const request = route.request();
+        const url = new URL(request.url());
+        expect(url.searchParams.get("owner_id")).toBe(`eq.${ownerId}`);
+        expect(url.searchParams.get("id")).toBe("eq.this-browser");
+        if (request.method() === "PATCH")
+          Object.assign(device, request.postDataJSON());
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify(
+            request.method() === "PATCH" ? { id: device.id } : [device],
+          ),
+        });
+      });
+      await page.route(
+        `${supabaseOrigin}/rest/v1/rpc/claim_device_token`,
+        async (route) => {
+          const parameters = route.request().postDataJSON();
+          claims.push(parameters);
+          device.token = parameters.p_token;
+          if (parameters.p_enable) {
+            device.enabled = true;
+            device.user_disabled = false;
+          } else if (!device.user_disabled) device.enabled = true;
+          await route.fulfill({
+            status: 200,
+            contentType: "application/json",
+            body: "true",
+          });
+        },
+      );
+      await page.goto("/settings");
+      const disable = page.getByRole("button", {
+        name: "Disable notifications on this device",
+        exact: true,
+      });
+      await expect(disable).toBeVisible();
+      await expectControlContrast(
+        disable,
+        `${theme} device notification opt-out`,
+      );
+      await disable.click();
+      await expect(
+        page.getByRole("button", {
+          name: "Enable notifications on this device",
+          exact: true,
+        }),
+      ).toBeVisible();
+      await expect(
+        page.getByText(
+          "Notifications are disabled on this device. Other devices are unaffected.",
+          { exact: true },
+        ),
+      ).toBeVisible();
+      expect(device.enabled).toBe(false);
+      expect(device.user_disabled).toBe(true);
+      for (const width of [280, 320, 414, 1120]) {
+        await page.setViewportSize({ width, height: 900 });
+        await expect
+          .poll(() => measureLayout(page))
+          .toEqual({
+            documentWidth: width,
+            viewportWidth: width,
+            outsideViewport: [],
+            clipped: [],
+            undersizedTargets: [],
+            overlaps: [],
+          });
+      }
+      await page.setViewportSize({ width: 390, height: 900 });
+      await page
+        .getByText(
+          "Notifications are disabled on this device. Other devices are unaffected.",
+          { exact: true },
+        )
+        .scrollIntoViewIfNeeded();
+      await page.mouse.move(0, 0);
+      await page.screenshot({
+        path: testInfo.outputPath("notification-opt-out.png"),
+      });
+      await writeFile(
+        testInfo.outputPath("notification-opt-out.html"),
+        await page.content(),
+      );
+      await page.reload();
+      await expect(
+        page.getByRole("button", {
+          name: "Enable notifications on this device",
+          exact: true,
+        }),
+      ).toBeVisible();
+      await page.evaluate(() => {
+        window.dispatchEvent(new Event("online"));
+        window.dispatchEvent(new Event("focus"));
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      expect(device.enabled).toBe(false);
+      expect(device.user_disabled).toBe(true);
+      expect(claims.some(({ p_enable }) => p_enable)).toBe(false);
+      await page
+        .getByRole("button", {
+          name: "Enable notifications on this device",
+          exact: true,
+        })
+        .click();
+      await expect(disable).toBeVisible();
+      expect(device.enabled).toBe(true);
+      expect(device.user_disabled).toBe(false);
+      expect(claims.some(({ p_enable }) => p_enable)).toBe(true);
+    });
+  }
+
+  test("notification opt-out exposes loading and retry after a server failure", async ({
+    page,
+  }) => {
+    const subscription = {
+      endpoint: "https://push.example/current",
+      keys: { auth: "auth", p256dh: "key" },
+    };
+    let enabled = true;
+    let fail = true;
+    let release: (() => void) | undefined;
+    await mockSupabase(page);
+    await authenticate(page);
+    await mockBrowserPush(page, subscription);
+    await page.route(`${supabaseOrigin}/rest/v1/devices*`, async (route) => {
+      if (route.request().method() === "PATCH") {
+        if (fail) {
+          await new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          await route.fulfill({
+            status: 403,
+            contentType: "application/json",
+            body: JSON.stringify({ message: "Device update denied" }),
+          });
+          return;
+        }
+        enabled = false;
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ id: "this-browser" }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([
+          {
+            enabled,
+            user_disabled: !enabled,
+            token: JSON.stringify(subscription),
+          },
+        ]),
+      });
+    });
+    await page.goto("/settings");
+    await page
+      .getByRole("button", {
+        name: "Disable notifications on this device",
+        exact: true,
+      })
+      .click();
+    const loading = page.getByRole("button", {
+      name: "Disabling notifications...",
+      exact: true,
+    });
+    await expect(loading).toBeDisabled();
+    await expect(loading).toHaveAttribute("aria-busy", "true");
+    await expect.poll(() => typeof release).toBe("function");
+    if (!release) throw new Error("The disable request was not received.");
+    release();
+    await expect(
+      page.getByText(
+        "Notifications could not be disabled. Check your connection and try again.",
+        { exact: true },
+      ),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", {
+        name: "Disable notifications on this device",
+        exact: true,
+      }),
+    ).toBeVisible();
+    expect(enabled).toBe(true);
+    fail = false;
+    await page
+      .getByRole("button", {
+        name: "Disable notifications on this device",
+        exact: true,
+      })
+      .click();
+    await expect(
+      page.getByRole("button", {
+        name: "Enable notifications on this device",
+        exact: true,
+      }),
+    ).toBeVisible();
+    expect(enabled).toBe(false);
+  });
+
+  for (const theme of ["light", "dark"] as const) {
     for (const signedIn of [false, true]) {
       test(`shared brand icon matches the launcher in ${theme} mode ${signedIn ? "signed in" : "signed out"}`, async ({
         page,
@@ -624,55 +1069,7 @@ test.describe("responsive UI layout", () => {
         let repairedToken: string | null = null;
         await mockSupabase(page, [], theme);
         await authenticate(page);
-        await page.addInitScript(
-          ({ subscription }) => {
-            localStorage.setItem(
-              "cron-reminder:device-id",
-              JSON.stringify({
-                id: "this-browser",
-                token: "00000000-0000-4000-8000-000000000002",
-              }),
-            );
-            Object.defineProperty(Notification, "permission", {
-              value: "granted",
-              configurable: true,
-            });
-            Object.defineProperty(Notification, "requestPermission", {
-              value: async () => "granted",
-              configurable: true,
-            });
-            let current: typeof subscription | null = subscription;
-            const registration = {
-              pushManager: {
-                getSubscription: async () =>
-                  current && {
-                    ...current,
-                    unsubscribe: async () => {
-                      current = null;
-                      return true;
-                    },
-                  },
-                subscribe: async () => {
-                  current = {
-                    ...subscription,
-                    endpoint: "https://push.example/repaired",
-                  };
-                  return current;
-                },
-              },
-            };
-            Object.defineProperty(navigator.serviceWorker, "getRegistration", {
-              value: async () => registration,
-            });
-            Object.defineProperty(navigator.serviceWorker, "register", {
-              value: async () => registration,
-            });
-            Object.defineProperty(navigator.serviceWorker, "ready", {
-              value: Promise.resolve(registration),
-            });
-          },
-          { subscription },
-        );
+        await mockBrowserPush(page, subscription);
         await page.route(
           `${supabaseOrigin}/rest/v1/devices*`,
           async (route) => {
@@ -737,7 +1134,7 @@ test.describe("responsive UI layout", () => {
         if (state === "healthy") {
           await expect(
             page.getByRole("button", {
-              name: "Notifications are enabled on this device.",
+              name: "Disable notifications on this device",
             }),
           ).toBeVisible();
         } else {
@@ -805,7 +1202,7 @@ test.describe("responsive UI layout", () => {
             .click();
           await expect(
             page.getByRole("button", {
-              name: "Notifications are enabled on this device.",
+              name: "Disable notifications on this device",
             }),
           ).toBeVisible();
           expect(JSON.parse(repairedToken!)).toEqual({

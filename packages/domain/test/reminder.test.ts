@@ -3,6 +3,7 @@ import {
   archiveReminder,
   createReminder,
   completeOccurrence,
+  completeReminder,
   dismissOccurrence,
   duplicateReminder,
   postponeOccurrence,
@@ -75,6 +76,31 @@ describe("reminder lifecycle", () => {
     expect(copy.id).toBe("reminder-2");
     expect(copy.title).toBe(base.title);
     expect(copy.revision).toBe(1);
+  });
+
+  it("completes the whole reminder separately from its occurrences and reopens explicitly", () => {
+    const reminder = createReminder(base);
+    const now = "2026-09-24T12:00:00.000Z";
+    const completed = completeReminder(reminder, now);
+    expect(completed).toMatchObject({
+      status: "completed",
+      revision: reminder.revision + 1,
+      updatedAt: now,
+      schedule: reminder.schedule,
+    });
+    expect(reminder.status).toBe("active");
+    expect(completeReminder(completed, now)).toBe(completed);
+    expect(() => setReminderEnabled(completed, true)).toThrow("Reopen");
+    expect(restoreReminder(completed, now).status).toBe("active");
+    expect(
+      completeReminder(setReminderEnabled(reminder, false), now).status,
+    ).toBe("completed");
+    expect(() => completeReminder(archiveReminder(reminder), now)).toThrow(
+      "Restore",
+    );
+    expect(duplicateReminder(completed, "completed-copy", now).status).toBe(
+      "active",
+    );
   });
 
   it("dismisses and postpones only an occurrence", () => {

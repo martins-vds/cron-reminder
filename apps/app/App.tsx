@@ -68,6 +68,7 @@ import {
 import {
   authentication,
   deleteReminder,
+  disableDeviceNotifications,
   flushPendingDeviceDeregistrations,
   flushNotificationActions,
   flushPendingPushTokenUpdate,
@@ -121,7 +122,7 @@ import { synchronizationFailureMessage } from "./src/syncStatus";
 
 type ThemePreference = "system" | "light" | "dark";
 type NotificationRegistrationStatus =
-  "idle" | "registering" | "registered" | "error";
+  "idle" | "registering" | "registered" | "disabling" | "error";
 
 const service = new ReminderService(
   localRepository,
@@ -1833,6 +1834,7 @@ function ReminderList({
             borderColor: colors.border,
           },
         ]}
+        testID="reminder-search-panel"
       >
         <Field
           label={t("search")}
@@ -1845,28 +1847,41 @@ function ReminderList({
           onChangeText={setQuery}
           colors={colors}
         />
-        <View style={styles.filterGroup}>
-          <Text style={[styles.sectionLabel, { color: colors.subtle }]}>
-            {copy(locale, "Show", "Mostrar")}
+      </View>
+      <View style={styles.filterGroup} testID="schedule-filters">
+        <View style={styles.sectionHeadingRow}>
+          <Text
+            accessibilityRole="header"
+            aria-level={2}
+            style={[styles.sectionLabel, { color: colors.subtle }]}
+          >
+            {copy(locale, "Your schedules", "Suas agendas")}
           </Text>
-          <View style={styles.chips}>
-            {(["all", "active", "disabled", "archived"] as const).map(
-              (item) => (
-                <Button
-                  key={item}
-                  label={
-                    item === "all" ? copy(locale, "All", "Todos") : t(item)
-                  }
-                  onPress={() => setStatus(item)}
-                  active={status === item}
-                  selected={status === item}
-                  colors={colors}
-                  variant="chip"
-                  compact
-                />
-              ),
-            )}
-          </View>
+          <Text style={[styles.caption, { color: colors.subtle }]}>
+            {visible.length} {copy(locale, "shown", "exibidos")}
+          </Text>
+        </View>
+        <View style={styles.chips}>
+          {(
+            ["all", "active", "disabled", "completed", "archived"] as const
+          ).map((item) => (
+            <Button
+              key={item}
+              label={
+                item === "all"
+                  ? copy(locale, "All", "Todos")
+                  : item === "active"
+                    ? t("enabled")
+                    : t(item)
+              }
+              onPress={() => setStatus(item)}
+              active={status === item}
+              selected={status === item}
+              colors={colors}
+              variant="chip"
+              compact
+            />
+          ))}
         </View>
       </View>
       {visible.length === 0 && (
@@ -1906,16 +1921,6 @@ function ReminderList({
           }
         />
       )}
-      {visible.length > 0 && (
-        <View style={styles.sectionHeadingRow}>
-          <Text style={[styles.sectionLabel, { color: colors.subtle }]}>
-            {copy(locale, "Your schedules", "Suas agendas")}
-          </Text>
-          <Text style={[styles.caption, { color: colors.subtle }]}>
-            {visible.length} {copy(locale, "shown", "exibidos")}
-          </Text>
-        </View>
-      )}
       {visible.map((reminder) => (
         <View
           key={reminder.id}
@@ -1934,11 +1939,16 @@ function ReminderList({
                   {reminder.title}
                 </Text>
                 <StatusBadge
-                  label={t(reminder.status)}
+                  label={
+                    reminder.status === "active"
+                      ? t("enabled")
+                      : t(reminder.status)
+                  }
                   tone={
                     reminder.status === "active"
                       ? "success"
-                      : reminder.status === "archived"
+                      : reminder.status === "archived" ||
+                          reminder.status === "completed"
                         ? "neutral"
                         : "warning"
                   }
@@ -1967,7 +1977,8 @@ function ReminderList({
                 </View>
               )}
             </View>
-            {reminder.status !== "archived" && (
+            {(reminder.status === "active" ||
+              reminder.status === "disabled") && (
               <Switch
                 style={styles.reminderSwitch}
                 accessibilityLabel={`${reminder.title}: ${t("enabled")}`}
@@ -1990,6 +2001,29 @@ function ReminderList({
             )}
           </View>
           <View style={styles.actions}>
+            {(reminder.status === "active" ||
+              reminder.status === "disabled") && (
+              <Button
+                label={t("completeReminder")}
+                onPress={() =>
+                  void mutate(() => service.complete(ownerId, reminder.id))
+                }
+                colors={colors}
+                variant="secondary"
+                compact
+              />
+            )}
+            {reminder.status === "completed" && (
+              <Button
+                label={t("reopen")}
+                onPress={() =>
+                  void mutate(() => service.restore(ownerId, reminder.id))
+                }
+                colors={colors}
+                variant="secondary"
+                compact
+              />
+            )}
             <Button
               label={t("edit")}
               onPress={() => setEditing(reminder)}
@@ -3038,7 +3072,7 @@ function Settings({
   }
 
   async function enableNotifications() {
-    if (notificationStatus === "registering") return;
+    if (registrationInFlight.current) return;
     registrationInFlight.current = true;
     registrationCheckRevision.current++;
     setNotificationStatus("registering");
@@ -3071,6 +3105,7 @@ function Settings({
         p_token: registration.token,
         p_deregistration_token: deregistrationToken,
         p_existing_deregistration_token: rememberedDevice?.token ?? null,
+        p_enable: true,
       });
       if (error) throw error;
       if (!data) throw new Error("Unable to claim push token.");
@@ -3084,6 +3119,25 @@ function Settings({
       console.error("Notification registration failed.", error);
       setNotificationStatus("error");
       setNotificationMessageKey(notificationErrorMessageKey(error));
+    } finally {
+      registrationInFlight.current = false;
+    }
+  }
+
+  async function disableNotifications() {
+    if (registrationInFlight.current) return;
+    registrationInFlight.current = true;
+    registrationCheckRevision.current++;
+    setNotificationStatus("disabling");
+    setNotificationMessageKey(null);
+    try {
+      await disableDeviceNotifications(ownerId);
+      setNotificationStatus("idle");
+      setNotificationMessageKey("notificationsDisabled");
+    } catch (error) {
+      console.error("Unable to disable device notifications.", error);
+      setNotificationStatus("registered");
+      setNotificationMessageKey("notificationDisableFailed");
     } finally {
       registrationInFlight.current = false;
     }
@@ -3165,8 +3219,8 @@ function Settings({
             title={copy(locale, "Notifications", "Notificações")}
             description={copy(
               locale,
-              "Register this device to receive reminders when the app is closed.",
-              "Registre este dispositivo para receber lembretes quando o aplicativo estiver fechado.",
+              "Control reminders on this device, including when the app is closed. Disabling here does not change browser permissions or other devices.",
+              "Controle os lembretes neste dispositivo, inclusive com o aplicativo fechado. Desativar aqui não altera as permissões do navegador nem os outros dispositivos.",
             )}
             colors={colors}
           >
@@ -3175,21 +3229,41 @@ function Settings({
                 label={
                   notificationStatus === "registering"
                     ? t("enablingNotifications")
-                    : notificationStatus === "registered"
-                      ? t("notificationsEnabled")
-                      : t("enableNotifications")
+                    : notificationStatus === "disabling"
+                      ? t("disablingNotifications")
+                      : notificationStatus === "registered"
+                        ? t("disableNotifications")
+                        : t("enableNotifications")
                 }
-                onPress={() => void enableNotifications()}
+                onPress={() =>
+                  void (notificationStatus === "registered"
+                    ? disableNotifications()
+                    : enableNotifications())
+                }
                 colors={colors}
                 variant={
-                  notificationStatus === "registered" ? "secondary" : "primary"
+                  notificationStatus === "registered" ||
+                  notificationStatus === "disabling"
+                    ? "secondary"
+                    : "primary"
                 }
-                loading={notificationStatus === "registering"}
-                disabled={notificationStatus === "registering"}
+                loading={
+                  notificationStatus === "registering" ||
+                  notificationStatus === "disabling"
+                }
+                disabled={
+                  notificationStatus === "registering" ||
+                  notificationStatus === "disabling"
+                }
               />
               {notificationMessageKey ? (
                 <Notice
-                  tone={notificationStatus === "error" ? "warning" : "success"}
+                  tone={
+                    notificationStatus === "error" ||
+                    notificationMessageKey === "notificationDisableFailed"
+                      ? "warning"
+                      : "success"
+                  }
                   colors={colors}
                   text={t(notificationMessageKey)}
                 />
@@ -3523,6 +3597,9 @@ function Button({
       }}
       aria-controls={controls}
       aria-expanded={expanded}
+      aria-busy={loading}
+      aria-pressed={Platform.OS === "web" && isChip ? !!isSelected : undefined}
+      aria-current={isNav && isSelected ? "page" : undefined}
       disabled={isUnavailable}
       onPress={onPress}
       onHoverIn={() => setHovered(true)}
@@ -3538,7 +3615,7 @@ function Button({
         {
           backgroundColor,
           borderColor: focused ? colors.focus : borderColor,
-          opacity: disabled ? 0.48 : 1,
+          opacity: disabled && !loading ? 0.48 : 1,
           transform: [{ scale: pressed ? 0.985 : 1 }],
         },
       ]}

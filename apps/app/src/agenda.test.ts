@@ -148,6 +148,38 @@ describe("agenda", () => {
     });
   });
 
+  it.each([
+    "scheduled",
+    "triggered",
+    "delivering",
+    "delivery-failed",
+    "missed",
+    "postponed",
+  ] as const)(
+    "hides completed reminders with %s occurrences and projects no future reminders",
+    (status) => {
+      const occurrences: StoredAgendaOccurrence[] = [
+        {
+          id: "finished",
+          reminder_id: reminder.id,
+          scheduled_at: "2026-09-25T09:00:00.000Z",
+          status,
+          acted_at: null,
+          snoozed_until:
+            status === "postponed" ? "2026-09-25T11:00:00.000Z" : null,
+        },
+      ];
+      const original = structuredClone(occurrences);
+      expect(
+        buildAgendaItems(
+          [{ ...reminder, status: "completed" }],
+          occurrences,
+          new Date("2026-09-25T10:00:00.000Z"),
+        ),
+      ).toEqual([]);
+      expect(occurrences).toEqual(original);
+    },
+  );
   it("does not duplicate a calculated occurrence already recorded", () => {
     const scheduledAt = "2026-09-25T12:00:00.000Z";
     const items = buildAgendaItems(

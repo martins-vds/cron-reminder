@@ -10,6 +10,8 @@ const messages = {
     archived: "Archived",
     cancel: "Cancel",
     complete: "Complete",
+    completeReminder: "Complete reminder",
+    completed: "Completed",
     confirmDelete: "Delete this reminder permanently?",
     create: "Create",
     daily: "Daily",
@@ -32,6 +34,7 @@ const messages = {
     reminders: "Reminders",
     refresh: "Refresh",
     restore: "Restore",
+    reopen: "Reopen",
     save: "Save",
     schedule: "Schedule",
     search: "Search reminders",
@@ -46,6 +49,12 @@ const messages = {
     upcoming: "Next occurrences",
     enableNotifications: "Enable notifications on this device",
     enablingNotifications: "Enabling notifications...",
+    disableNotifications: "Disable notifications on this device",
+    disablingNotifications: "Disabling notifications...",
+    notificationsDisabled:
+      "Notifications are disabled on this device. Other devices are unaffected.",
+    notificationDisableFailed:
+      "Notifications could not be disabled. Check your connection and try again.",
     notificationsEnabled: "Notifications are enabled on this device.",
     notificationPermissionDenied:
       "Notifications are blocked. Allow them for this site in your browser settings, then try again.",
@@ -72,6 +81,8 @@ const messages = {
     archived: "Arquivados",
     cancel: "Cancelar",
     complete: "Concluir",
+    completeReminder: "Concluir lembrete",
+    completed: "Concluídos",
     confirmDelete: "Excluir este lembrete permanentemente?",
     create: "Criar",
     daily: "Diariamente",
@@ -94,6 +105,7 @@ const messages = {
     reminders: "Lembretes",
     refresh: "Atualizar",
     restore: "Restaurar",
+    reopen: "Reabrir",
     save: "Salvar",
     schedule: "Agenda",
     search: "Buscar lembretes",
@@ -108,6 +120,12 @@ const messages = {
     upcoming: "Próximas ocorrências",
     enableNotifications: "Ativar notificações neste dispositivo",
     enablingNotifications: "Ativando notificações...",
+    disableNotifications: "Desativar notificações neste dispositivo",
+    disablingNotifications: "Desativando notificações...",
+    notificationsDisabled:
+      "As notificações estão desativadas neste dispositivo. Os outros dispositivos não foram afetados.",
+    notificationDisableFailed:
+      "Não foi possível desativar as notificações. Verifique sua conexão e tente novamente.",
     notificationsEnabled: "As notificações estão ativas neste dispositivo.",
     notificationPermissionDenied:
       "As notificações estão bloqueadas. Permita-as para este site nas configurações do navegador e tente novamente.",

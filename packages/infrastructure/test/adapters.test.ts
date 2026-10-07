@@ -84,6 +84,20 @@ describe("local persistence", () => {
 });
 
 describe("versioned JSON backup", () => {
+  it("round-trips completed reminders without reopening them", async () => {
+    const completed = reminder({ status: "completed" });
+    const imported = importBackup(
+      exportBackup([completed], new Date()),
+      [],
+      "u1",
+    );
+    expect(imported.invalid).toBe(0);
+    expect(imported.merged).toEqual([completed]);
+    const repository = new JsonReminderRepository(new MemoryStore());
+    await repository.save(completed);
+    expect(await repository.get("u1", completed.id)).toEqual(completed);
+  });
+
   it("exports no credentials or device tokens", () => {
     const data = exportBackup(
       [reminder()],
