@@ -1,4 +1,9 @@
-import { MAX_DAILY_TIMES, type Schedule } from "@cron-reminder/domain";
+import {
+  MAX_DAILY_TIMES,
+  isValidScheduleTimestamp,
+  type Schedule,
+  type RecurrenceBounds,
+} from "@cron-reminder/domain";
 
 export type ScheduleEditorKind =
   | "once"
@@ -19,6 +24,10 @@ export interface ScheduleEditorState {
   yearMonth: string;
   yearDay: string;
   advancedCron: string;
+  ends: "never" | "until" | "count" | "until-or-count";
+  endAt: string;
+  occurrenceLimit: string;
+  startAt?: string;
 }
 
 const defaultCron = "0 9 * * *";
@@ -27,6 +36,7 @@ export function createScheduleEditorState(
   schedule: Schedule | undefined,
   now = new Date(),
 ): ScheduleEditorState {
+  const recurring = schedule?.kind !== "once" ? schedule : undefined;
   const defaults: ScheduleEditorState = {
     kind: "daily",
     onceAt: new Date(now.getTime() + 3_600_000).toISOString(),
@@ -37,6 +47,19 @@ export function createScheduleEditorState(
     yearMonth: "1",
     yearDay: "1",
     advancedCron: schedule?.kind === "cron" ? schedule.expression : defaultCron,
+    ends:
+      recurring?.endAt && recurring.occurrenceLimit !== undefined
+        ? "until-or-count"
+        : recurring?.endAt
+          ? "until"
+          : recurring?.occurrenceLimit !== undefined
+            ? "count"
+            : "never",
+    endAt:
+      recurring?.endAt ??
+      new Date(now.getTime() + 7 * 86_400_000).toISOString(),
+    occurrenceLimit: String(recurring?.occurrenceLimit ?? 10),
+    ...(recurring?.startAt !== undefined ? { startAt: recurring.startAt } : {}),
   };
 
   if (!schedule) return defaults;
@@ -50,14 +73,6 @@ export function createScheduleEditorState(
       dailyTimes: [...schedule.times],
     };
   }
-  if (
-    schedule.startAt !== undefined ||
-    schedule.endAt !== undefined ||
-    schedule.occurrenceLimit !== undefined
-  ) {
-    return { ...defaults, kind: "advanced" };
-  }
-
   const expression = schedule.expression.trim().replace(/\s+/g, " ");
   const dailyTimes = parseDailyCronTimes(expression);
   if (dailyTimes) {
@@ -130,6 +145,38 @@ export function createScheduleEditorState(
   return { ...defaults, kind: "advanced" };
 }
 
+export function buildSchedule(state: ScheduleEditorState): Schedule {
+  if (state.kind === "once") return { kind: "once", at: state.onceAt };
+  const bounds: RecurrenceBounds = {
+    ...(state.startAt !== undefined ? { startAt: state.startAt } : {}),
+    ...(state.ends === "until" || state.ends === "until-or-count"
+      ? { endAt: state.endAt }
+      : {}),
+    ...(state.ends === "count" || state.ends === "until-or-count"
+      ? { occurrenceLimit: Number(state.occurrenceLimit) }
+      : {}),
+  };
+  const times = normalizeDailyTimes(state.dailyTimes);
+  return state.kind === "daily" && times.length > 1
+    ? { kind: "daily-times", times, ...bounds }
+    : { kind: "cron", expression: buildCronExpression(state), ...bounds };
+}
+
+export function hasValidScheduleEndValues(state: ScheduleEditorState): boolean {
+  if (state.kind === "once") return true;
+  if (
+    (state.ends === "until" || state.ends === "until-or-count") &&
+    (!isValidScheduleTimestamp(state.endAt) ||
+      (state.startAt !== undefined &&
+        Date.parse(state.endAt) < Date.parse(state.startAt)))
+  )
+    return false;
+  return (
+    (state.ends !== "count" && state.ends !== "until-or-count") ||
+    isIntegerInRange(state.occurrenceLimit, 1, Number.MAX_SAFE_INTEGER)
+  );
+}
+
 export function buildCronExpression(state: ScheduleEditorState): string {
   if (state.kind === "advanced") return state.advancedCron;
   if (state.kind === "interval") {
@@ -155,6 +202,7 @@ export function buildCronExpression(state: ScheduleEditorState): string {
 export function hasValidScheduleEditorValues(
   state: ScheduleEditorState,
 ): boolean {
+  if (!hasValidScheduleEndValues(state)) return false;
   if (state.kind === "once" || state.kind === "advanced") return true;
   if (state.kind === "daily") {
     const times = normalizeDailyTimes(state.dailyTimes);

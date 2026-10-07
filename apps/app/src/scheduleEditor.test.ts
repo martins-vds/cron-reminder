@@ -1,12 +1,118 @@
 import { describe, expect, it } from "vitest";
 import {
   buildCronExpression,
+  buildSchedule,
   createScheduleEditorState,
   hasValidScheduleEditorValues,
 } from "./scheduleEditor";
 import { MAX_DAILY_TIMES } from "@cron-reminder/domain";
 
 describe("schedule editor", () => {
+  it.each([
+    "0 9 * * *",
+    "*/5 * * * *",
+    "0 9 * * 1-5",
+    "0 9 20 * *",
+    "0 9 24 9 *",
+  ])(
+    "round-trips bounded preset %s without forcing advanced mode",
+    (expression) => {
+      const schedule = {
+        kind: "cron" as const,
+        expression,
+        startAt: "2026-09-24T00:00:00.000Z",
+        endAt: "2026-10-24T00:00:00.000Z",
+        occurrenceLimit: 12,
+      };
+      const editor = createScheduleEditorState(schedule);
+      expect(editor.kind).not.toBe("advanced");
+      expect(editor.ends).toBe("until-or-count");
+      expect(buildSchedule(editor)).toEqual({
+        ...schedule,
+        expression: buildCronExpression(editor),
+      });
+    },
+  );
+
+  it("preserves bounded daily times across edits and frequency changes", () => {
+    const schedule = {
+      kind: "daily-times" as const,
+      times: ["09:00", "12:30"],
+      endAt: "2026-10-24T00:00:00.000Z",
+    };
+    const editor = createScheduleEditorState(schedule);
+    expect(editor).toMatchObject({
+      kind: "daily",
+      ends: "until",
+      endAt: schedule.endAt,
+    });
+    expect(buildSchedule(editor)).toEqual(schedule);
+    expect(buildSchedule({ ...editor, kind: "weekdays" })).toMatchObject({
+      kind: "cron",
+      endAt: schedule.endAt,
+    });
+    expect(
+      buildSchedule({ ...editor, ends: "count", occurrenceLimit: "7" }),
+    ).toEqual({
+      kind: "daily-times",
+      times: schedule.times,
+      occurrenceLimit: 7,
+    });
+    expect(buildSchedule({ ...editor, ends: "never" })).toEqual({
+      kind: "daily-times",
+      times: schedule.times,
+    });
+    expect(buildSchedule({ ...editor, kind: "once" })).toEqual({
+      kind: "once",
+      at: editor.onceAt,
+    });
+  });
+
+  it("validates end dates and positive safe whole occurrence counts", () => {
+    const state = createScheduleEditorState(undefined);
+    for (const occurrenceLimit of [
+      "",
+      "0",
+      "-1",
+      "1.5",
+      "NaN",
+      "9007199254740992",
+    ]) {
+      expect(
+        hasValidScheduleEditorValues({
+          ...state,
+          ends: "count",
+          occurrenceLimit,
+        }),
+      ).toBe(false);
+    }
+    expect(
+      hasValidScheduleEditorValues({
+        ...state,
+        ends: "count",
+        occurrenceLimit: "3",
+      }),
+    ).toBe(true);
+    expect(
+      hasValidScheduleEditorValues({ ...state, ends: "until", endAt: "" }),
+    ).toBe(false);
+    expect(
+      hasValidScheduleEditorValues({
+        ...state,
+        ends: "until",
+        endAt: "2026-02-30T09:00:00Z",
+      }),
+    ).toBe(false);
+    expect(
+      hasValidScheduleEditorValues({
+        ...state,
+        ends: "never",
+        endAt: "",
+        occurrenceLimit: "",
+      }),
+    ).toBe(true);
+  });
+
   it("turns common cron expressions into plain-language editor modes", () => {
     expect(
       createScheduleEditorState({

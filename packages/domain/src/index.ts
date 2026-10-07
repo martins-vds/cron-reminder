@@ -6,24 +6,35 @@ export type OccurrenceStatus =
   | "triggered"
   | "delivering"
   | "dismissed"
+  | "completed"
   | "postponed"
   | "missed"
   | "delivery-failed";
 export type HistoryEventType =
-  "triggered" | "dismissed" | "postponed" | "missed" | "delivery-failed";
+  | "triggered"
+  | "dismissed"
+  | "completed"
+  | "postponed"
+  | "missed"
+  | "delivery-failed";
+
+export type NotificationAction = "dismiss" | "snooze" | "complete";
 
 export type ReminderSound = { mode: "default" | "silent" | "vibrate" };
 
+export interface RecurrenceBounds {
+  startAt?: string;
+  endAt?: string;
+  occurrenceLimit?: number;
+}
+
 export type Schedule =
   | { kind: "once"; at: string }
-  | { kind: "daily-times"; times: readonly string[] }
-  | {
+  | ({ kind: "daily-times"; times: readonly string[] } & RecurrenceBounds)
+  | ({
       kind: "cron";
       expression: string;
-      startAt?: string;
-      endAt?: string;
-      occurrenceLimit?: number;
-    };
+    } & RecurrenceBounds);
 
 export interface Reminder {
   id: string;
@@ -69,7 +80,7 @@ export interface CreateReminderInput {
   now: string;
 }
 
-export const SNOOZE_MINUTES = [5, 10, 15, 30, 60] as const;
+export const SNOOZE_MINUTES = [5, 10, 15] as const;
 export const HISTORY_RETENTION_DAYS = 30;
 export const MAX_DAILY_TIMES = 24;
 const REMINDER_ID_PATTERN = /^[a-z0-9_-]+$/;
@@ -199,10 +210,10 @@ export function validateSchedule(schedule: Schedule): void {
       throw new Error("Daily times must use HH:MM in 24-hour format.");
     if (new Set(normalized).size !== normalized.length)
       throw new Error("Daily times must be unique.");
-    return;
+  } else {
+    const result = validateCronExpression(schedule.expression);
+    if (!result.valid) throw new Error(result.error);
   }
-  const result = validateCronExpression(schedule.expression);
-  if (!result.valid) throw new Error(result.error);
   if (
     schedule.occurrenceLimit !== undefined &&
     (!Number.isSafeInteger(schedule.occurrenceLimit) ||
@@ -370,19 +381,90 @@ export function dismissOccurrence(
   return { ...occurrence, status: "dismissed", actedAt: now };
 }
 
-export function postponeOccurrence(
+export function completeOccurrence(
   occurrence: Occurrence,
-  minutes: (typeof SNOOZE_MINUTES)[number],
   now: string,
 ): Occurrence {
-  if (!SNOOZE_MINUTES.includes(minutes))
-    throw new Error("Unsupported snooze duration.");
+  return {
+    ...occurrence,
+    status: "completed",
+    actedAt: now,
+    snoozedUntil: undefined,
+  };
+}
+
+export function postponeOccurrence(
+  occurrence: Occurrence,
+  minutes: number,
+  now: string,
+  nextOccurrenceAt: string | null = null,
+): Occurrence {
+  const postponement = resolvePostponement(minutes, now, nextOccurrenceAt);
   return {
     ...occurrence,
     status: "postponed",
     actedAt: now,
-    snoozedUntil: new Date(Date.parse(now) + minutes * 60_000).toISOString(),
+    snoozedUntil: postponement.until,
   };
+}
+
+export interface Postponement {
+  until: string;
+  mergeIntoNext: boolean;
+}
+
+export function resolvePostponement(
+  selection: number | "next" | { until: string },
+  now: string,
+  nextOccurrenceAt: string | null,
+): Postponement {
+  const nowTime = Date.parse(now);
+  if (!Number.isFinite(nowTime)) throw new Error("Invalid current time.");
+  let targetTime: number;
+  if (selection === "next") {
+    if (!nextOccurrenceAt)
+      throw new Error("This reminder has no next occurrence.");
+    targetTime = Date.parse(nextOccurrenceAt);
+  } else if (typeof selection === "number") {
+    if (!Number.isSafeInteger(selection) || selection < 1)
+      throw new Error("Enter a positive whole number of minutes.");
+    targetTime = nowTime + selection * 60_000;
+  } else {
+    targetTime = Date.parse(selection.until);
+  }
+  if (
+    !Number.isFinite(targetTime) ||
+    !Number.isFinite(new Date(targetTime).getTime())
+  )
+    throw new Error("Choose a valid postponement time.");
+  if (targetTime <= nowTime)
+    throw new Error("The postponement time has passed. Choose a future time.");
+  const nextTime = nextOccurrenceAt ? Date.parse(nextOccurrenceAt) : null;
+  if (nextTime !== null && (!Number.isFinite(nextTime) || nextTime <= nowTime))
+    throw new Error("The next occurrence has changed. Refresh and try again.");
+  if (nextTime !== null && targetTime > nextTime)
+    throw new Error("Choose a time no later than the next occurrence.");
+  return {
+    until: new Date(targetTime).toISOString(),
+    mergeIntoNext: nextTime !== null && targetTime === nextTime,
+  };
+}
+
+export function nextPostponementAt(
+  reminder: Pick<Reminder, "schedule" | "timezone" | "status">,
+  now: Date,
+  occurrenceCount?: number,
+): string | null {
+  if (reminder.status !== "active") return null;
+  const { schedule, timezone } = reminder;
+  if (
+    schedule.kind !== "once" &&
+    schedule.occurrenceLimit !== undefined &&
+    occurrenceCount !== undefined &&
+    occurrenceCount >= schedule.occurrenceLimit
+  )
+    return null;
+  return nextOccurrences(schedule, timezone, now, 1)[0]?.toISOString() ?? null;
 }
 
 export function nextOccurrences(
@@ -396,17 +478,25 @@ export function nextOccurrences(
     const occurrence = new Date(schedule.at);
     return occurrence > after ? [occurrence] : [];
   }
+  if (schedule.endAt && Date.parse(schedule.endAt) <= after.getTime())
+    return [];
+  const capped = Math.min(count, schedule.occurrenceLimit ?? count);
+  const forExpression = (expression: string): Date[] => {
+    const interval = CronExpressionParser.parse(expression, {
+      currentDate: after,
+      startDate: inclusiveStartDate(schedule.startAt),
+      endDate: schedule.endAt,
+      tz: timezone,
+    });
+    const dates: Date[] = [];
+    while (dates.length < capped && interval.hasNext())
+      dates.push(interval.next().toDate());
+    return dates;
+  };
   if (schedule.kind === "daily-times") {
     const candidates = schedule.times.flatMap((time) => {
       const [hour, minute] = time.split(":");
-      const interval = CronExpressionParser.parse(
-        `${Number(minute)} ${Number(hour)} * * *`,
-        {
-          currentDate: after,
-          tz: timezone,
-        },
-      );
-      return interval.take(count).map((value) => value.toDate());
+      return forExpression(`${Number(minute)} ${Number(hour)} * * *`);
     });
     return [
       ...new Map(
@@ -414,16 +504,9 @@ export function nextOccurrences(
       ).values(),
     ]
       .sort((left, right) => left.getTime() - right.getTime())
-      .slice(0, count);
+      .slice(0, capped);
   }
-  const interval = CronExpressionParser.parse(schedule.expression, {
-    currentDate: after,
-    startDate: inclusiveStartDate(schedule.startAt),
-    endDate: schedule.endAt,
-    tz: timezone,
-  });
-  const capped = Math.min(count, schedule.occurrenceLimit ?? count);
-  return interval.take(capped).map((value) => value.toDate());
+  return forExpression(schedule.expression);
 }
 
 function inclusiveStartDate(value: string | undefined): Date | undefined {
@@ -431,6 +514,33 @@ function inclusiveStartDate(value: string | undefined): Date | undefined {
 }
 
 export function describeSchedule(
+  schedule: Schedule,
+  locale: "en" | "pt-BR",
+  timezone?: string,
+): string {
+  const frequency = describeScheduleFrequency(schedule, locale);
+  if (schedule.kind === "once") return frequency;
+  const endings: string[] = [];
+  if (schedule.endAt) {
+    const end = new Intl.DateTimeFormat(locale, {
+      dateStyle: "medium",
+      timeStyle: "short",
+      timeZone: timezone,
+    }).format(new Date(schedule.endAt));
+    endings.push(locale === "pt-BR" ? `até ${end}` : `until ${end}`);
+  }
+  if (schedule.occurrenceLimit !== undefined) {
+    const count = schedule.occurrenceLimit;
+    endings.push(
+      locale === "pt-BR"
+        ? `${count} ${count === 1 ? "ocorrência" : "ocorrências"} no total`
+        : `${count} ${count === 1 ? "occurrence" : "occurrences"} total`,
+    );
+  }
+  return [frequency, ...endings].join(" · ");
+}
+
+function describeScheduleFrequency(
   schedule: Schedule,
   locale: "en" | "pt-BR",
 ): string {

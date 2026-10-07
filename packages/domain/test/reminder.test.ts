@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   archiveReminder,
   createReminder,
+  completeOccurrence,
   dismissOccurrence,
   duplicateReminder,
   postponeOccurrence,
@@ -87,5 +88,24 @@ describe("reminder lifecycle", () => {
     expect(postponeOccurrence(occurrence, 10, base.now).snoozedUntil).toBe(
       "2026-09-23T12:10:00.000Z",
     );
+  });
+
+  it("completes an occurrence without changing its recurring reminder", () => {
+    const reminder = createReminder(base);
+    const occurrence = {
+      id: "reminder-1:2026-09-24T12:00:00.000Z",
+      reminderId: reminder.id,
+      scheduledAt: "2026-09-24T12:00:00.000Z",
+      status: "postponed" as const,
+      snoozedUntil: "2026-09-24T12:10:00.000Z",
+    };
+    expect(completeOccurrence(occurrence, base.now)).toMatchObject({
+      status: "completed",
+      actedAt: base.now,
+      snoozedUntil: undefined,
+    });
+    expect(reminder.status).toBe("active");
+    expect(reminder.schedule).toEqual(base.schedule);
+    expect(occurrence.status).toBe("postponed");
   });
 });

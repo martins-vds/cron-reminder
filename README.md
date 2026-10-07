@@ -15,6 +15,40 @@ The npm workspace enforces a dependency direction toward the isolated domain:
 
 The domain package has no React, Expo, storage, or Supabase dependencies.
 
+## Recurring schedules
+
+Recurring reminders can end **Never**, **Until a date and time** (inclusive), or
+**After a number of occurrences**, in both the create and edit forms. These
+options work with every recurring frequency, including multiple daily times.
+The occurrence limit counts individually scheduled occurrences, including ones
+already generated; editing the limit does not restart the count, and postponing
+does not add an occurrence. Changing Ends to Never removes the end date and count
+limit. Existing schedules with both limits preserve both until you choose a
+different ending option.
+
+## Reminder actions
+
+Today shows the latest overdue occurrence per reminder instead of a backlog of
+repeated missed occurrences. Earlier occurrences remain in the 30-day History;
+dismissing, postponing, or completing the latest does not bring old missed items
+back. Explicitly postponed occurrences remain visible until handled.
+
+Reminder actions are **Dismiss** (skip this occurrence), **Postpone**, and
+**Complete** (record this occurrence as done). Postpone opens choices for
+5, 10, or 15 minutes, a custom whole-minute duration, or **Until next occurrence**.
+Choices cannot go beyond the next future occurrence of the current schedule;
+presets that do not fit are disabled. An exact-boundary choice folds into the
+next regular occurrence, so only one notification is delivered at that time.
+One-time reminders and exhausted schedules allow any future custom duration and
+do not offer Until next occurrence. The server revalidates the boundary and
+remaining repeat count; offline actions retain their chosen absolute time
+instead of starting a fresh delay when they reconnect.
+
+These actions never disable a recurring reminder or change its future schedule.
+Web and native push notifications request these same three actions; the browser
+or operating system may limit how many notification buttons it displays. All
+applicable actions remain available in Today.
+
 ## Prerequisites
 
 - Node.js 22 or newer

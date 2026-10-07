@@ -12,7 +12,11 @@ import type {
   AuthenticationPort,
   SyncConflict,
 } from "@cron-reminder/application";
-import type { Reminder } from "@cron-reminder/domain";
+import type {
+  NotificationAction,
+  Postponement,
+  Reminder,
+} from "@cron-reminder/domain";
 import { AppState, Platform } from "react-native";
 
 export const localRepository = new JsonReminderRepository({
@@ -75,8 +79,11 @@ let pushTokenQueue = Promise.resolve();
 
 interface PendingNotificationAction {
   occurrenceId: string;
-  action: "dismiss" | "snooze";
+  action: NotificationAction;
   ownerId: string;
+  queuedAt?: string;
+  until?: string;
+  mergeIntoNext?: boolean;
 }
 
 interface DeviceRegistrationRecord {
@@ -318,9 +325,12 @@ export async function flushDeletedReminders(ownerId: string): Promise<void> {
 
 export async function submitNotificationAction(
   occurrenceId: string,
-  action: "dismiss" | "snooze",
+  action: NotificationAction,
   ownerId: string,
+  postponement?: Postponement,
 ): Promise<void> {
+  if (action === "snooze" && !postponement)
+    throw new Error("Choose a postponement time.");
   await withNotificationActions(async () => {
     const pending = await readNotificationActions();
     if (
@@ -331,11 +341,32 @@ export async function submitNotificationAction(
           item.ownerId === ownerId,
       )
     ) {
-      pending.push({ occurrenceId, action, ownerId });
+      pending.push({
+        occurrenceId,
+        action,
+        ownerId,
+        queuedAt: new Date().toISOString(),
+        ...(postponement
+          ? {
+              until: postponement.until,
+              mergeIntoNext: postponement.mergeIntoNext,
+            }
+          : {}),
+      });
       await writeNotificationActions(pending);
     }
   });
   await flushNotificationActions(ownerId);
+}
+
+export async function getPendingNotificationActions(
+  ownerId: string,
+): Promise<PendingNotificationAction[]> {
+  return withNotificationActions(async () =>
+    (await readNotificationActions()).filter(
+      (item) => item.ownerId === ownerId,
+    ),
+  );
 }
 
 export async function flushNotificationActions(ownerId: string): Promise<void> {
@@ -353,7 +384,7 @@ export async function flushNotificationActions(ownerId: string): Promise<void> {
           ? {
               occurrenceId: item.occurrenceId,
               action: item.action,
-              minutes: 10,
+              ...(item.until ? { until: item.until } : { minutes: 10 }),
             }
           : { occurrenceId: item.occurrenceId, action: item.action };
       const { error } = await supabase.functions.invoke("occurrence-action", {
@@ -370,7 +401,24 @@ export async function flushNotificationActions(ownerId: string): Promise<void> {
           ),
         );
       });
-      if (error) throw error;
+      if (error) {
+        if (
+          typeof error === "object" &&
+          error !== null &&
+          "context" in error &&
+          error.context instanceof Response
+        ) {
+          const payload: unknown = await error.context.clone().json();
+          if (
+            typeof payload === "object" &&
+            payload !== null &&
+            "error" in payload &&
+            typeof payload.error === "string"
+          )
+            throw new Error(payload.error);
+        }
+        throw error;
+      }
     }
   });
 }
@@ -426,6 +474,7 @@ async function readNotificationActions(): Promise<PendingNotificationAction[]> {
       item !== null &&
       typeof (item as Record<string, unknown>).occurrenceId === "string" &&
       ((item as Record<string, unknown>).action === "dismiss" ||
+        (item as Record<string, unknown>).action === "complete" ||
         (item as Record<string, unknown>).action === "snooze") &&
       typeof (item as Record<string, unknown>).ownerId === "string",
   );
@@ -550,7 +599,7 @@ function isTerminalNotificationActionError(error: unknown): boolean {
     return false;
   }
   const status = (context as { status?: unknown }).status;
-  return status === 400 || status === 404;
+  return status === 400 || status === 404 || status === 409;
 }
 
 function withTombstones<T>(operation: () => Promise<T>): Promise<T> {

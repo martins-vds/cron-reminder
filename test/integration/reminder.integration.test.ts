@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import pg from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { nextPostponementAt, type Schedule } from "@cron-reminder/domain";
 
 const { Pool } = pg;
 const ownerId = "11111111-1111-4111-8111-111111111111";
@@ -74,6 +75,34 @@ async function insertReminder(options?: {
   return { id, scheduledAt };
 }
 
+async function insertPostponementOccurrence(
+  schedule: Schedule,
+): Promise<string> {
+  const { id, scheduledAt } = await insertReminder({ schedule });
+  const occurrenceId = `${id}:${scheduledAt.toISOString()}`;
+  await pool.query(
+    `insert into public.occurrences(
+      id, reminder_id, owner_id, reminder_revision, scheduled_at, status
+    ) values ($1, $2, $3, 1, $4, 'triggered')`,
+    [occurrenceId, id, ownerId, scheduledAt.toISOString()],
+  );
+  return occurrenceId;
+}
+
+async function postponeRequest(
+  occurrenceId: string,
+  selection: { minutes: number } | { until: string },
+) {
+  return fetch("http://127.0.0.1:55431/", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${jwt("authenticated", ownerId)}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ occurrenceId, action: "snooze", ...selection }),
+  });
+}
+
 async function resetDatabase(): Promise<void> {
   await pool.query("truncate table auth.users cascade");
   await pool.query(
@@ -99,6 +128,192 @@ afterAll(async () => {
 });
 
 describe("database migrations and delivery RPCs", () => {
+  it.each([5, 10, 15, 75])(
+    "allows %i minutes for a one-time reminder with no next occurrence",
+    async (minutes) => {
+      const occurrenceId = await insertPostponementOccurrence({
+        kind: "once",
+        at: new Date(Date.now() - 60_000).toISOString(),
+      });
+      const before = Date.now();
+      const response = await postponeRequest(occurrenceId, { minutes });
+      expect(response.status).toBe(200);
+      const result = (await response.json()) as {
+        until: string;
+        mergedIntoNext: boolean;
+      };
+      expect(Date.parse(result.until)).toBeGreaterThanOrEqual(
+        before + minutes * 60_000,
+      );
+      expect(result.mergedIntoNext).toBe(false);
+    },
+  );
+
+  it("enforces the inclusive schedule boundary and permits only one delivery at the next occurrence", async () => {
+    const schedule: Schedule = { kind: "cron", expression: "0 0 * * *" };
+    const occurrenceId = await insertPostponementOccurrence(schedule);
+    const next = nextPostponementAt(
+      { schedule, timezone: "UTC", status: "active" },
+      new Date(),
+    )!;
+    const over = await postponeRequest(occurrenceId, {
+      until: new Date(Date.parse(next) + 1).toISOString(),
+    });
+    expect(over.status).toBe(400);
+    const exact = await postponeRequest(occurrenceId, { until: next });
+    expect(exact.status).toBe(200);
+    expect(await exact.json()).toMatchObject({
+      mergedIntoNext: true,
+      until: next,
+    });
+    const folded = await pool.query<{ postponed_to_next: boolean }>(
+      "select postponed_to_next from public.occurrences where id = $1",
+      [occurrenceId],
+    );
+    expect(folded.rows[0]?.postponed_to_next).toBe(true);
+    const naturalId = `integration-reminder:${next}`;
+    await pool.query(
+      `insert into public.occurrences(
+        id, reminder_id, owner_id, reminder_revision, scheduled_at, status
+      ) values ($1, 'integration-reminder', $2, 1, $3, 'triggered')`,
+      [naturalId, ownerId, next],
+    );
+    const postponed = await pool.query(
+      "select * from public.list_deliverable_occurrences($1, $1::timestamptz - interval '5 minutes', 100, true)",
+      [next],
+    );
+    expect(postponed.rows).toEqual([]);
+    const pending = await pool.query<{ occurrence_id: string }>(
+      "select * from public.list_deliverable_occurrences($1, $1::timestamptz - interval '5 minutes', 100, false)",
+      [next],
+    );
+    expect(pending.rows.map(({ occurrence_id }) => occurrence_id)).toEqual([
+      naturalId,
+    ]);
+    const claim = (id: string) =>
+      pool.query<{ claimed: boolean }>(
+        "select public.claim_occurrence_delivery($1, $2, 'integration-reminder', 1, $3, $4, $4::timestamptz - interval '5 minutes') as claimed",
+        [id, ownerId, crypto.randomUUID(), next],
+      );
+    expect((await claim(occurrenceId)).rows[0]?.claimed).toBe(false);
+    expect((await claim(naturalId)).rows[0]?.claimed).toBe(true);
+  });
+
+  it("keeps a custom postponement before the next occurrence independently deliverable", async () => {
+    const schedule: Schedule = { kind: "cron", expression: "0 0 * * *" };
+    const occurrenceId = await insertPostponementOccurrence(schedule);
+    const until = new Date(Date.now() + 2 * 60_000).toISOString();
+    expect((await postponeRequest(occurrenceId, { until })).status).toBe(200);
+    const deliverable = await pool.query<{ occurrence_id: string }>(
+      "select * from public.list_deliverable_occurrences($1, $1::timestamptz - interval '5 minutes', 100, true)",
+      [until],
+    );
+    expect(deliverable.rows.map(({ occurrence_id }) => occurrence_id)).toEqual([
+      occurrenceId,
+    ]);
+  });
+
+  it("allows an arbitrary custom duration when the repeat limit has been reached", async () => {
+    const occurrenceId = await insertPostponementOccurrence({
+      kind: "cron",
+      expression: "0 * * * *",
+      occurrenceLimit: 1,
+    });
+    const response = await postponeRequest(occurrenceId, { minutes: 75 });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ mergedIntoNext: false });
+  });
+
+  it("retains a long one-time postponement past the normal agenda lookback", async () => {
+    const scheduledAt = new Date(Date.now() - 31 * 86_400_000);
+    const { id } = await insertReminder({
+      scheduledAt,
+      schedule: { kind: "once", at: scheduledAt.toISOString() },
+    });
+    const occurrenceId = `${id}:${scheduledAt.toISOString()}`;
+    await pool.query(
+      `insert into public.occurrences(
+          id, reminder_id, owner_id, reminder_revision, scheduled_at, created_at, status
+        ) values ($1, $2, $3, 1, $4, $4, 'missed')`,
+      [occurrenceId, id, ownerId, scheduledAt.toISOString()],
+    );
+    const until = new Date(Date.now() + 75 * 86_400_000).toISOString();
+    expect((await postponeRequest(occurrenceId, { until })).status).toBe(200);
+    await pool.query("select public.delete_expired_history()");
+    const cutoff = new Date(Date.now() - 30 * 86_400_000).toISOString();
+    const url = new URL("http://127.0.0.1:55421/rest/v1/occurrences");
+    url.searchParams.set("select", "id");
+    url.searchParams.set(
+      "or",
+      `(scheduled_at.gte.${cutoff},and(status.eq.postponed,postponed_to_next.eq.false),snoozed_until.gte.${cutoff})`,
+    );
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${jwt("authenticated", ownerId)}` },
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual([{ id: occurrenceId }]);
+  });
+
+  it("rejects expired absolute times and invalid custom durations", async () => {
+    const occurrenceId = await insertPostponementOccurrence({
+      kind: "once",
+      at: new Date(Date.now() - 60_000).toISOString(),
+    });
+    expect(
+      (
+        await postponeRequest(occurrenceId, {
+          until: new Date(Date.now() - 1).toISOString(),
+        })
+      ).status,
+    ).toBe(400);
+    for (const minutes of [0, -1, 1.5]) {
+      expect((await postponeRequest(occurrenceId, { minutes })).status).toBe(
+        400,
+      );
+    }
+  });
+
+  it("prevents authenticated callers from bypassing the bounded postponement service", async () => {
+    const occurrenceId = await insertPostponementOccurrence({
+      kind: "once",
+      at: new Date(Date.now() - 60_000).toISOString(),
+    });
+    const response = await fetch(
+      "http://127.0.0.1:55421/rest/v1/rpc/postpone_occurrence",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${jwt("authenticated", ownerId)}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          p_occurrence_id: occurrenceId,
+          p_owner_id: ownerId,
+          p_until: new Date(Date.now() + 60_000).toISOString(),
+          p_next_occurrence_at: null,
+          p_schedule_revision: 1,
+          p_occurrence_count: 1,
+        }),
+      },
+    );
+    expect(response.status).toBe(403);
+    const client = await pool.connect();
+    try {
+      await client.query(
+        "select set_config('request.jwt.claim.sub', $1, false)",
+        [ownerId],
+      );
+      await expect(
+        client.query("select public.act_on_occurrence($1, 'postponed', 75)", [
+          occurrenceId,
+        ]),
+      ).rejects.toThrow("validated");
+    } finally {
+      await client.query("reset all");
+      client.release();
+    }
+  });
+
   it("enforces schedule invariants and occurrence limits transactionally", async () => {
     await expect(
       pool.query(
@@ -424,6 +639,120 @@ describe("Edge Function state transitions", () => {
     expect(history.rowCount).toBe(1);
   });
 
+  it.each([
+    ["cron", "until"],
+    ["daily-times", "until"],
+    ["cron", "count"],
+    ["daily-times", "count"],
+  ] as const)(
+    "dispatches %s schedules with a %s ending and stops at the bound",
+    async (kind, ending) => {
+      const first = new Date(
+        Math.floor(Date.now() / 60_000) * 60_000 - 3 * 60_000,
+      );
+      const last = new Date(first.getTime() + 60_000);
+      const times = [first, last]
+        .map((date) => date.toISOString().slice(11, 16))
+        .sort();
+      const schedule = {
+        ...(kind === "cron"
+          ? { kind, expression: "* * * * *" }
+          : { kind, times }),
+        startAt: first.toISOString(),
+        ...(ending === "until"
+          ? { endAt: last.toISOString() }
+          : { occurrenceLimit: 1 }),
+      };
+      const { id } = await insertReminder({ schedule, scheduledAt: first });
+      await pool.query(
+        `update public.dispatch_state set last_dispatched_at = $1 where id = true`,
+        [new Date(first.getTime() - 10_000).toISOString()],
+      );
+      const dispatch = () =>
+        fetch("http://127.0.0.1:55432/", {
+          method: "POST",
+          headers: { "x-cron-secret": "integration-cron-secret" },
+        });
+      expect((await dispatch()).status).toBe(200);
+      const recorded = await pool.query<{ scheduled_at: Date }>(
+        "select scheduled_at from public.occurrences where reminder_id = $1 and owner_id = $2 order by scheduled_at",
+        [id, ownerId],
+      );
+      expect(
+        recorded.rows.map((row) => row.scheduled_at.toISOString()),
+      ).toEqual(
+        ending === "until"
+          ? [first.toISOString(), last.toISOString()]
+          : [first.toISOString()],
+      );
+      expect((await dispatch()).status).toBe(200);
+      const state = await pool.query<{ occurrence_count: number }>(
+        "select occurrence_count from public.reminders where id = $1 and owner_id = $2",
+        [id, ownerId],
+      );
+      expect(Number(state.rows[0]?.occurrence_count)).toBe(
+        ending === "until" ? 2 : 1,
+      );
+    },
+  );
+
+  it("keeps an existing count when an authenticated edit changes the limit", async () => {
+    const { id, scheduledAt } = await insertReminder({
+      schedule: {
+        kind: "daily-times",
+        times: ["09:00", "12:00"],
+        occurrenceLimit: 3,
+      },
+    });
+    await pool.query(
+      `insert into public.occurrences(id, reminder_id, owner_id, reminder_revision, scheduled_at, status)
+       values ($1, $2, $3, 1, $4, 'completed')`,
+      [
+        `${id}:${scheduledAt.toISOString()}`,
+        id,
+        ownerId,
+        scheduledAt.toISOString(),
+      ],
+    );
+    const response = await fetch(
+      `http://127.0.0.1:55421/rest/v1/reminders?id=eq.${id}`,
+      {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bearer ${jwt("authenticated", ownerId)}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          schedule: {
+            kind: "daily-times",
+            times: ["09:00", "12:00"],
+            occurrenceLimit: 5,
+          },
+          revision: 2,
+        }),
+      },
+    );
+    expect(response.status).toBe(204);
+    const state = await pool.query<{ occurrence_count: number }>(
+      "select occurrence_count from public.reminders where id = $1 and owner_id = $2",
+      [id, ownerId],
+    );
+    expect(Number(state.rows[0]?.occurrence_count)).toBe(1);
+  });
+
+  it.each([
+    { occurrenceLimit: 0 },
+    { occurrenceLimit: 1.5 },
+    { endAt: "invalid" },
+    { startAt: "2026-10-10T09:00:00Z", endAt: "2026-10-09T09:00:00Z" },
+  ])("rejects invalid daily recurrence bounds %j", async (bounds) => {
+    await expect(
+      insertReminder({
+        schedule: { kind: "daily-times", times: ["09:00", "12:00"], ...bounds },
+      }),
+    ).rejects.toThrow();
+  });
+
   it("dispatches reminders with multiple daily times", async () => {
     const scheduledAt = new Date();
     scheduledAt.setUTCSeconds(0, 0);
@@ -515,6 +844,111 @@ describe("Edge Function state transitions", () => {
       [occurrenceId],
     );
     expect(tickets.rowCount).toBe(0);
+  });
+
+  it.each(["dismiss", "complete", "snooze"] as const)(
+    "applies %s to a missed occurrence without changing future repeats",
+    async (action) => {
+      const { id, scheduledAt } = await insertReminder({
+        id: "missed-action-reminder",
+        schedule: { kind: "cron", expression: "0 9 * * *" },
+      });
+      const occurrenceId = `${id}:${scheduledAt.toISOString()}`;
+      await pool.query(
+        `insert into public.occurrences(
+          id, reminder_id, owner_id, reminder_revision, scheduled_at, status
+        ) values ($1, $2, $3, 1, $4, 'missed')`,
+        [occurrenceId, id, ownerId, scheduledAt.toISOString()],
+      );
+      const response = await fetch("http://127.0.0.1:55431/", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${jwt("authenticated", ownerId)}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          occurrenceId,
+          action,
+          ...(action === "snooze" ? { minutes: 10 } : {}),
+        }),
+      });
+      expect(response.status).toBe(200);
+      const expectedStatus =
+        action === "complete"
+          ? "completed"
+          : action === "dismiss"
+            ? "dismissed"
+            : "postponed";
+      const occurrence = await pool.query<{
+        status: string;
+        snoozed_until: Date | null;
+        acted_at: Date;
+      }>(
+        "select status, snoozed_until, acted_at from public.occurrences where id = $1",
+        [occurrenceId],
+      );
+      expect(occurrence.rows[0]?.status).toBe(expectedStatus);
+      expect(occurrence.rows[0]?.acted_at).toBeInstanceOf(Date);
+      if (action === "snooze")
+        expect(occurrence.rows[0]?.snoozed_until).toBeInstanceOf(Date);
+      else expect(occurrence.rows[0]?.snoozed_until).toBeNull();
+      const events = await pool.query<{ event_type: string }>(
+        "select event_type from public.history where occurrence_id = $1",
+        [occurrenceId],
+      );
+      expect(events.rows.map(({ event_type }) => event_type)).toEqual([
+        expectedStatus,
+      ]);
+      const reminder = await pool.query<{ status: string; schedule: object }>(
+        "select status, schedule from public.reminders where id = $1",
+        [id],
+      );
+      expect(reminder.rows[0]).toMatchObject({
+        status: "active",
+        schedule: { kind: "cron", expression: "0 9 * * *" },
+      });
+    },
+  );
+
+  it("completes an in-flight occurrence without allowing a stale delivery to overwrite it", async () => {
+    const { id, scheduledAt } = await insertReminder({
+      id: "complete-delivery",
+    });
+    const occurrenceId = `${id}:${scheduledAt.toISOString()}`;
+    const leaseId = crypto.randomUUID();
+    await pool.query(
+      `insert into public.occurrences(
+        id, reminder_id, owner_id, reminder_revision, scheduled_at,
+        status, delivery_lease_id
+      ) values ($1, $2, $3, 1, $4, 'delivering', $5)`,
+      [occurrenceId, id, ownerId, scheduledAt.toISOString(), leaseId],
+    );
+    const headers = {
+      Authorization: `Bearer ${jwt("authenticated", ownerId)}`,
+      "Content-Type": "application/json",
+    };
+    const response = await fetch("http://127.0.0.1:55431/", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ occurrenceId, action: "complete" }),
+    });
+    expect(response.status).toBe(200);
+    const stale = await pool.query<{ updated: boolean }>(
+      "select public.complete_occurrence_delivery($1, $2, $3, now()) as updated",
+      [occurrenceId, ownerId, leaseId],
+    );
+    expect(stale.rows[0]?.updated).toBe(false);
+    const repeated = await fetch("http://127.0.0.1:55431/", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ occurrenceId, action: "complete" }),
+    });
+    expect(repeated.status).toBe(404);
+    const events = await pool.query(
+      "select 1 from public.history where occurrence_id = $1 and event_type = 'completed'",
+      [occurrenceId],
+    );
+    expect(events.rowCount).toBe(1);
   });
 
   it("deregisters a device with its revocation token", async () => {

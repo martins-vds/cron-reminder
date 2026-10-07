@@ -17,7 +17,8 @@ self.addEventListener("push", (event) => {
       vibrate: soundMode === "vibrate" ? vibration : undefined,
       actions: [
         { action: "dismiss", title: "Dismiss" },
-        { action: "snooze", title: "Snooze" },
+        { action: "snooze", title: "Postpone" },
+        { action: "complete", title: "Complete" },
       ],
     }),
   );

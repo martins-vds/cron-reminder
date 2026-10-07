@@ -8,7 +8,7 @@ interface NumberFieldProps {
   onChange: (value: string) => void;
   colors: AppColors;
   minimum: number;
-  maximum: number;
+  maximum?: number;
   step?: number;
   hint?: string;
 }
@@ -26,9 +26,9 @@ export function NumberField({
   const numericValue = Number(value);
   const invalid =
     value.trim() !== "" &&
-    (!Number.isInteger(numericValue) ||
+    (!Number.isSafeInteger(numericValue) ||
       numericValue < minimum ||
-      numericValue > maximum);
+      (maximum !== undefined && numericValue > maximum));
 
   return (
     <View style={styles.field}>

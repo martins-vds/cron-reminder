@@ -2,12 +2,83 @@ import { describe, expect, it } from "vitest";
 import {
   describeSchedule,
   nextOccurrences,
+  nextPostponementAt,
   parseCronSchedule,
   validateCronExpression,
   validateSchedule,
 } from "../src/index";
 
 describe("cron schedule", () => {
+  it.each([
+    { kind: "cron" as const, expression: "0 9,12 * * *" },
+    { kind: "daily-times" as const, times: ["09:00", "12:00"] },
+  ])("enforces inclusive endings and count bounds for $kind", (frequency) => {
+    const startAt = "2026-09-24T09:00:00.000Z";
+    const endAt = "2026-09-24T12:00:00.000Z";
+    const after = new Date("2026-09-24T08:00:00.000Z");
+    const schedule = { ...frequency, startAt, endAt };
+    expect(
+      nextOccurrences(schedule, "UTC", after, 5).map((date) =>
+        date.toISOString(),
+      ),
+    ).toEqual([startAt, endAt]);
+    expect(
+      nextOccurrences({ ...schedule, occurrenceLimit: 1 }, "UTC", after, 5).map(
+        (date) => date.toISOString(),
+      ),
+    ).toEqual([startAt]);
+    expect(nextOccurrences(schedule, "UTC", new Date(endAt), 5)).toEqual([]);
+    expect(
+      nextOccurrences(
+        { ...schedule, endAt: "2026-09-24T08:30:00.000Z", startAt: undefined },
+        "UTC",
+        after,
+        5,
+      ),
+    ).toEqual([]);
+    expect(
+      nextPostponementAt(
+        {
+          schedule: { ...schedule, occurrenceLimit: 2 },
+          timezone: "UTC",
+          status: "active",
+        },
+        after,
+        2,
+      ),
+    ).toBeNull();
+    expect(
+      nextPostponementAt(
+        { schedule, timezone: "UTC", status: "active" },
+        new Date(endAt),
+      ),
+    ).toBeNull();
+    expect(
+      describeSchedule({ ...schedule, occurrenceLimit: 2 }, "en", "UTC"),
+    ).toContain("2 occurrences total");
+    expect(describeSchedule(schedule, "en", "UTC")).toContain("until");
+  });
+
+  it("rejects invalid bounds on multi-time daily schedules", () => {
+    const schedule = {
+      kind: "daily-times" as const,
+      times: ["09:00", "12:00"],
+    };
+    expect(() => validateSchedule({ ...schedule, endAt: "invalid" })).toThrow(
+      "Schedule end",
+    );
+    expect(() => validateSchedule({ ...schedule, occurrenceLimit: 0 })).toThrow(
+      "positive integer",
+    );
+    expect(() =>
+      validateSchedule({
+        ...schedule,
+        startAt: "2026-10-24T09:00:00Z",
+        endAt: "2026-10-23T09:00:00Z",
+      }),
+    ).toThrow("follow its start");
+  });
+
   it("accepts standard five-field cron and rejects seconds", () => {
     expect(validateCronExpression("*/5 * * * *")).toEqual({ valid: true });
     expect(validateCronExpression("* * * * * *").valid).toBe(false);

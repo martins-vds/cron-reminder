@@ -1,22 +1,14 @@
 import { createClient } from '@supabase/supabase-js';
 import { CronExpressionParser } from 'cron-parser';
 import webpush from 'web-push';
+import type { Schedule } from '../../../packages/domain/src/index.ts';
 
 interface ReminderRow {
   id: string;
   owner_id: string;
   title: string;
   notes: string;
-  schedule:
-    | { kind: 'once'; at: string }
-    | { kind: 'daily-times'; times: string[] }
-    | {
-        kind: 'cron';
-        expression: string;
-        startAt?: string;
-        endAt?: string;
-        occurrenceLimit?: number;
-      };
+  schedule: Schedule;
   timezone: string;
   sound: { mode: 'default' | 'silent' | 'vibrate' };
   revision: number;
@@ -170,7 +162,7 @@ Deno.serve(async (request) => {
     }
 
     if (
-      reminder.schedule.kind === 'cron' &&
+      reminder.schedule.kind !== 'once' &&
       reminder.schedule.occurrenceLimit !== undefined
     ) {
       limitedCandidates.push({ reminder, dueResult, occurrences });
@@ -243,7 +235,7 @@ Deno.serve(async (request) => {
       const { reminder, dueResult } = candidate;
       let occurrences = candidate.occurrences;
       const occurrenceLimit =
-        reminder.schedule.kind === 'cron'
+        reminder.schedule.kind !== 'once'
           ? reminder.schedule.occurrenceLimit
           : undefined;
       if (occurrenceLimit === undefined) continue;
@@ -1038,7 +1030,7 @@ function nextDueAtCursor(
   }
   if (reminder.schedule.kind === 'daily-times') {
     return nextDailyTimeCursor(
-      reminder.schedule.times,
+      reminder.schedule,
       reminder.timezone,
       boundary,
       inclusive,
@@ -1081,7 +1073,7 @@ function dueOccurrences(
   }
   if (reminder.schedule.kind === 'daily-times') {
     return dailyTimeOccurrences(
-      reminder.schedule.times,
+      reminder.schedule,
       reminder.timezone,
       lowerBound,
       windowEnd,
@@ -1116,17 +1108,22 @@ function dueOccurrences(
 }
 
 function nextDailyTimeCursor(
-  times: string[],
+  schedule: Extract<Schedule, { kind: 'daily-times' }>,
   timezone: string,
   boundary: Date,
   inclusive: boolean,
 ): string | null {
+  const after = new Date(boundary.getTime() - (inclusive ? 1 : 0));
+  if (schedule.endAt && new Date(schedule.endAt) <= after) return null;
   let next: Date | null = null;
-  for (const time of times) {
+  for (const time of schedule.times) {
     const interval = CronExpressionParser.parse(dailyTimeExpression(time), {
-      currentDate: new Date(boundary.getTime() - (inclusive ? 1 : 0)),
+      currentDate: after,
+      startDate: inclusiveStartDate(schedule.startAt),
+      endDate: schedule.endAt,
       tz: timezone,
     });
+    if (!interval.hasNext()) continue;
     const candidate = interval.next().toDate();
     if (!next || candidate < next) next = candidate;
   }
@@ -1134,16 +1131,20 @@ function nextDailyTimeCursor(
 }
 
 function dailyTimeOccurrences(
-  times: string[],
+  schedule: Extract<Schedule, { kind: 'daily-times' }>,
   timezone: string,
   lowerBound: Date,
   windowEnd: Date,
   limit: number,
 ): { occurrences: Date[]; truncated: boolean } {
+  if (schedule.endAt && new Date(schedule.endAt) < lowerBound)
+    return { occurrences: [], truncated: false };
   const candidates: Date[] = [];
-  for (const time of times) {
+  for (const time of schedule.times) {
     const interval = CronExpressionParser.parse(dailyTimeExpression(time), {
       currentDate: new Date(lowerBound.getTime() - 1),
+      startDate: inclusiveStartDate(schedule.startAt),
+      endDate: schedule.endAt,
       tz: timezone,
     });
     for (let index = 0; index <= limit; index++) {

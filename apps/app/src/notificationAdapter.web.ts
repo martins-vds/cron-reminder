@@ -66,9 +66,32 @@ export class DeviceNotificationAdapter implements NotificationPort {
     const delay = Date.parse(occurrence.scheduledAt) - Date.now();
     if (delay <= 0 || delay > 2_147_483_647) return;
     await this.cancel(occurrence.id);
+    await navigator.serviceWorker.register("/sw.js");
+    const registration = await navigator.serviceWorker.ready;
     const timeout = globalThis.setTimeout(() => {
       scheduledNotifications.delete(occurrence.id);
-      new Notification(reminder.title, { body: reminder.notes });
+      const options: NotificationOptions & {
+        actions: Array<{ action: string; title: string }>;
+      } = {
+        body: reminder.notes,
+        data: {
+          occurrenceId: occurrence.id,
+          reminderId: reminder.id,
+          ownerId: reminder.ownerId,
+          soundMode: reminder.sound.mode,
+        },
+        silent: reminder.sound.mode === "silent",
+        actions: [
+          { action: "dismiss", title: "Dismiss" },
+          { action: "snooze", title: "Postpone" },
+          { action: "complete", title: "Complete" },
+        ],
+      };
+      void registration
+        .showNotification(reminder.title, options)
+        .catch((error: unknown) =>
+          console.error("Unable to show reminder notification", error),
+        );
     }, delay);
     scheduledNotifications.set(occurrence.id, timeout);
   }

@@ -29,6 +29,9 @@ const projectId =
 export function subscribeToPushTokenChanges(
   listener: (token: string) => void,
 ): () => void {
+  void ensureReminderCategory().catch((error: unknown) =>
+    console.error("Unable to register reminder notification actions", error),
+  );
   if (!projectId) return () => {};
   const refreshToken = () => {
     void Notifications.getExpoPushTokenAsync({ projectId })
@@ -38,6 +41,18 @@ export function subscribeToPushTokenChanges(
   refreshToken();
   const subscription = Notifications.addPushTokenListener(refreshToken);
   return () => subscription.remove();
+}
+
+async function ensureReminderCategory(): Promise<void> {
+  await Notifications.setNotificationCategoryAsync("reminder", [
+    { identifier: "dismiss", buttonTitle: "Dismiss" },
+    {
+      identifier: "snooze",
+      buttonTitle: "Postpone",
+      options: { opensAppToForeground: true },
+    },
+    { identifier: "complete", buttonTitle: "Complete" },
+  ]);
 }
 
 function notificationChannelId(mode: Reminder["sound"]["mode"]): string {
@@ -80,10 +95,7 @@ export class DeviceNotificationAdapter implements NotificationPort {
   async register(ownerId: string): Promise<NotificationRegistration | null> {
     if ((await this.requestPermission()) === "denied") return null;
     if (!projectId) throw new Error("EXPO_PUBLIC_EAS_PROJECT_ID is required.");
-    await Notifications.setNotificationCategoryAsync("reminder", [
-      { identifier: "dismiss", buttonTitle: "Dismiss" },
-      { identifier: "snooze", buttonTitle: "Snooze" },
-    ]);
+    await ensureReminderCategory();
     const token = await Notifications.getExpoPushTokenAsync({ projectId });
     return {
       id: token.data,
@@ -94,6 +106,7 @@ export class DeviceNotificationAdapter implements NotificationPort {
   }
 
   async schedule(reminder: Reminder, occurrence: Occurrence): Promise<void> {
+    await ensureReminderCategory();
     await Notifications.scheduleNotificationAsync({
       identifier: occurrence.id,
       content: {

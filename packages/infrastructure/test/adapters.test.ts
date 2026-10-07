@@ -113,6 +113,9 @@ describe("versioned JSON backup", () => {
       schedule: {
         kind: "daily-times",
         times: ["09:15", "12:30", "18:00", "21:45"],
+        startAt: "2026-09-24T00:00:00.000Z",
+        endAt: "2026-10-24T00:00:00.000Z",
+        occurrenceLimit: 20,
       },
     });
     const result = importBackup(
@@ -164,6 +167,34 @@ describe("versioned JSON backup", () => {
       reminders: [invalidSchedule],
     });
     const result = importBackup(backup, [], "u1");
+    expect(result.invalid).toBe(1);
+    expect(result.imported).toBe(0);
+  });
+
+  it.each([
+    { endAt: 123 },
+    { occurrenceLimit: "3" },
+    { occurrenceLimit: 0 },
+    { endAt: "invalid" },
+  ])("rejects malformed daily-time ending bounds %j", (bounds) => {
+    const result = importBackup(
+      JSON.stringify({
+        version: 1,
+        exportedAt: "2026-09-23T00:00:00.000Z",
+        reminders: [
+          {
+            ...reminder(),
+            schedule: {
+              kind: "daily-times",
+              times: ["09:00", "12:00"],
+              ...bounds,
+            },
+          },
+        ],
+      }),
+      [],
+      "u1",
+    );
     expect(result.invalid).toBe(1);
     expect(result.imported).toBe(0);
   });

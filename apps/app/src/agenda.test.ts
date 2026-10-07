@@ -58,7 +58,6 @@ describe("agenda", () => {
     );
 
     expect(items.map(({ status }) => status)).toEqual([
-      "missed",
       "due",
       "postponed",
       "upcoming",
@@ -67,10 +66,7 @@ describe("agenda", () => {
       dismissible: true,
       snoozable: true,
     });
-    expect(items.find(({ status }) => status === "missed")).toMatchObject({
-      dismissible: true,
-      snoozable: false,
-    });
+    expect(items.find(({ status }) => status === "missed")).toBeUndefined();
     expect(
       items.find(({ status }) => status === "postponed")?.effectiveAt,
     ).toBe("2026-09-25T11:00:00.000Z");
@@ -97,6 +93,73 @@ describe("agenda", () => {
     expect(items).toHaveLength(1);
     expect(items[0]?.status).toBe("due");
   });
+
+  it("keeps only the latest missed occurrence per reminder regardless of input order", () => {
+    const missed = (
+      id: string,
+      reminderId: string,
+      scheduledAt: string,
+    ): StoredAgendaOccurrence => ({
+      id,
+      reminder_id: reminderId,
+      scheduled_at: scheduledAt,
+      status: "missed",
+      acted_at: null,
+      snoozed_until: null,
+    });
+    const occurrences = [
+      missed("newest", reminder.id, "2026-09-25T09:00:00.000Z"),
+      missed("other", "backup", "2026-09-24T10:00:00.000Z"),
+      missed("oldest", reminder.id, "2026-09-24T09:00:00.000Z"),
+    ];
+    const items = buildAgendaItems(
+      [reminder, { ...reminder, id: "backup" }],
+      occurrences,
+      new Date("2026-09-25T10:00:00.000Z"),
+    );
+    expect(
+      items.filter(({ status }) => status === "missed").map(({ id }) => id),
+    ).toEqual(["other", "newest"]);
+    expect(items.find(({ id }) => id === "newest")).toMatchObject({
+      dismissible: true,
+      snoozable: true,
+    });
+    expect(occurrences).toHaveLength(3);
+  });
+
+  it.each(["dismissed", "completed", "postponed"] as const)(
+    "does not resurrect older missed occurrences after the latest is %s",
+    (status) => {
+      const items = buildAgendaItems(
+        [reminder],
+        [
+          {
+            id: "older",
+            reminder_id: reminder.id,
+            scheduled_at: "2026-09-24T09:00:00.000Z",
+            status: "missed",
+            acted_at: null,
+            snoozed_until: null,
+          },
+          {
+            id: "latest",
+            reminder_id: reminder.id,
+            scheduled_at: "2026-09-25T09:00:00.000Z",
+            status,
+            acted_at: "2026-09-25T09:01:00.000Z",
+            snoozed_until:
+              status === "postponed" ? "2026-09-25T11:00:00.000Z" : null,
+          },
+        ],
+        new Date("2026-09-25T10:00:00.000Z"),
+      );
+      expect(items.some(({ id }) => id === "older")).toBe(false);
+      expect(items.some(({ id }) => id === "latest")).toBe(
+        status === "postponed",
+      );
+      expect(items.at(-1)?.status).toBe("upcoming");
+    },
+  );
 
   it("groups overdue, today, tomorrow, and later in the viewer timezone", () => {
     const items = buildAgendaItems(
@@ -141,6 +204,88 @@ describe("agenda", () => {
       "tomorrow",
     ]);
     expect(groups.later.map(({ reminderId }) => reminderId)).toEqual(["later"]);
+  });
+
+  it("folds an occurrence postponed to the next into one upcoming card", () => {
+    const items = buildAgendaItems(
+      [reminder],
+      [
+        {
+          id: "folded",
+          reminder_id: reminder.id,
+          scheduled_at: "2026-09-25T09:00:00.000Z",
+          status: "postponed",
+          acted_at: "2026-09-25T10:00:00.000Z",
+          snoozed_until: "2026-09-25T12:00:00.000Z",
+          postponed_to_next: true,
+        },
+      ],
+      new Date("2026-09-25T10:00:00.000Z"),
+    );
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      status: "upcoming",
+      scheduledAt: "2026-09-25T12:00:00.000Z",
+    });
+  });
+
+  it("does not offer a next occurrence after the repeat limit is exhausted", () => {
+    const items = buildAgendaItems(
+      [
+        {
+          ...reminder,
+          schedule: {
+            kind: "cron",
+            expression: "0 12 * * *",
+            occurrenceLimit: 1,
+          },
+        },
+      ],
+      [
+        {
+          id: "final",
+          reminder_id: reminder.id,
+          scheduled_at: "2026-09-25T09:00:00.000Z",
+          status: "missed",
+          acted_at: null,
+          snoozed_until: null,
+        },
+      ],
+      new Date("2026-09-25T10:00:00.000Z"),
+      new Map([[reminder.id, 1]]),
+    );
+    expect(items).toHaveLength(1);
+    expect(items[0]?.nextOccurrenceAt).toBeNull();
+  });
+
+  it("keeps a delivered postponement actionable at its effective time", () => {
+    const items = buildAgendaItems(
+      [reminder],
+      [
+        {
+          id: "postponed-delivery",
+          reminder_id: reminder.id,
+          scheduled_at: "2026-09-24T09:00:00.000Z",
+          status: "triggered",
+          acted_at: "2026-09-25T10:00:00.000Z",
+          snoozed_until: "2026-09-25T10:00:00.000Z",
+        },
+        {
+          id: "newer-regular",
+          reminder_id: reminder.id,
+          scheduled_at: "2026-09-25T09:00:00.000Z",
+          status: "completed",
+          acted_at: "2026-09-25T09:01:00.000Z",
+          snoozed_until: null,
+        },
+      ],
+      new Date("2026-09-25T10:01:00.000Z"),
+    );
+    expect(items.find(({ id }) => id === "postponed-delivery")).toMatchObject({
+      effectiveAt: "2026-09-25T10:00:00.000Z",
+      status: "due",
+      snoozable: true,
+    });
   });
 
   it("groups repeated agenda items by reminder with an effective time range", () => {

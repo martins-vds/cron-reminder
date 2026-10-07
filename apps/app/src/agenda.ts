@@ -1,5 +1,5 @@
 import {
-  nextOccurrences,
+  nextPostponementAt,
   type OccurrenceStatus,
   type Reminder,
 } from "@cron-reminder/domain";
@@ -14,6 +14,7 @@ export interface StoredAgendaOccurrence {
   status: OccurrenceStatus;
   acted_at: string | null;
   snoozed_until: string | null;
+  postponed_to_next?: boolean;
 }
 
 export interface AgendaItem {
@@ -25,6 +26,7 @@ export interface AgendaItem {
   status: AgendaItemStatus;
   dismissible: boolean;
   snoozable: boolean;
+  nextOccurrenceAt?: string | null;
 }
 
 export interface AgendaReminderGroup {
@@ -41,19 +43,40 @@ const actionableStatuses = new Set<OccurrenceStatus>([
   "triggered",
   "delivering",
   "delivery-failed",
+  "missed",
 ]);
 
 export function buildAgendaItems(
   reminders: readonly Reminder[],
   occurrences: readonly StoredAgendaOccurrence[],
   now: Date,
+  occurrenceCounts: ReadonlyMap<string, number> = new Map(),
 ): AgendaItem[] {
   const remindersById = new Map(
     reminders.map((reminder) => [reminder.id, reminder]),
   );
   const recordedOccurrenceIds = new Set(occurrences.map(({ id }) => id));
+  const latestPastOccurrence = new Map<string, StoredAgendaOccurrence>();
+  for (const occurrence of occurrences) {
+    if (Date.parse(occurrence.scheduled_at) > now.getTime()) continue;
+    const latest = latestPastOccurrence.get(occurrence.reminder_id);
+    if (
+      !latest ||
+      Date.parse(occurrence.scheduled_at) > Date.parse(latest.scheduled_at)
+    ) {
+      latestPastOccurrence.set(occurrence.reminder_id, occurrence);
+    }
+  }
   const items = occurrences.flatMap((occurrence) => {
-    if (occurrence.status === "dismissed") return [];
+    if (occurrence.status === "dismissed" || occurrence.status === "completed")
+      return [];
+    if (occurrence.postponed_to_next) return [];
+    if (
+      Date.parse(occurrence.scheduled_at) <= now.getTime() &&
+      latestPastOccurrence.get(occurrence.reminder_id)?.id !== occurrence.id &&
+      !occurrence.snoozed_until
+    )
+      return [];
     const reminder = remindersById.get(occurrence.reminder_id);
     if (!reminder) return [];
     return [
@@ -62,27 +85,31 @@ export function buildAgendaItems(
         reminderId: reminder.id,
         reminderTitle: reminder.title,
         scheduledAt: occurrence.scheduled_at,
-        effectiveAt:
-          occurrence.status === "postponed" && occurrence.snoozed_until
-            ? occurrence.snoozed_until
-            : occurrence.scheduled_at,
+        effectiveAt: occurrence.snoozed_until
+          ? occurrence.snoozed_until
+          : occurrence.scheduled_at,
         status: agendaStatus(occurrence.status),
         dismissible: true,
-        snoozable: actionableStatuses.has(occurrence.status),
+        snoozable:
+          actionableStatuses.has(occurrence.status) &&
+          reminder.status === "active",
+        nextOccurrenceAt: nextPostponementAt(
+          reminder,
+          now,
+          occurrenceCounts.get(reminder.id),
+        ),
       },
     ];
   });
 
   for (const reminder of reminders) {
     if (reminder.status !== "active") continue;
-    const next = nextOccurrences(
-      reminder.schedule,
-      reminder.timezone,
+    const scheduledAt = nextPostponementAt(
+      reminder,
       now,
-      1,
-    )[0];
-    if (!next) continue;
-    const scheduledAt = next.toISOString();
+      occurrenceCounts.get(reminder.id),
+    );
+    if (!scheduledAt) continue;
     const id = `${reminder.id}:${scheduledAt}`;
     if (recordedOccurrenceIds.has(id)) continue;
     items.push({
@@ -94,6 +121,7 @@ export function buildAgendaItems(
       status: "upcoming",
       dismissible: false,
       snoozable: false,
+      nextOccurrenceAt: scheduledAt,
     });
   }
 
