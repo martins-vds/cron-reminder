@@ -1,15 +1,18 @@
 /// <reference types="node" />
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-const notifications = vi.hoisted(() => ({
-  setNotificationHandler: vi.fn(),
-  setNotificationCategoryAsync: vi.fn().mockResolvedValue(undefined),
-  requestPermissionsAsync: vi.fn().mockResolvedValue({ granted: true }),
-  getExpoPushTokenAsync: vi.fn().mockResolvedValue({ data: "expo-token" }),
-  addPushTokenListener: vi.fn().mockReturnValue({ remove: vi.fn() }),
-}));
+const notifications = vi.hoisted(() => {
+  vi.stubEnv("EXPO_PUBLIC_EAS_PROJECT_ID", "test-project");
+  return {
+    setNotificationHandler: vi.fn(),
+    setNotificationCategoryAsync: vi.fn().mockResolvedValue(undefined),
+    requestPermissionsAsync: vi.fn().mockResolvedValue({ granted: true }),
+    getExpoPushTokenAsync: vi.fn().mockResolvedValue({ data: "expo-token" }),
+    addPushTokenListener: vi.fn().mockReturnValue({ remove: vi.fn() }),
+  };
+});
 
 vi.mock("expo-notifications", () => notifications);
 vi.mock("expo-constants", () => ({
@@ -27,9 +30,13 @@ import {
 
 describe("notification actions", () => {
   beforeEach(() => vi.clearAllMocks());
+  afterAll(() => vi.unstubAllEnvs());
 
   it("registers exactly dismiss, postpone, and complete on native devices", async () => {
     await new DeviceNotificationAdapter().register("owner");
+    expect(notifications.getExpoPushTokenAsync).toHaveBeenCalledWith({
+      projectId: "test-project",
+    });
     expect(notifications.setNotificationCategoryAsync).toHaveBeenCalledWith(
       "reminder",
       [
