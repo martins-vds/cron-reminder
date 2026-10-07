@@ -696,6 +696,97 @@ describe("Edge Function state transitions", () => {
     },
   );
 
+  it("tracks each browser independently across an occurrence delivery retry", async () => {
+    const { id, scheduledAt } = await insertReminder();
+    const occurrenceId = `${id}:${scheduledAt.toISOString()}`;
+    const firstLease = crypto.randomUUID();
+    const secondLease = crypto.randomUUID();
+    for (const deviceId of ["browser-one", "browser-two"]) {
+      await pool.query(
+        `insert into public.devices(id, owner_id, platform, token)
+         values ($1, $2, 'web', $1)`,
+        [deviceId, ownerId],
+      );
+    }
+    const prepared = await pool.query<{ accepted: boolean }>(
+      `select public.prepare_occurrence_delivery($1, $2, $3, 1, $4, $5,
+       now(), now() - interval '5 minutes') as accepted`,
+      [occurrenceId, id, ownerId, scheduledAt.toISOString(), firstLease],
+    );
+    expect(prepared.rows[0]?.accepted).toBe(true);
+    const firstDelivery = await pool.query<{ accepted: boolean }>(
+      "select public.record_occurrence_device_delivery($1, $2, 'browser-one', $3) as accepted",
+      [occurrenceId, ownerId, firstLease],
+    );
+    expect(firstDelivery.rows[0]?.accepted).toBe(true);
+    await pool.query(
+      "select public.defer_occurrence_delivery($1, $2, $3, now(), 1)",
+      [occurrenceId, ownerId, firstLease],
+    );
+    const pending = await pool.query<{ id: string }>(
+      `select device.id from public.devices device
+       where device.owner_id = $1 and device.enabled
+         and not exists (
+           select 1 from public.occurrence_device_deliveries delivery
+           where delivery.device_id = device.id and delivery.owner_id = $1
+             and delivery.occurrence_id = $2
+         ) order by device.id`,
+      [ownerId, occurrenceId],
+    );
+    expect(pending.rows.map(({ id }) => id)).toEqual(["browser-two"]);
+    const claimed = await pool.query<{ accepted: boolean }>(
+      `select public.claim_occurrence_delivery($1, $2, $3, 1, $4,
+       now() + interval '2 minutes', now() - interval '5 minutes') as accepted`,
+      [occurrenceId, ownerId, id, secondLease],
+    );
+    expect(claimed.rows[0]?.accepted).toBe(true);
+    await pool.query(
+      "select public.record_occurrence_device_delivery($1, $2, 'browser-two', $3)",
+      [occurrenceId, ownerId, secondLease],
+    );
+    const delivered = await pool.query<{ device_id: string }>(
+      `select device_id from public.occurrence_device_deliveries
+       where owner_id = $1 and occurrence_id = $2 order by device_id`,
+      [ownerId, occurrenceId],
+    );
+    expect(delivered.rows.map(({ device_id }) => device_id)).toEqual([
+      "browser-one",
+      "browser-two",
+    ]);
+  });
+
+  it("does not disable a refreshed browser token when an old delivery fails", async () => {
+    const oldToken = JSON.stringify({
+      endpoint: "https://fcm.googleapis.com/old",
+      keys: { auth: "auth", p256dh: "key" },
+    });
+    const newToken = JSON.stringify({
+      endpoint: "https://fcm.googleapis.com/new",
+      keys: { auth: "auth", p256dh: "key" },
+    });
+    await pool.query(
+      `insert into public.devices(id, owner_id, platform, token) values ('refreshed-browser', $1, 'web', $2)`,
+      [ownerId, newToken],
+    );
+    const url = new URL("http://127.0.0.1:55421/rest/v1/devices");
+    url.searchParams.set("id", "eq.refreshed-browser");
+    url.searchParams.set("owner_id", `eq.${ownerId}`);
+    url.searchParams.set("token", `eq.${oldToken}`);
+    const response = await fetch(url, {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${jwt("service_role")}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ enabled: false }),
+    });
+    expect(response.status).toBe(204);
+    const device = await pool.query<{ enabled: boolean; token: string }>(
+      "select enabled, token from public.devices where id = 'refreshed-browser'",
+    );
+    expect(device.rows[0]).toEqual({ enabled: true, token: newToken });
+  });
+
   it("keeps an existing count when an authenticated edit changes the limit", async () => {
     const { id, scheduledAt } = await insertReminder({
       schedule: {

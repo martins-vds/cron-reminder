@@ -228,3 +228,20 @@ Functions, runs the state-transition suite, and removes the containers. Set
 - Account deletion uses a verified Edge Function and database cascades.
 
 Mobile and browser delivery remains subject to operating-system throttling, user permissions, battery policies, and browser Web Push support.
+
+Enable notifications separately in each browser or installed web app, using the
+same account. The dispatcher attempts delivery to every enabled registration
+and tracks successful deliveries per device so retries do not resend to browsers
+that already accepted the push. Signing out unregisters that browser.
+
+Web subscriptions are refreshed when the app opens, regains focus, becomes
+visible, or reconnects, without requesting notification permission again.
+Settings verifies the current browser subscription against the enabled server
+registration instead of trusting an old local record. If permission was revoked,
+the subscription disappeared, or registration verification failed, enable
+notifications again on that device.
+
+On iPhone and iPad, Web Push requires a supported Home Screen web app, not just
+an ordinary browser tab. Focus modes, OS notification settings, offline devices,
+and browser background restrictions can delay or suppress display even after a
+push service accepts a notification; acceptance is not proof it appeared.

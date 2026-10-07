@@ -71,6 +71,7 @@ import {
   flushNotificationActions,
   flushPendingPushTokenUpdate,
   getRememberedDeviceRegistration,
+  isRememberedDeviceRegistered,
   getPendingNotificationActions,
   localRepository,
   rememberDevice,
@@ -180,7 +181,9 @@ export function RootNavigator() {
   useEffect(() => {
     const retry = () => {
       void flushPendingDeviceDeregistrations().catch(() => {});
-      void flushPendingPushTokenUpdate().catch(() => {});
+      void flushPendingPushTokenUpdate().catch((error: unknown) =>
+        console.error("Unable to retry device push registration", error),
+      );
     };
     retry();
     if (Platform.OS === "web") {
@@ -264,7 +267,9 @@ export function RootNavigator() {
   useEffect(() => {
     if (!ownerId) return;
     return subscribeToPushTokenChanges((token) => {
-      void updateRememberedDeviceToken(ownerId, token).catch(() => {});
+      void updateRememberedDeviceToken(ownerId, token).catch((error: unknown) =>
+        console.error("Unable to update device push registration", error),
+      );
     });
   }, [ownerId]);
 
@@ -2864,18 +2869,50 @@ function Settings({
     useState<NotificationRegistrationStatus>("idle");
   const [notificationMessageKey, setNotificationMessageKey] =
     useState<MessageKey | null>(null);
+  const registrationCheckRevision = useRef(0);
+  const registrationInFlight = useRef(false);
 
   useEffect(() => {
     let active = true;
-    void getRememberedDeviceRegistration()
-      .then((registration) => {
-        if (!active || !registration) return;
-        setNotificationStatus("registered");
-        setNotificationMessageKey("notificationsEnabled");
-      })
-      .catch(() => {});
+    const check = async () => {
+      if (registrationInFlight.current) return;
+      const revision = ++registrationCheckRevision.current;
+      try {
+        const currentToken =
+          Platform.OS === "web"
+            ? await new DeviceNotificationAdapter().currentToken()
+            : undefined;
+        const registered = await isRememberedDeviceRegistered(
+          ownerId,
+          currentToken,
+        );
+        if (!active || revision !== registrationCheckRevision.current) return;
+        setNotificationStatus(registered ? "registered" : "idle");
+        setNotificationMessageKey(registered ? "notificationsEnabled" : null);
+      } catch (error) {
+        console.error(
+          "Unable to verify device notification registration",
+          error,
+        );
+        if (!active || revision !== registrationCheckRevision.current) return;
+        setNotificationStatus("error");
+        setNotificationMessageKey("notificationRegistrationFailed");
+      }
+    };
+    const retry = () => {
+      void check();
+    };
+    retry();
+    if (Platform.OS === "web") {
+      globalThis.addEventListener("online", retry);
+      globalThis.addEventListener("focus", retry);
+    }
     return () => {
       active = false;
+      if (Platform.OS === "web") {
+        globalThis.removeEventListener("online", retry);
+        globalThis.removeEventListener("focus", retry);
+      }
     };
   }, [ownerId]);
 
@@ -3000,12 +3037,23 @@ function Settings({
 
   async function enableNotifications() {
     if (notificationStatus === "registering") return;
+    registrationInFlight.current = true;
+    registrationCheckRevision.current++;
     setNotificationStatus("registering");
     setNotificationMessageKey(null);
     try {
-      const registration = await new DeviceNotificationAdapter().register(
-        ownerId,
-      );
+      const adapter = new DeviceNotificationAdapter();
+      let renew = false;
+      if (Platform.OS === "web") {
+        const currentToken = await adapter.currentToken();
+        renew =
+          currentToken !== null &&
+          !(await isRememberedDeviceRegistered(ownerId, currentToken));
+      }
+      const registration =
+        Platform.OS === "web"
+          ? await adapter.register(ownerId, renew)
+          : await adapter.register(ownerId);
       if (!registration) {
         setNotificationStatus("error");
         setNotificationMessageKey("notificationPermissionDenied");
@@ -3024,13 +3072,18 @@ function Settings({
       });
       if (error) throw error;
       if (!data) throw new Error("Unable to claim push token.");
-      await rememberDevice(deviceId, deregistrationToken);
+      await rememberDevice(deviceId, deregistrationToken, {
+        ownerId,
+        token: registration.token,
+      });
       setNotificationStatus("registered");
       setNotificationMessageKey("notificationsEnabled");
     } catch (error) {
       console.error("Notification registration failed.", error);
       setNotificationStatus("error");
       setNotificationMessageKey(notificationErrorMessageKey(error));
+    } finally {
+      registrationInFlight.current = false;
     }
   }
   return (

@@ -901,7 +901,7 @@ async function deliverToDevice(
   } catch (error) {
     if (error instanceof LeaseLostError) throw error;
     if (isPermanentDeliveryFailure(error)) {
-      await disableDevice(client, device.id);
+      await disableDevice(client, device, reminder.owner_id);
       return {
         delivered: 0,
         retryableFailures: 0,
@@ -978,12 +978,15 @@ async function renewActiveLease(
 
 async function disableDevice(
   client: ServiceClient,
-  deviceId: string,
+  device: { id: string; token: string },
+  ownerId: string,
 ) {
   const { error } = await client
     .from('devices')
     .update({ enabled: false, updated_at: new Date().toISOString() })
-    .eq('id', deviceId);
+    .eq('id', device.id)
+    .eq('owner_id', ownerId)
+    .eq('token', device.token);
   if (error) throw error;
 }
 

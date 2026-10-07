@@ -208,8 +208,19 @@ export const synchronization = supabase
     )
   : null;
 
-export async function rememberDevice(id: string, token: string): Promise<void> {
-  await AsyncStorage.setItem(deviceKey, JSON.stringify({ id, token }));
+export async function rememberDevice(
+  id: string,
+  token: string,
+  currentPushToken?: PendingPushToken,
+): Promise<void> {
+  await withPushToken(async () => {
+    await AsyncStorage.setItem(deviceKey, JSON.stringify({ id, token }));
+    if (currentPushToken)
+      await AsyncStorage.setItem(
+        pendingPushTokenKey,
+        JSON.stringify(currentPushToken),
+      );
+  });
   await flushPendingPushTokenUpdate();
 }
 
@@ -219,6 +230,26 @@ export async function getRememberedDeviceId(): Promise<string | null> {
 
 export async function getRememberedDeviceRegistration(): Promise<StoredDeviceRegistration | null> {
   return readDeviceRegistration();
+}
+
+export async function isRememberedDeviceRegistered(
+  ownerId: string,
+  currentToken?: string | null,
+): Promise<boolean> {
+  const device = await readDeviceRegistration();
+  if (!device || currentToken === null) return false;
+  if (!supabase) throw new Error("Supabase is not configured.");
+  const { data, error } = await supabase
+    .from("devices")
+    .select("enabled,token")
+    .eq("id", device.id)
+    .eq("owner_id", ownerId)
+    .maybeSingle();
+  if (error) throw error;
+  return (
+    data?.enabled === true &&
+    (currentToken === undefined || data.token === currentToken)
+  );
 }
 
 export async function updateRememberedDeviceToken(
@@ -241,10 +272,26 @@ export async function flushPendingPushTokenUpdate(): Promise<void> {
     const device = await readDeviceRegistration();
     if (!pending || !device?.token) return;
     const { data: userData, error: userError } = await supabase.auth.getUser();
-    if (userError) return;
+    if (userError) throw userError;
     if (userData.user?.id !== pending.ownerId) {
       await AsyncStorage.removeItem(pendingPushTokenKey);
       return;
+    }
+    if (Platform.OS === "web") {
+      const { data: registration, error: registrationError } = await supabase
+        .from("devices")
+        .select("enabled,token")
+        .eq("id", device.id)
+        .eq("owner_id", pending.ownerId)
+        .maybeSingle();
+      if (registrationError) throw registrationError;
+      if (
+        registration?.enabled === false &&
+        registration.token === pending.token
+      )
+        throw new Error(
+          "This browser subscription was rejected. Enable notifications again to replace it.",
+        );
     }
     const { data, error } = await supabase.rpc("claim_device_token", {
       p_device_id: device.id,
@@ -258,7 +305,8 @@ export async function flushPendingPushTokenUpdate(): Promise<void> {
       p_deregistration_token: device.token,
       p_existing_deregistration_token: device.token,
     });
-    if (error || !data) return;
+    if (error) throw error;
+    if (!data) throw new Error("Unable to refresh the device push token.");
     await AsyncStorage.removeItem(pendingPushTokenKey);
   });
 }

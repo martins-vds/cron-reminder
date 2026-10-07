@@ -27,6 +27,7 @@ export default defineConfig({
       CI: "1",
       EXPO_PUBLIC_SUPABASE_URL: "http://127.0.0.1:9999",
       EXPO_PUBLIC_SUPABASE_ANON_KEY: "qa-anon-key",
+      EXPO_PUBLIC_VAPID_PUBLIC_KEY: "AQID",
     },
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,

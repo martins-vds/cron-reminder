@@ -543,6 +543,217 @@ async function expectControlContrast(
 
 test.describe("responsive UI layout", () => {
   for (const theme of ["light", "dark"] as const) {
+    for (const state of [
+      "healthy",
+      "disabled",
+      "missing",
+      "mismatched",
+      "unavailable",
+    ] as const) {
+      test(`browser notification status verifies a ${state} registration in ${theme} mode`, async ({
+        page,
+      }, testInfo) => {
+        const subscription = {
+          endpoint: "https://push.example/current",
+          keys: { auth: "auth", p256dh: "key" },
+        };
+        let repairedToken: string | null = null;
+        await mockSupabase(page, [], theme);
+        await authenticate(page);
+        await page.addInitScript(
+          ({ subscription }) => {
+            localStorage.setItem(
+              "cron-reminder:device-id",
+              JSON.stringify({
+                id: "this-browser",
+                token: "00000000-0000-4000-8000-000000000002",
+              }),
+            );
+            Object.defineProperty(Notification, "permission", {
+              value: "granted",
+              configurable: true,
+            });
+            Object.defineProperty(Notification, "requestPermission", {
+              value: async () => "granted",
+              configurable: true,
+            });
+            let current: typeof subscription | null = subscription;
+            const registration = {
+              pushManager: {
+                getSubscription: async () =>
+                  current && {
+                    ...current,
+                    unsubscribe: async () => {
+                      current = null;
+                      return true;
+                    },
+                  },
+                subscribe: async () => {
+                  current = {
+                    ...subscription,
+                    endpoint: "https://push.example/repaired",
+                  };
+                  return current;
+                },
+              },
+            };
+            Object.defineProperty(navigator.serviceWorker, "getRegistration", {
+              value: async () => registration,
+            });
+            Object.defineProperty(navigator.serviceWorker, "register", {
+              value: async () => registration,
+            });
+            Object.defineProperty(navigator.serviceWorker, "ready", {
+              value: Promise.resolve(registration),
+            });
+          },
+          { subscription },
+        );
+        await page.route(
+          `${supabaseOrigin}/rest/v1/devices*`,
+          async (route) => {
+            expect(
+              new URL(route.request().url()).searchParams.get("owner_id"),
+            ).toBe(`eq.${ownerId}`);
+            await route.fulfill({
+              status: state === "unavailable" ? 503 : 200,
+              headers:
+                state === "unavailable"
+                  ? {
+                      "Retry-After": "0",
+                      "Access-Control-Expose-Headers": "Retry-After",
+                    }
+                  : {},
+              contentType: "application/json",
+              body: JSON.stringify(
+                state === "unavailable"
+                  ? { message: "Registration lookup unavailable" }
+                  : state === "missing"
+                    ? []
+                    : [
+                        {
+                          enabled:
+                            repairedToken !== null || state !== "disabled",
+                          token:
+                            repairedToken ??
+                            JSON.stringify(
+                              state === "mismatched"
+                                ? {
+                                    ...subscription,
+                                    endpoint: "https://push.example/old",
+                                  }
+                                : subscription,
+                            ),
+                        },
+                      ],
+              ),
+            });
+          },
+        );
+        if (state === "disabled") {
+          await page.route(
+            `${supabaseOrigin}/rest/v1/rpc/claim_device_token`,
+            async (route) => {
+              const parameters = route.request().postDataJSON();
+              expect(parameters.p_platform).toBe("web");
+              expect(parameters.p_device_id).toBe("this-browser");
+              expect(JSON.parse(parameters.p_token).endpoint).toBe(
+                "https://push.example/repaired",
+              );
+              repairedToken = parameters.p_token;
+              await route.fulfill({
+                status: 200,
+                contentType: "application/json",
+                body: "true",
+              });
+            },
+          );
+        }
+        await page.goto("/settings");
+        if (state === "healthy") {
+          await expect(
+            page.getByRole("button", {
+              name: "Notifications are enabled on this device.",
+            }),
+          ).toBeVisible();
+        } else {
+          await expect(
+            page.getByRole("button", {
+              name: "Enable notifications on this device",
+            }),
+          ).toBeVisible();
+          await expect(
+            page.getByText("Notifications are enabled on this device.", {
+              exact: true,
+            }),
+          ).toHaveCount(0);
+          if (state === "unavailable")
+            await expect(
+              page.getByText(
+                "Notifications could not be enabled. Check your connection and try again.",
+              ),
+            ).toBeVisible();
+        }
+        if (state === "disabled") {
+          await expectControlContrast(
+            page.getByRole("button", {
+              name: "Enable notifications on this device",
+            }),
+            `${theme} notification recovery`,
+          );
+          for (const width of [280, 320, 414, 1120]) {
+            await page.setViewportSize({ width, height: 900 });
+            await expect
+              .poll(() => measureLayout(page), {
+                message: `browser registration recovery at ${width}px`,
+              })
+              .toEqual({
+                documentWidth: width,
+                viewportWidth: width,
+                outsideViewport: [],
+                clipped: [],
+                undersizedTargets: [],
+                overlaps: [],
+              });
+            await expectSoundLayout(
+              page,
+              `browser registration recovery at ${width}px`,
+            );
+          }
+          await page.setViewportSize({ width: 390, height: 900 });
+          await page
+            .getByRole("button", {
+              name: "Enable notifications on this device",
+            })
+            .scrollIntoViewIfNeeded();
+          await page.mouse.move(0, 0);
+          await page.screenshot({
+            path: testInfo.outputPath("browser-registration-recovery.png"),
+          });
+          await writeFile(
+            testInfo.outputPath("browser-registration.html"),
+            await page.content(),
+          );
+          await page
+            .getByRole("button", {
+              name: "Enable notifications on this device",
+            })
+            .click();
+          await expect(
+            page.getByRole("button", {
+              name: "Notifications are enabled on this device.",
+            }),
+          ).toBeVisible();
+          expect(JSON.parse(repairedToken!)).toEqual({
+            ...subscription,
+            endpoint: "https://push.example/repaired",
+          });
+        }
+      });
+    }
+  }
+
+  for (const theme of ["light", "dark"] as const) {
     test(`recurrence endings create, edit, validate, and persist in ${theme} mode`, async ({
       page,
     }, testInfo) => {
