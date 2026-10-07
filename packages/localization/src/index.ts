@@ -64,6 +64,8 @@ const messages = {
       "Notifications require a secure HTTPS connection.",
     notificationMissingConfiguration:
       "Web Push is not configured for this deployment.",
+    notificationPushServiceUnavailable:
+      "Your browser could not register with its notification service. Restart or update the browser, check VPN or firewall restrictions, and try again.",
     notificationRegistrationFailed:
       "Notifications could not be enabled. Check your connection and try again.",
     deleteAccount: "Delete account and data",
@@ -135,6 +137,8 @@ const messages = {
       "As notificações exigem uma conexão HTTPS segura.",
     notificationMissingConfiguration:
       "O Web Push não está configurado para esta implantação.",
+    notificationPushServiceUnavailable:
+      "O navegador não conseguiu se registrar no serviço de notificações. Reinicie ou atualize o navegador, verifique as restrições de VPN ou firewall e tente novamente.",
     notificationRegistrationFailed:
       "Não foi possível ativar as notificações. Verifique sua conexão e tente novamente.",
     deleteAccount: "Excluir conta e dados",

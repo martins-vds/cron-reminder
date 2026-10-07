@@ -155,6 +155,147 @@ describe("browser notification registration", () => {
     expect(subscribe).not.toHaveBeenCalled();
   });
 
+  it("waits for background subscription creation before manually enabling notifications", async () => {
+    getSubscription.mockResolvedValue(null);
+    let complete: (value: typeof newSubscription) => void = () => {};
+    subscribe.mockImplementation(
+      () =>
+        new Promise<typeof newSubscription>((resolve) => {
+          complete = (subscription) => {
+            getSubscription.mockResolvedValue(subscription);
+            resolve(subscription);
+          };
+        }),
+    );
+    const listener = vi.fn();
+    cleanups.push(subscribeToPushTokenChanges(listener));
+    await vi.waitFor(() => expect(subscribe).toHaveBeenCalledTimes(1));
+    const registration = new DeviceNotificationAdapter().register("owner");
+    await vi.waitFor(() =>
+      expect(navigator.serviceWorker.register).toHaveBeenCalled(),
+    );
+    expect(getSubscription).toHaveBeenCalledTimes(1);
+    complete(newSubscription);
+    expect((await registration)?.token).toBe(JSON.stringify(newSubscription));
+    expect(subscribe).toHaveBeenCalledTimes(1);
+    expect(listener).toHaveBeenCalledWith(JSON.stringify(newSubscription));
+  });
+
+  it("waits for manual replacement before refreshing the subscription in the background", async () => {
+    let complete: (value: typeof newSubscription) => void = () => {};
+    subscribe.mockImplementation(
+      () =>
+        new Promise<typeof newSubscription>((resolve) => {
+          complete = (subscription) => {
+            getSubscription.mockResolvedValue(subscription);
+            resolve(subscription);
+          };
+        }),
+    );
+    const registration = new DeviceNotificationAdapter().register(
+      "owner",
+      true,
+    );
+    await vi.waitFor(() => expect(subscribe).toHaveBeenCalledTimes(1));
+    const listener = vi.fn();
+    cleanups.push(subscribeToPushTokenChanges(listener));
+    await vi.waitFor(() => expect(getRegistration).toHaveBeenCalled());
+    expect(getSubscription).toHaveBeenCalledTimes(1);
+    complete(newSubscription);
+    expect((await registration)?.token).toBe(JSON.stringify(newSubscription));
+    await vi.waitFor(() =>
+      expect(listener).toHaveBeenCalledWith(JSON.stringify(newSubscription)),
+    );
+    expect(listener).not.toHaveBeenCalledWith(JSON.stringify(oldSubscription));
+    expect(oldSubscription.unsubscribe).toHaveBeenCalledTimes(1);
+    expect(subscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not skip manual repair when a background lookup is in progress", async () => {
+    let complete: (value: typeof oldSubscription) => void = () => {};
+    getSubscription.mockImplementationOnce(
+      () =>
+        new Promise<typeof oldSubscription>((resolve) => {
+          complete = resolve;
+        }),
+    );
+    const listener = vi.fn();
+    cleanups.push(subscribeToPushTokenChanges(listener));
+    await vi.waitFor(() => expect(getSubscription).toHaveBeenCalledTimes(1));
+    const registration = new DeviceNotificationAdapter().register(
+      "owner",
+      true,
+    );
+    complete(oldSubscription);
+    expect((await registration)?.token).toBe(JSON.stringify(newSubscription));
+    expect(oldSubscription.unsubscribe).toHaveBeenCalledTimes(1);
+    expect(subscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it("identifies a push-service failure and permits a later successful retry", async () => {
+    getSubscription.mockResolvedValue(null);
+    const failure = new DOMException(
+      "Registration failed - push service error",
+      "AbortError",
+    );
+    subscribe.mockRejectedValueOnce(failure);
+    await expect(
+      new DeviceNotificationAdapter().register("owner"),
+    ).rejects.toMatchObject({
+      name: "NotificationRegistrationError",
+      code: "push-service-unavailable",
+      cause: failure,
+    });
+    expect(
+      (await new DeviceNotificationAdapter().register("owner"))?.token,
+    ).toBe(JSON.stringify(newSubscription));
+    expect(subscribe).toHaveBeenCalledTimes(2);
+  });
+
+  it("preserves subscription failure details for other browser errors", async () => {
+    getSubscription.mockResolvedValue(null);
+    const failure = new DOMException("Permission denied", "NotAllowedError");
+    subscribe.mockRejectedValueOnce(failure);
+    await expect(
+      new DeviceNotificationAdapter().register("owner"),
+    ).rejects.toMatchObject({
+      code: "subscription-failed",
+      cause: failure,
+    });
+  });
+
+  it("allows queued manual registration after a background push-service failure", async () => {
+    getSubscription.mockResolvedValue(null);
+    let fail: (reason: DOMException) => void = () => {};
+    subscribe.mockImplementationOnce(
+      () =>
+        new Promise<PushSubscription>((_resolve, reject) => {
+          fail = reject;
+        }),
+    );
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const listener = vi.fn();
+    cleanups.push(subscribeToPushTokenChanges(listener));
+    await vi.waitFor(() => expect(subscribe).toHaveBeenCalledTimes(1));
+    const registration = new DeviceNotificationAdapter().register("owner");
+    await vi.waitFor(() =>
+      expect(navigator.serviceWorker.register).toHaveBeenCalled(),
+    );
+    fail(
+      new DOMException(
+        "Registration failed - push service error",
+        "AbortError",
+      ),
+    );
+    expect((await registration)?.token).toBe(JSON.stringify(newSubscription));
+    expect(subscribe).toHaveBeenCalledTimes(2);
+    expect(listener).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(
+      "Unable to refresh browser push subscription",
+      expect.objectContaining({ code: "push-service-unavailable" }),
+    );
+  });
+
   it("does not subscribe when this browser has never registered a service worker", async () => {
     getRegistration.mockResolvedValue(undefined);
     const listener = vi.fn();

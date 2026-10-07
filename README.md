@@ -282,6 +282,15 @@ registration instead of trusting an old local record. If permission was revoked,
 the subscription disappeared, or registration verification failed, enable
 notifications again on that device.
 
+Background subscription refresh and manual registration are serialized so they
+cannot create or replace a subscription simultaneously. Browser push-service
+registration failures have a separate recovery message and do not mark the device
+as enabled. Retry after the browser's notification service becomes available.
+For Edge on Windows, restart and update Edge, then check VPN, proxy, firewall,
+and managed browser restrictions if registration still fails. Browser permission
+alone does not establish a push subscription. Do not clear site data as a first
+step: it also removes locally stored reminders and pending offline changes.
+
 On iPhone and iPad, Web Push requires a supported Home Screen web app, not just
 an ordinary browser tab. Focus modes, OS notification settings, offline devices,
 and browser background restrictions can delay or suppress display even after a

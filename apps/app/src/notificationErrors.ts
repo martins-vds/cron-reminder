@@ -1,6 +1,7 @@
 export type NotificationRegistrationErrorCode =
   | "insecure-context"
   | "missing-vapid-key"
+  | "push-service-unavailable"
   | "subscription-failed"
   | "unsupported";
 

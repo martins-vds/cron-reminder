@@ -6,6 +6,7 @@ import type { Occurrence, Reminder } from "@cron-reminder/domain";
 import { NotificationRegistrationError } from "./notificationErrors";
 
 const scheduledNotifications = new Map<string, ReturnType<typeof setTimeout>>();
+let subscriptionOperation: Promise<PushSubscription> | undefined;
 
 export function subscribeToPushTokenChanges(
   listener: (token: string) => void,
@@ -99,6 +100,7 @@ export class DeviceNotificationAdapter implements NotificationPort {
         token: JSON.stringify(subscription),
       };
     } catch (error) {
+      if (error instanceof NotificationRegistrationError) throw error;
       throw new NotificationRegistrationError("subscription-failed", {
         cause: error,
       });
@@ -161,7 +163,23 @@ function supportsWebPush(): boolean {
   );
 }
 
-async function ensureSubscription(
+function ensureSubscription(
+  registration: ServiceWorkerRegistration,
+  renew = false,
+): Promise<PushSubscription> {
+  const update = () => updateSubscription(registration, renew);
+  const operation = subscriptionOperation
+    ? subscriptionOperation.then(update, update)
+    : update();
+  subscriptionOperation = operation;
+  const finish = () => {
+    if (subscriptionOperation === operation) subscriptionOperation = undefined;
+  };
+  void operation.then(finish, finish);
+  return operation;
+}
+
+async function updateSubscription(
   registration: ServiceWorkerRegistration,
   renew = false,
 ): Promise<PushSubscription> {
@@ -171,10 +189,22 @@ async function ensureSubscription(
   if (!publicKey) throw new NotificationRegistrationError("missing-vapid-key");
   if (existing && !(await existing.unsubscribe()))
     throw new Error("Unable to replace the expired browser subscription.");
-  return await registration.pushManager.subscribe({
-    userVisibleOnly: true,
-    applicationServerKey: decodeVapidKey(publicKey),
-  });
+  try {
+    return await registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: decodeVapidKey(publicKey),
+    });
+  } catch (error) {
+    if (
+      (error instanceof DOMException || error instanceof Error) &&
+      error.name === "AbortError"
+    ) {
+      throw new NotificationRegistrationError("push-service-unavailable", {
+        cause: error,
+      });
+    }
+    throw error;
+  }
 }
 
 function decodeVapidKey(value: string): Uint8Array<ArrayBuffer> {

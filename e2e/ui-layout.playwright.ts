@@ -290,9 +290,14 @@ async function mockBrowserPush(
   page: Page,
   subscription: { endpoint: string; keys: { auth: string; p256dh: string } },
   rejectSubscriptionReplacement = false,
+  startWithUnavailablePushService = false,
 ) {
   await page.addInitScript(
-    ({ subscription, rejectSubscriptionReplacement }) => {
+    ({
+      subscription,
+      rejectSubscriptionReplacement,
+      startWithUnavailablePushService,
+    }) => {
       if (localStorage.getItem("cron-reminder:device-id") === null)
         localStorage.setItem(
           "cron-reminder:device-id",
@@ -309,7 +314,9 @@ async function mockBrowserPush(
         value: async () => "granted",
         configurable: true,
       });
-      let current: typeof subscription | null = subscription;
+      let current: typeof subscription | null = startWithUnavailablePushService
+        ? null
+        : subscription;
       const registration = {
         pushManager: {
           getSubscription: async () =>
@@ -325,6 +332,14 @@ async function mockBrowserPush(
               },
             },
           subscribe: async () => {
+            if (
+              startWithUnavailablePushService &&
+              !localStorage.getItem("qa-push-service-available")
+            )
+              throw new DOMException(
+                "Registration failed - push service error",
+                "AbortError",
+              );
             if (rejectSubscriptionReplacement)
               throw new Error(
                 "The push service cannot create a replacement subscription.",
@@ -347,7 +362,11 @@ async function mockBrowserPush(
         value: Promise.resolve(registration),
       });
     },
-    { subscription, rejectSubscriptionReplacement },
+    {
+      subscription,
+      rejectSubscriptionReplacement,
+      startWithUnavailablePushService,
+    },
   );
 }
 
@@ -912,6 +931,119 @@ test.describe("responsive UI layout", () => {
       await page.mouse.move(0, 0);
       await page.screenshot({
         path: testInfo.outputPath("notification-reenabled.png"),
+      });
+    });
+  }
+
+  for (const theme of ["light", "dark"] as const) {
+    test(`browser push-service failure explains recovery and allows retry in ${theme} mode`, async ({
+      page,
+    }, testInfo) => {
+      const subscription = {
+        endpoint: "https://push.example/current",
+        keys: { auth: "auth", p256dh: "key" },
+      };
+      let enabled = false;
+      const claims: Array<Record<string, unknown>> = [];
+      await page.emulateMedia({ colorScheme: theme });
+      await mockSupabase(page, [], theme);
+      await authenticate(page);
+      await mockBrowserPush(page, subscription, false, true);
+      await page.route(
+        `${supabaseOrigin}/rest/v1/rpc/claim_device_token`,
+        async (route) => {
+          const claim = route.request().postDataJSON() as Record<
+            string,
+            unknown
+          >;
+          claims.push(claim);
+          if (claim.p_enable === true) enabled = true;
+          await route.fulfill({
+            status: 200,
+            contentType: "application/json",
+            body: "true",
+          });
+        },
+      );
+      await page.route(`${supabaseOrigin}/rest/v1/devices*`, async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify([
+            {
+              enabled,
+              user_disabled: !enabled,
+              token: JSON.stringify(subscription),
+            },
+          ]),
+        });
+      });
+      await page.goto("/settings");
+      const enable = page.getByRole("button", {
+        name: "Enable notifications on this device",
+        exact: true,
+      });
+      await enable.click();
+      const failureNotice = page.getByText(
+        "Your browser could not register with its notification service. Restart or update the browser, check VPN or firewall restrictions, and try again.",
+        { exact: true },
+      );
+      await expect(failureNotice).toBeVisible();
+      await expect(enable).toBeEnabled();
+      expect(claims).toEqual([]);
+      expect(enabled).toBe(false);
+      for (const width of [280, 320, 414]) {
+        await page.setViewportSize({ width, height: 900 });
+        await expect
+          .poll(() => measureLayout(page), {
+            message: `${theme} push-service error settles at ${width}px`,
+          })
+          .toMatchObject({
+            documentWidth: width,
+            viewportWidth: width,
+            outsideViewport: [],
+            clipped: [],
+            undersizedTargets: [],
+            overlaps: [],
+          });
+        await expectSoundLayout(
+          page,
+          `${theme} push-service error at ${width}px`,
+        );
+      }
+      await failureNotice.evaluate((element) =>
+        element.scrollIntoView({ block: "center" }),
+      );
+      await page.mouse.move(0, 0);
+      await page.screenshot({
+        path: testInfo.outputPath("push-service-error.png"),
+        fullPage: true,
+      });
+      await writeFile(
+        testInfo.outputPath("push-service-error.html"),
+        await page.content(),
+      );
+      await page.evaluate(() =>
+        localStorage.setItem("qa-push-service-available", "true"),
+      );
+      await enable.click();
+      await expect(
+        page.getByText("Notifications are enabled on this device.", {
+          exact: true,
+        }),
+      ).toBeVisible();
+      expect(claims.filter((claim) => claim.p_enable === true)).toHaveLength(1);
+      expect(enabled).toBe(true);
+      await expect(
+        page.getByRole("button", {
+          name: "Disable notifications on this device",
+          exact: true,
+        }),
+      ).toBeVisible();
+      await page.mouse.move(0, 0);
+      await page.screenshot({
+        path: testInfo.outputPath("push-service-recovered.png"),
+        fullPage: true,
       });
     });
   }

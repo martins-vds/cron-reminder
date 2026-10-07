@@ -3438,6 +3438,8 @@ function notificationErrorMessageKey(error: unknown): MessageKey {
       return "notificationSecureContextRequired";
     if (error.code === "missing-vapid-key")
       return "notificationMissingConfiguration";
+    if (error.code === "push-service-unavailable")
+      return "notificationPushServiceUnavailable";
   }
   return "notificationRegistrationFailed";
 }
