@@ -73,6 +73,81 @@ describe("agenda", () => {
     expect(items.at(-1)?.scheduledAt).toBe("2026-09-25T12:00:00.000Z");
   });
 
+  it.each([
+    "scheduled",
+    "triggered",
+    "delivering",
+    "delivery-failed",
+    "missed",
+    "postponed",
+  ] as const)("hides archived reminders with %s occurrences", (status) => {
+    const active = { ...reminder, id: "active-report" };
+    const occurrences: StoredAgendaOccurrence[] = [
+      {
+        id: "archived-record",
+        reminder_id: reminder.id,
+        scheduled_at: "2026-09-25T09:00:00.000Z",
+        status,
+        acted_at: null,
+        snoozed_until:
+          status === "postponed" ? "2026-09-25T11:00:00.000Z" : null,
+      },
+      {
+        id: "archived-future",
+        reminder_id: reminder.id,
+        scheduled_at: "2026-09-26T12:00:00.000Z",
+        status: "scheduled",
+        acted_at: null,
+        snoozed_until: null,
+      },
+      {
+        id: "active-record",
+        reminder_id: active.id,
+        scheduled_at: "2026-09-25T09:00:00.000Z",
+        status: "triggered",
+        acted_at: null,
+        snoozed_until: null,
+      },
+    ];
+    const originalOccurrences = structuredClone(occurrences);
+    const items = buildAgendaItems(
+      [{ ...reminder, status: "archived" }, active],
+      occurrences,
+      new Date("2026-09-25T10:00:00.000Z"),
+    );
+    expect(
+      items.filter(({ reminderId }) => reminderId === reminder.id),
+    ).toEqual([]);
+    expect(items.map(({ reminderId }) => reminderId)).toEqual([
+      active.id,
+      active.id,
+    ]);
+    expect(occurrences).toEqual(originalOccurrences);
+  });
+
+  it("keeps existing disabled-reminder occurrences dismissible", () => {
+    const items = buildAgendaItems(
+      [{ ...reminder, status: "disabled" }],
+      [
+        {
+          id: "disabled-record",
+          reminder_id: reminder.id,
+          scheduled_at: "2026-09-25T09:00:00.000Z",
+          status: "triggered",
+          acted_at: null,
+          snoozed_until: null,
+        },
+      ],
+      new Date("2026-09-25T10:00:00.000Z"),
+    );
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      id: "disabled-record",
+      dismissible: true,
+      snoozable: false,
+    });
+  });
+
   it("does not duplicate a calculated occurrence already recorded", () => {
     const scheduledAt = "2026-09-25T12:00:00.000Z";
     const items = buildAgendaItems(

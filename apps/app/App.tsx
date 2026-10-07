@@ -22,6 +22,7 @@ import {
   AppState,
   Appearance,
   FlatList,
+  Image,
   Platform,
   Pressable,
   SafeAreaView,
@@ -90,6 +91,7 @@ import { NotificationRegistrationError } from "./src/notificationErrors";
 import { DateTimeField, TimeField } from "./src/NativeDateTimeField";
 import { NumberField } from "./src/NativeNumberField";
 import { OptionPicker } from "./src/OptionPicker";
+import appIcon from "./assets/icon.png";
 import {
   darkColors,
   lightColors,
@@ -447,7 +449,7 @@ export function RootNavigator() {
             ]}
           >
             <View style={styles.brandLockup}>
-              <BrandMark colors={colors} />
+              <BrandMark />
               <View style={styles.brandCopy}>
                 <Text style={[styles.brand, { color: colors.text }]}>
                   Cron Reminder
@@ -1496,7 +1498,7 @@ function SignIn({
         <View style={[styles.authLayout, isWide && styles.authLayoutWide]}>
           <View style={[styles.authIntro, isWide && styles.authIntroWide]}>
             <View style={styles.brandLockup}>
-              <BrandMark colors={colors} />
+              <BrandMark />
               <Text style={[styles.brand, { color: colors.text }]}>
                 Cron Reminder
               </Text>
@@ -3547,23 +3549,18 @@ function Button({
   );
 }
 
-function BrandMark({ colors }: { colors: Colors }) {
+function BrandMark() {
   return (
-    <View
+    <Image
+      source={appIcon}
+      resizeMode="contain"
       accessible={false}
-      style={[styles.brandMark, { backgroundColor: colors.accent }]}
-    >
-      <View
-        style={[styles.brandMarkHand, { backgroundColor: colors.onAccent }]}
-      />
-      <View
-        style={[
-          styles.brandMarkHand,
-          styles.brandMarkHandShort,
-          { backgroundColor: colors.onAccent },
-        ]}
-      />
-    </View>
+      aria-hidden
+      accessibilityElementsHidden
+      importantForAccessibility="no-hide-descendants"
+      testID="brand-mark"
+      style={styles.brandMark}
+    />
   );
 }
 
@@ -3832,23 +3829,6 @@ const styles = StyleSheet.create({
     width: size.controlSm,
     height: size.controlSm,
     borderRadius: radius.md,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  brandMarkHand: {
-    position: "absolute",
-    width: space.xs,
-    height: space.md,
-    borderRadius: radius.pill,
-    transform: [{ translateY: -space.xs }],
-  },
-  brandMarkHandShort: {
-    height: space.sm,
-    transform: [
-      { translateX: space.xs },
-      { translateY: space.xs },
-      { rotate: "-45deg" },
-    ],
   },
   brand: {
     fontSize: type.title,

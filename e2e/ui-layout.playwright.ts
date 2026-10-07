@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
+import { size } from "../apps/app/src/theme";
 import type { StoredAgendaOccurrence } from "../apps/app/src/agenda";
 import {
   nextPostponementAt,
@@ -543,6 +544,69 @@ async function expectControlContrast(
 
 test.describe("responsive UI layout", () => {
   for (const theme of ["light", "dark"] as const) {
+    for (const signedIn of [false, true]) {
+      test(`shared brand icon matches the launcher in ${theme} mode ${signedIn ? "signed in" : "signed out"}`, async ({
+        page,
+      }, testInfo) => {
+        await page.emulateMedia({ colorScheme: theme });
+        await mockSupabase(page, [], theme);
+        if (signedIn) await authenticate(page);
+        await page.goto("/");
+        await expect(
+          page.getByRole("heading", {
+            name: signedIn
+              ? "Today and upcoming"
+              : "Make time-sensitive work hard to miss.",
+          }),
+        ).toBeVisible();
+        const mark = page.getByTestId("brand-mark");
+        await expect(mark).toBeVisible();
+        await expect(mark).toHaveAttribute("aria-hidden", "true");
+        const image = await mark.locator("img").evaluate(async (element) => {
+          if (!(element instanceof HTMLImageElement))
+            throw new Error("The brand mark did not render an image.");
+          await element.decode();
+          return {
+            width: element.naturalWidth,
+            height: element.naturalHeight,
+            src: element.currentSrc,
+          };
+        });
+        expect([image.width, image.height]).toEqual([1024, 1024]);
+        const response = await page.request.get(image.src);
+        expect(response.ok()).toBe(true);
+        expect(await response.body()).toEqual(
+          await readFile("apps/app/assets/icon.png"),
+        );
+        for (const width of [280, 390, 1120]) {
+          await page.setViewportSize({ width, height: 900 });
+          await expect
+            .poll(() =>
+              mark.evaluate((element) => {
+                const rect = element.getBoundingClientRect();
+                return [rect.width, rect.height];
+              }),
+            )
+            .toEqual([size.controlSm, size.controlSm]);
+          await expectSoundLayout(
+            page,
+            `${theme} shared brand icon at ${width}px`,
+          );
+        }
+        await page.setViewportSize({ width: 390, height: 900 });
+        await page.mouse.move(0, 0);
+        await page.screenshot({
+          path: testInfo.outputPath("shared-brand-icon.png"),
+        });
+        await writeFile(
+          testInfo.outputPath("shared-brand.html"),
+          await page.content(),
+        );
+      });
+    }
+  }
+
+  for (const theme of ["light", "dark"] as const) {
     for (const state of [
       "healthy",
       "disabled",
@@ -956,6 +1020,79 @@ test.describe("responsive UI layout", () => {
       consoleErrors,
       "authentication emitted layout console errors",
     ).toEqual([]);
+  });
+
+  test("archived reminders stay out of Today across reloads without losing History", async ({
+    page,
+  }) => {
+    const seededReminders = reminders.map((reminder, index) =>
+      index === 0 ? { ...reminder, status: "archived" as const } : reminder,
+    );
+    await mockSupabase(page, [], "light", seededReminders);
+    await authenticate(page, seededReminders);
+    await page.goto("/");
+    await expect(
+      page.getByText(reminders[1]!.title, { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText(reminders[0]!.title, { exact: true }),
+    ).toHaveCount(0);
+    await page.reload();
+    await expect(
+      page.getByText(reminders[1]!.title, { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText(reminders[0]!.title, { exact: true }),
+    ).toHaveCount(0);
+    await page.getByRole("button", { name: "History", exact: true }).click();
+    await expect(
+      page.getByText(reminders[0]!.id, { exact: true }),
+    ).toBeVisible();
+    await expect(page.getByText("postponed", { exact: true })).toBeVisible();
+  });
+
+  test("archiving a reminder removes its existing occurrences from Today", async ({
+    page,
+  }) => {
+    const writes: Array<Record<string, unknown>> = [];
+    await mockSupabase(page, [], "light", reminders, writes);
+    await authenticate(page);
+    await page.goto("/");
+    await expect(
+      page.getByRole("button", {
+        name: new RegExp(`^Dismiss ${reminders[0]!.title},`),
+      }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Reminders", exact: true }).click();
+    const card = page
+      .getByText(reminders[0]!.title, { exact: true })
+      .filter({ visible: true })
+      .locator("..")
+      .locator("..")
+      .locator("..")
+      .locator("..");
+    await card.getByRole("button", { name: "Archive", exact: true }).click();
+    await expect
+      .poll(() => writes.some(({ status }) => status === "archived"))
+      .toBe(true);
+    await page.getByRole("button", { name: "Today", exact: true }).click();
+    await expect(
+      page.getByRole("heading", { name: "Today and upcoming", exact: true }),
+    ).toBeVisible();
+    await expect(
+      page
+        .getByText(reminders[1]!.title, { exact: true })
+        .filter({ visible: true }),
+    ).toBeVisible();
+    await expect(
+      page
+        .getByText(reminders[0]!.title, { exact: true })
+        .filter({ visible: true }),
+    ).toHaveCount(0);
+    await page.getByRole("button", { name: "History", exact: true }).click();
+    await expect(
+      page.getByText(reminders[0]!.id, { exact: true }),
+    ).toBeVisible();
   });
 
   test("only the latest overdue occurrence has dismiss, postpone, and complete actions", async ({

@@ -32,6 +32,8 @@ Today shows the latest overdue occurrence per reminder instead of a backlog of
 repeated missed occurrences. Earlier occurrences remain in the 30-day History;
 dismissing, postponing, or completing the latest does not bring old missed items
 back. Explicitly postponed occurrences remain visible until handled.
+Archived reminders do not appear in Today, including their existing overdue,
+postponed, or scheduled occurrences. Their past events remain in History.
 
 Reminder actions are **Dismiss** (skip this occurrence), **Postpone**, and
 **Complete** (record this occurrence as done). Postpone opens choices for
@@ -65,6 +67,7 @@ worker handles push notifications; installation does not add offline page cachin
 App icons use a scalable Lucide clock on the existing brand background, with
 high-resolution native, PWA, maskable, Apple touch, and favicon exports. Android
 foreground and monochrome layers leave the launcher mask's safe area clear.
+The sign-in screen and app header reuse the same generated icon asset.
 Regenerate them with `npm run icons:generate` after changing the clock vector or
 brand tokens. Icon licensing is in `apps/app/public/icon-LICENSE.txt` and is also
 embedded in the generated SVG and PNG artwork.
