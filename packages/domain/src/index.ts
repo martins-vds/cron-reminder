@@ -1,4 +1,6 @@
 import { CronExpressionParser } from "cron-parser";
+export * from "./categories.ts";
+export * from "./analytics.ts";
 
 export type ReminderStatus = "active" | "disabled" | "archived" | "completed";
 export type OccurrenceStatus =
@@ -42,6 +44,7 @@ export interface Reminder {
   title: string;
   notes: string;
   tags: readonly string[];
+  categoryId?: string | null;
   schedule: Schedule;
   timezone: string;
   sound: ReminderSound;
@@ -74,6 +77,7 @@ export interface CreateReminderInput {
   title: string;
   notes?: string;
   tags?: readonly string[];
+  categoryId?: string | null;
   schedule: Schedule;
   timezone: string;
   sound?: ReminderSound;
@@ -273,6 +277,8 @@ export function createReminder(input: CreateReminderInput): Reminder {
     throw new Error("Reminder ID contains unsupported characters.");
   const title = input.title.trim();
   if (!title) throw new Error("Reminder title is required.");
+  if (input.categoryId != null && !isValidReminderId(input.categoryId))
+    throw new Error("Category ID contains unsupported characters.");
   validateSchedule(input.schedule);
   validateTimezone(input.timezone);
   return {
@@ -284,6 +290,7 @@ export function createReminder(input: CreateReminderInput): Reminder {
       ...new Set((input.tags ?? []).map((tag) => tag.trim()).filter(Boolean)),
     ],
     schedule: input.schedule,
+    categoryId: input.categoryId ?? null,
     timezone: input.timezone,
     sound: input.sound ?? { mode: "default" },
     status: "active",
@@ -302,7 +309,13 @@ export function updateReminder(
   changes: Partial<
     Pick<
       Reminder,
-      "title" | "notes" | "tags" | "schedule" | "timezone" | "sound"
+      | "title"
+      | "notes"
+      | "tags"
+      | "categoryId"
+      | "schedule"
+      | "timezone"
+      | "sound"
     >
   >,
   now: string,
@@ -324,6 +337,8 @@ export function updateReminder(
     updatedAt: now,
   };
   if (!updated.title) throw new Error("Reminder title is required.");
+  if (updated.categoryId != null && !isValidReminderId(updated.categoryId))
+    throw new Error("Category ID contains unsupported characters.");
   validateSchedule(updated.schedule);
   validateTimezone(updated.timezone);
   return updated;

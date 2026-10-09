@@ -10,7 +10,9 @@ import {
   type HistoryEvent,
   type Occurrence,
   type Reminder,
+  type AnalyticsSnapshot,
 } from "@cron-reminder/domain";
+export * from "./categories";
 
 export interface ReminderRepository {
   list(ownerId: string): Promise<Reminder[]>;
@@ -30,6 +32,9 @@ export interface HistoryRepository {
   list(ownerId: string, after: Date): Promise<HistoryEvent[]>;
   append(event: HistoryEvent): Promise<void>;
   deleteBefore(cutoff: Date): Promise<number>;
+}
+export interface AnalyticsRepository {
+  load(ownerId: string): Promise<AnalyticsSnapshot>;
 }
 
 export interface Clock {
@@ -180,6 +185,7 @@ export interface ReminderQuery {
   tags?: readonly string[];
   status?: Reminder["status"] | "all";
   sort?: "title" | "status" | "updated";
+  categoryId?: string | null;
 }
 
 export function filterReminders(
@@ -193,6 +199,8 @@ export function filterReminders(
       `${reminder.title} ${reminder.notes} ${reminder.tags.join(" ")}`.toLocaleLowerCase();
     return (
       (!needle || searchable.includes(needle)) &&
+      (query.categoryId === undefined ||
+        (reminder.categoryId ?? null) === query.categoryId) &&
       (!query.status ||
         query.status === "all" ||
         reminder.status === query.status) &&
@@ -251,6 +259,7 @@ function comparableReminderContent(
     title: reminder.title,
     notes: reminder.notes,
     tags: reminder.tags,
+    categoryId: reminder.categoryId ?? null,
     schedule: reminder.schedule,
     timezone: reminder.timezone,
     sound: reminder.sound,

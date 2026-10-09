@@ -6,6 +6,27 @@ const messages = {
     addReminder: "Add reminder",
     advanced: "Advanced cron",
     agenda: "Today",
+    analytics: "Analytics",
+    category: "Category",
+    categories: "Categories",
+    allCategories: "All",
+    uncategorized: "Uncategorized",
+    manageCategories: "Manage categories",
+    categoryName: "Category name",
+    categoryNameRequired: "Enter a category name.",
+    categoryNameReserved: "This name is reserved. Choose another name.",
+    categoryNameDuplicate:
+      "A category already uses this name. Choose another name.",
+    categoryNotFound: "This category was removed. Choose another category.",
+    categoryConcurrentEdit:
+      "This category changed on another device. Refresh and resolve the edit.",
+    categoryConnectionRequired: "Reconnect to resolve this category edit.",
+    categoryFailed: "Could not change categories. Try again.",
+    categoryPending:
+      "Changes are saved on this device and waiting to sync. Reconnect and retry.",
+    categoryConflict:
+      "This category was edited on another device. Choose which name to keep.",
+    analyticsConnectionRequired: "Reconnect to load analytics.",
     archive: "Archive",
     archived: "Archived",
     cancel: "Cancel",
@@ -79,6 +100,28 @@ const messages = {
     addReminder: "Adicionar lembrete",
     advanced: "Cron avançado",
     agenda: "Hoje",
+    analytics: "Análises",
+    category: "Categoria",
+    categories: "Categorias",
+    allCategories: "Todos",
+    uncategorized: "Sem categoria",
+    manageCategories: "Gerenciar categorias",
+    categoryName: "Nome da categoria",
+    categoryNameRequired: "Digite um nome para a categoria.",
+    categoryNameReserved: "Este nome é reservado. Escolha outro nome.",
+    categoryNameDuplicate:
+      "Uma categoria já usa este nome. Escolha outro nome.",
+    categoryNotFound: "Esta categoria foi removida. Escolha outra categoria.",
+    categoryConcurrentEdit:
+      "Esta categoria mudou em outro dispositivo. Atualize e resolva a edição.",
+    categoryConnectionRequired:
+      "Reconecte para resolver esta edição de categoria.",
+    categoryFailed: "Não foi possível alterar as categorias. Tente novamente.",
+    categoryPending:
+      "As alterações foram salvas neste dispositivo e aguardam sincronização. Reconecte e tente novamente.",
+    categoryConflict:
+      "Esta categoria foi editada em outro dispositivo. Escolha qual nome manter.",
+    analyticsConnectionRequired: "Reconecte para carregar as análises.",
     archive: "Arquivar",
     archived: "Arquivados",
     cancel: "Cancelar",

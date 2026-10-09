@@ -55,6 +55,7 @@ const toDatabaseReminder = (reminder: Reminder) => ({
   title: reminder.title,
   notes: reminder.notes,
   tags: reminder.tags,
+  category_id: reminder.categoryId ?? null,
   schedule: reminder.schedule,
   timezone: reminder.timezone,
   sound: reminder.sound,
@@ -166,6 +167,42 @@ async function mockSupabase(
   const storedOccurrences = occurrences.map((item) => ({ ...item }));
   const storedReminders: Array<Record<string, unknown>> =
     seededReminders.map(toDatabaseReminder);
+  const storedCategories = [
+    {
+      id: "personal",
+      owner_id: ownerId,
+      name: "Personal",
+      revision: 1,
+      deleted_at: null as string | null,
+      updated_at: "2026-09-25T00:00:00Z",
+    },
+    {
+      id: "work",
+      owner_id: ownerId,
+      name: "Work",
+      revision: 1,
+      deleted_at: null as string | null,
+      updated_at: "2026-09-25T00:00:00Z",
+    },
+  ];
+  const analytics = [
+    {
+      owner_id: ownerId,
+      reminder_id: "daily-operations-review",
+      local_day: "2026-09-25",
+      timezone: "UTC",
+      completed: 2,
+      postponed: 3,
+    },
+    {
+      owner_id: ownerId,
+      reminder_id: "daily-operations-review",
+      local_day: "2026-09-10",
+      timezone: "UTC",
+      completed: 4,
+      postponed: 1,
+    },
+  ];
   await page.route(`${supabaseOrigin}/**`, async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -204,6 +241,44 @@ async function mockSupabase(
         } else occurrence.snoozed_until = null;
       }
       body = { updated: true };
+    } else if (table === "save_category") {
+      const input = request.postDataJSON() as {
+        p_id: string;
+        p_name: string;
+        p_revision: number;
+        p_expected_revision: number | null;
+        p_deleted: boolean;
+      };
+      const category = storedCategories.find((item) => item.id === input.p_id);
+      if (category && category.revision !== input.p_expected_revision)
+        body = false;
+      else {
+        const updated = {
+          id: input.p_id,
+          owner_id: ownerId,
+          name: input.p_name,
+          revision: input.p_revision,
+          updated_at: new Date().toISOString(),
+          deleted_at: input.p_deleted ? new Date().toISOString() : null,
+        };
+        if (category) Object.assign(category, updated);
+        else storedCategories.push(updated);
+        if (input.p_deleted) {
+          for (const reminder of storedReminders) {
+            if (reminder.category_id === input.p_id) {
+              reminder.category_id = null;
+              reminder.revision = Number(reminder.revision) + 1;
+            }
+          }
+        }
+        body = true;
+      }
+    } else if (table === "reminder_categories") {
+      body = storedCategories;
+    } else if (table === "analytics_coverage") {
+      body = [{ owner_id: ownerId, available_since: "2026-09-01T00:00:00Z" }];
+    } else if (table === "reminder_daily_analytics") {
+      body = analytics;
     } else if (table === "profiles") {
       body = request.method() === "GET" ? { locale: "en", theme } : null;
     } else if (table === "reminders") {
@@ -593,7 +668,8 @@ async function expectControlContrast(
     const contrasts = await control.evaluate((element) => {
       const text =
         element instanceof HTMLInputElement ||
-        element instanceof HTMLSelectElement
+        element instanceof HTMLSelectElement ||
+        (element.children.length === 0 && Boolean(element.textContent?.trim()))
           ? element
           : Array.from(element.querySelectorAll("*")).find(
               (child) => !child.children.length && child.textContent?.trim(),
@@ -657,7 +733,193 @@ async function expectControlContrast(
   }
 }
 
+async function saveRenderedSnapshot(page: Page, path: string): Promise<void> {
+  const html = await page.evaluate(() => {
+    const root = document.documentElement.cloneNode(true);
+    if (!(root instanceof HTMLElement))
+      throw new Error("Rendered document is unavailable");
+    root.querySelectorAll("script").forEach((node) => node.remove());
+    const css = Array.from(document.styleSheets)
+      .flatMap((sheet) => Array.from(sheet.cssRules, (rule) => rule.cssText))
+      .join("\n");
+    root.querySelectorAll("style").forEach((node) => node.remove());
+    const stylesheet = document.createElement("style");
+    stylesheet.textContent = css;
+    root.querySelector("head")?.append(stylesheet);
+    return `<!doctype html>${root.outerHTML}`;
+  });
+  await writeFile(path, html);
+}
+
 test.describe("responsive UI layout", () => {
+  for (const theme of ["light", "dark"] as const) {
+    test(`category tabs organize both pages and retain reminders after removal in ${theme}`, async ({
+      page,
+    }, testInfo) => {
+      const assigned = reminders.map((reminder, index) => ({
+        ...reminder,
+        categoryId: index === 0 ? "work" : null,
+      }));
+      await mockSupabase(page, [], theme, assigned);
+      await authenticate(page, assigned);
+      await page.goto("/reminders");
+      const tabs = page.getByRole("tablist", { name: "Categories" });
+      await tabs.getByRole("tab", { name: "Work", exact: true }).click();
+      await expectControlContrast(
+        tabs.getByRole("tab", { name: "Work", exact: true }),
+        `${theme} category tab`,
+      );
+      await expect(reminderCard(page, assigned[0]!.title)).toBeVisible();
+      await expect(
+        page.getByText(assigned[1]!.title, { exact: true }),
+      ).toHaveCount(0);
+      await tabs.getByRole("tab", { name: "Work", exact: true }).press("Home");
+      await expect(
+        tabs.getByRole("tab", { name: "All", exact: true }),
+      ).toBeFocused();
+      await tabs.getByRole("tab", { name: "All", exact: true }).press("End");
+      await expect(
+        tabs.getByRole("tab", { name: "Work", exact: true }),
+      ).toBeFocused();
+      await page.getByRole("button", { name: "Today", exact: true }).click();
+      await expect(
+        page.getByRole("tab", { name: "Work", exact: true }),
+      ).toHaveAttribute("aria-selected", "true");
+      await page
+        .getByRole("button", { name: "Reminders", exact: true })
+        .click();
+      await page
+        .getByRole("button", { name: "Manage categories", exact: true })
+        .click();
+      await page
+        .getByRole("textbox", { name: "Category name", exact: true })
+        .fill("Health");
+      await page.getByRole("button", { name: "Create", exact: true }).click();
+      await expect(
+        page.getByRole("tab", { name: "Health", exact: true }),
+      ).toBeVisible();
+      await page
+        .getByRole("button", { name: "Edit: Health", exact: true })
+        .click();
+      await page
+        .getByRole("textbox", { name: "Category name", exact: true })
+        .fill("Fitness");
+      await page.getByRole("button", { name: "Save", exact: true }).click();
+      await expect(
+        page.getByRole("tab", { name: "Fitness", exact: true }),
+      ).toBeVisible();
+      page.once("dialog", (dialog) => dialog.accept());
+      await page
+        .getByRole("button", { name: "Delete: Work", exact: true })
+        .click();
+      await expect(
+        page.getByRole("tab", { name: "Work", exact: true }),
+      ).toHaveCount(0);
+      await expect(
+        page.getByRole("tab", { name: "Uncategorized", exact: true }),
+      ).toHaveAttribute("aria-selected", "true");
+      await expect(reminderCard(page, assigned[0]!.title)).toBeVisible();
+      for (const width of [280, 320, 414, 1120]) {
+        await page.setViewportSize({ width, height: 900 });
+        await expect
+          .poll(async () => (await measureLayout(page)).clipped)
+          .toEqual([]);
+        await expectSoundLayout(page, `${theme} category tabs ${width}px`);
+      }
+      await page.mouse.move(0, 0);
+      await page.addStyleTag({
+        content: "*{transition:none!important;animation:none!important}",
+      });
+      await page.screenshot({
+        path: testInfo.outputPath("category-management.png"),
+        fullPage: true,
+      });
+      await saveRenderedSnapshot(page, testInfo.outputPath("categories.html"));
+      await page.reload();
+      await expect(
+        page.getByRole("tab", { name: "Work", exact: true }),
+      ).toHaveCount(0);
+    });
+
+    test(`analytics shows exact totals and range-specific trends in ${theme}`, async ({
+      page,
+    }, testInfo) => {
+      await page.clock.setFixedTime(new Date("2026-09-25T18:00:00Z"));
+      await mockSupabase(page, [], theme);
+      await authenticate(page);
+      await page.goto("/analytics");
+      await expect(
+        page.getByRole("heading", { name: "Analytics", exact: true }),
+      ).toBeVisible();
+      await expect(
+        page.getByText("4 postponements", { exact: true }),
+      ).toBeVisible();
+      await page.getByRole("button", { name: "7 days", exact: true }).click();
+      await expectControlContrast(
+        page.getByRole("button", { name: "7 days", exact: true }),
+        `${theme} analytics range`,
+      );
+      await expect(
+        page.getByText("3 postponements", { exact: true }),
+      ).toBeVisible();
+      await expect(
+        page
+          .getByText("Completed occurrences: 2; Postponements: 3", {
+            exact: true,
+          })
+          .last(),
+      ).toBeVisible();
+      await page
+        .getByRole("button", { name: "Show trend counts", exact: true })
+        .click();
+      await expect(
+        page.getByRole("button", { name: "Hide trend counts", exact: true }),
+      ).toHaveAttribute("aria-expanded", "true");
+      await expect(
+        page
+          .locator("#analytics-trend-data")
+          .getByText("Completed occurrences: 2; Postponements: 3", {
+            exact: true,
+          }),
+      ).toBeVisible();
+      await page
+        .getByRole("button", { name: "Hide trend counts", exact: true })
+        .click();
+      for (const width of [280, 320, 414, 1120]) {
+        await page.setViewportSize({ width, height: 900 });
+        await expect
+          .poll(async () => (await measureLayout(page)).clipped)
+          .toEqual([]);
+        await expectSoundLayout(page, `${theme} analytics ${width}px`);
+      }
+      await page.mouse.move(0, 0);
+      await page.addStyleTag({
+        content: "*{transition:none!important;animation:none!important}",
+      });
+      await page.screenshot({
+        path: testInfo.outputPath("analytics.png"),
+        fullPage: true,
+      });
+      await saveRenderedSnapshot(page, testInfo.outputPath("analytics.html"));
+      await page.route("**/rest/v1/reminder_daily_analytics?**", (route) =>
+        route.fulfill({
+          status: 503,
+          contentType: "application/json",
+          body: JSON.stringify({
+            message: "Analytics unavailable",
+            code: "offline",
+          }),
+        }),
+      );
+      await page.getByRole("button", { name: "Refresh", exact: true }).click();
+      await expect(page.getByText(/Could not refresh analytics/)).toBeVisible({
+        timeout: 20_000,
+      });
+      await expect(
+        page.getByText("3 postponements", { exact: true }),
+      ).toBeVisible();
+    });
+  }
   for (const theme of ["light", "dark"] as const) {
     test(`whole-reminder completion and schedule filters work in ${theme} mode`, async ({
       page,

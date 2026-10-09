@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { readFile } from "node:fs/promises";
 import pg from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { nextPostponementAt, type Schedule } from "@cron-reminder/domain";
@@ -125,6 +126,290 @@ beforeEach(async () => {
 
 afterAll(async () => {
   await pool.end();
+});
+
+async function authenticatedRequest(
+  path: string,
+  body?: unknown,
+  account = ownerId,
+): Promise<Response> {
+  return fetch(`http://127.0.0.1:55421/rest/v1/${path}`, {
+    method: body === undefined ? "GET" : "POST",
+    headers: {
+      Authorization: `Bearer ${jwt("authenticated", account)}`,
+      "Content-Type": "application/json",
+    },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+}
+
+describe("categories and durable habit analytics", () => {
+  it.each(["all", "uncategorized"])(
+    "rejects the reserved category identifier %s",
+    async (id) => {
+      const response = await authenticatedRequest("rpc/save_category", {
+        p_id: id,
+        p_name: "Fitness",
+        p_revision: 1,
+        p_expected_revision: null,
+        p_deleted: false,
+      });
+      expect(response.status).toBe(400);
+      expect((await response.json()).code).toBe("23514");
+    },
+  );
+  it("initializes categories once, atomically removes assignments, and preserves scheduler fields", async () => {
+    expect(
+      (
+        await authenticatedRequest("rpc/initialize_categories", {
+          p_portuguese: false,
+        })
+      ).status,
+    ).toBe(204);
+    const { id } = await insertReminder({
+      schedule: { kind: "cron", expression: "* * * * *" },
+    });
+    await pool.query(
+      "update public.reminders set category_id = 'work' where id = $1 and owner_id = $2",
+      [id, ownerId],
+    );
+    const before = (
+      await pool.query("select * from public.reminders where id = $1", [id])
+    ).rows[0];
+    const response = await authenticatedRequest("rpc/save_category", {
+      p_id: "work",
+      p_name: "Work",
+      p_revision: 2,
+      p_expected_revision: 1,
+      p_deleted: true,
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toBe(true);
+    const after = (
+      await pool.query("select * from public.reminders where id = $1", [id])
+    ).rows[0];
+    expect(after.category_id).toBeNull();
+    expect(after.revision).toBe(before.revision + 1);
+    expect(after.next_due_at).toEqual(before.next_due_at);
+    expect(after.schedule_revision).toBe(before.schedule_revision);
+    expect(after.occurrence_count).toBe(before.occurrence_count);
+    await authenticatedRequest("rpc/initialize_categories", {
+      p_portuguese: false,
+    });
+    expect(
+      (
+        await pool.query(
+          "select deleted_at from public.reminder_categories where id = 'work'",
+        )
+      ).rows[0].deleted_at,
+    ).not.toBeNull();
+    const stale = await authenticatedRequest("rpc/save_category", {
+      p_id: "work",
+      p_name: "Office",
+      p_revision: 3,
+      p_expected_revision: 2,
+      p_deleted: false,
+    });
+    expect(await stale.json()).toBe(false);
+    await expect(
+      pool.query(
+        "update public.reminders set category_id = 'work' where id = $1",
+        [id],
+      ),
+    ).rejects.toThrow("Category no longer exists");
+  });
+
+  it("enforces category ownership, name uniqueness, and read-only analytics", async () => {
+    await authenticatedRequest("rpc/initialize_categories", {});
+    const other = "22222222-2222-4222-8222-222222222222";
+    await pool.query("insert into auth.users(id) values ($1)", [other]);
+    expect(
+      await (
+        await authenticatedRequest("reminder_categories", undefined, other)
+      ).json(),
+    ).toEqual([]);
+    const duplicate = await authenticatedRequest("rpc/save_category", {
+      p_id: "duplicate",
+      p_name: " work ",
+      p_revision: 1,
+      p_expected_revision: null,
+      p_deleted: false,
+    });
+    expect(duplicate.status).toBe(409);
+    const { id } = await insertReminder();
+    await pool.query(
+      "insert into public.reminders(id, owner_id, title, schedule, timezone) values ('other', $1, 'Other', $2, 'UTC')",
+      [other, { kind: "once", at: new Date().toISOString() }],
+    );
+    await expect(
+      pool.query(
+        "update public.reminders set category_id = 'work' where id = 'other'",
+      ),
+    ).rejects.toThrow("Category no longer exists");
+    const write = await authenticatedRequest("reminder_daily_analytics", {
+      owner_id: ownerId,
+      reminder_id: id,
+      local_day: "2026-10-09",
+      timezone: "UTC",
+      completed: 99,
+    });
+    expect(write.status).toBe(403);
+  });
+
+  it("counts distinct repeated postponements once per action ID, including concurrent retries", async () => {
+    const occurrenceId = await insertPostponementOccurrence({
+      kind: "once",
+      at: new Date(Date.now() - 60_000).toISOString(),
+    });
+    const until = new Date(Date.now() + 10 * 60_000).toISOString();
+    const action = {
+      occurrenceId,
+      action: "snooze",
+      until,
+      actionId: crypto.randomUUID(),
+    };
+    const post = (body: unknown) =>
+      fetch("http://127.0.0.1:55431/", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${jwt("authenticated", ownerId)}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+      });
+    const results = await Promise.all([post(action), post(action)]);
+    expect(results.map((item) => item.status)).toEqual([200, 200]);
+    expect(
+      (await post({ ...action, actionId: crypto.randomUUID() })).status,
+    ).toBe(200);
+    const completed = {
+      occurrenceId,
+      action: "complete",
+      actionId: crypto.randomUUID(),
+    };
+    expect((await post(completed)).status).toBe(200);
+    expect((await post(completed)).status).toBe(200);
+    expect((await post({ ...completed, action: "dismiss" })).status).toBe(409);
+    const rows = (
+      await pool.query(
+        "select completed, postponed from public.reminder_daily_analytics",
+      )
+    ).rows;
+    expect(rows).toEqual([{ completed: "1", postponed: "2" }]);
+    await pool.query(
+      "update public.history set occurred_at = now() - interval '31 days'",
+    );
+    await pool.query("select public.delete_expired_history()");
+    expect(
+      (await pool.query("select count(*) from public.history")).rows[0].count,
+    ).toBe("0");
+    expect(
+      (
+        await pool.query(
+          "select completed, postponed from public.reminder_daily_analytics",
+        )
+      ).rows,
+    ).toEqual(rows);
+    expect((await post(completed)).status).toBe(200);
+    expect((await post(action)).status).toBe(200);
+    expect(
+      (
+        await pool.query(
+          "select completed, postponed from public.reminder_daily_analytics",
+        )
+      ).rows,
+    ).toEqual(rows);
+    await pool.query("delete from public.reminders");
+    expect(
+      (await pool.query("select count(*) from public.reminder_daily_analytics"))
+        .rows[0].count,
+    ).toBe("0");
+    expect(
+      (
+        await pool.query(
+          "select count(*) from public.occurrence_action_receipts",
+        )
+      ).rows[0].count,
+    ).toBe("0");
+  });
+
+  it("backfills retained History once and groups future actions in the recorded reminder timezone", async () => {
+    const occurrenceId = await insertPostponementOccurrence({
+      kind: "once",
+      at: new Date().toISOString(),
+    });
+    const connection = await pool.connect();
+    try {
+      await connection.query("begin");
+      await connection.query(`
+        drop trigger history_record_daily_analytics on public.history;
+        drop function public.act_on_occurrence(text, text, integer, text, text);
+        drop function public.postpone_occurrence(text, uuid, timestamptz, timestamptz, integer, bigint, text, text);
+        drop function public.record_daily_analytics();
+        drop function public.initialize_analytics();
+        drop table public.reminder_daily_analytics, public.analytics_coverage, public.occurrence_action_receipts;
+        alter function public.act_on_occurrence_without_receipt(text, text, integer) rename to act_on_occurrence;
+        alter function public.postpone_occurrence_without_receipt(text, uuid, timestamptz, timestamptz, integer, bigint) rename to postpone_occurrence;
+      `);
+      await connection.query(
+        "update public.reminders set timezone = 'America/Sao_Paulo'",
+      );
+      const reminderId = occurrenceId.split(":")[0];
+      await connection.query(
+        `insert into public.history(reminder_id, occurrence_id, owner_id, event_type, occurred_at)
+        values ($1, $2, $3, 'postponed', '2026-10-09T01:00:00Z'), ($1, $2, $3, 'postponed', '2026-10-09T02:00:00Z'),
+        ($1, $2, $3, 'completed', '2026-10-09T04:00:00Z'), ($1, $2, $3, 'dismissed', '2026-10-09T05:00:00Z')`,
+        [reminderId, occurrenceId, ownerId],
+      );
+      const migration = await readFile(
+        new URL(
+          "../../supabase/migrations/20261009000001_habit_analytics.sql",
+          import.meta.url,
+        ),
+        "utf8",
+      );
+      await connection.query(migration.replace(/^(begin|commit);$/gm, ""));
+      expect(
+        (
+          await connection.query(
+            "select local_day::text, timezone, completed, postponed from public.reminder_daily_analytics order by local_day",
+          )
+        ).rows,
+      ).toEqual([
+        {
+          local_day: "2026-10-08",
+          timezone: "America/Sao_Paulo",
+          completed: "0",
+          postponed: "2",
+        },
+        {
+          local_day: "2026-10-09",
+          timezone: "America/Sao_Paulo",
+          completed: "1",
+          postponed: "0",
+        },
+      ]);
+      await connection.query("update public.reminders set timezone = 'UTC'");
+      expect(
+        (
+          await connection.query(
+            "select distinct timezone from public.reminder_daily_analytics",
+          )
+        ).rows,
+      ).toEqual([{ timezone: "America/Sao_Paulo" }]);
+      await connection.query("delete from auth.users where id = $1", [ownerId]);
+      expect(
+        (
+          await connection.query(
+            "select count(*) from public.reminder_daily_analytics",
+          )
+        ).rows[0].count,
+      ).toBe("0");
+    } finally {
+      await connection.query("rollback");
+      connection.release();
+    }
+  });
 });
 
 describe("database migrations and delivery RPCs", () => {

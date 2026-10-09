@@ -2,7 +2,7 @@ FROM denoland/deno:2.5.2
 
 WORKDIR /app
 COPY supabase/functions ./supabase/functions
-COPY packages/domain/src/index.ts ./packages/domain/src/index.ts
+COPY packages/domain/src ./packages/domain/src
 
 RUN deno cache \
   --config /app/supabase/functions/deno.json \

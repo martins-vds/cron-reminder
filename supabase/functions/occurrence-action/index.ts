@@ -2,10 +2,10 @@ import { createClient } from '@supabase/supabase-js';
 import { nextPostponementAt, resolvePostponement, type Reminder } from '../../../packages/domain/src/index.ts';
 import { corsHeaders } from '../_shared/cors.ts';
 
-type Action =
+type Action = { actionId?: string } & (
   | { occurrenceId: string; action: 'dismiss' | 'complete' }
   | { occurrenceId: string; action: 'snooze'; until: string }
-  | { occurrenceId: string; action: 'snooze'; minutes: number };
+  | { occurrenceId: string; action: 'snooze'; minutes: number });
 
 interface ReminderRow extends Pick<Reminder, 'schedule' | 'timezone' | 'status'> {
   schedule_revision: number;
@@ -27,11 +27,24 @@ Deno.serve(async (request) => {
     return response({ error: 'Invalid action payload' }, 400);
   }
   if (!isAction(input)) return response({ error: 'Invalid action payload' }, 400);
+  const requestKey = JSON.stringify([input.occurrenceId, input.action,
+    'until' in input ? input.until : 'minutes' in input ? input.minutes : null]);
+  if (input.actionId) {
+    const { data: receipt, error } = await client.from('occurrence_action_receipts')
+      .select('request_key,result').eq('action_id', input.actionId).maybeSingle();
+    if (error) return response({ error: 'Unable to verify occurrence action' }, 500);
+    if (receipt) {
+      if (receipt.request_key !== requestKey) return response({ error: 'Action ID was already used for another request' }, 409);
+      return response(receipt.result);
+    }
+  }
   if (input.action !== 'snooze') {
     const { data, error } = await client.rpc('act_on_occurrence', {
       p_occurrence_id: input.occurrenceId,
       p_event: input.action === 'dismiss' ? 'dismissed' : 'completed',
       p_snooze_minutes: null,
+      p_action_id: input.actionId ?? null,
+      p_request_key: requestKey,
     });
     if (error) return response({ error: 'Unable to record occurrence action' }, 500);
     if (!data) return response({ error: 'Occurrence not found' }, 404);
@@ -78,6 +91,8 @@ Deno.serve(async (request) => {
     p_next_occurrence_at: nextOccurrenceAt,
     p_schedule_revision: reminder.schedule_revision,
     p_occurrence_count: reminder.occurrence_count,
+    p_action_id: input.actionId ?? null,
+    p_request_key: requestKey,
   });
   if (error) {
     console.error('Unable to record postponement', error);
@@ -91,6 +106,7 @@ Deno.serve(async (request) => {
 function isAction(value: unknown): value is Action {
   if (typeof value !== 'object' || value === null) return false;
   const item = value as Record<string, unknown>;
+  if (item.actionId !== undefined && (typeof item.actionId !== 'string' || item.actionId.length === 0 || item.actionId.length > 200)) return false;
   if (typeof item.occurrenceId !== 'string' || item.occurrenceId.length === 0) return false;
   if (item.action === 'dismiss' || item.action === 'complete') return true;
   if (item.action !== 'snooze') return false;

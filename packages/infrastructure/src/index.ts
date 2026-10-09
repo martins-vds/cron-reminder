@@ -9,15 +9,24 @@ import {
   sameReminder,
   structurallyEqual,
 } from "@cron-reminder/application";
-import type { Reminder, Schedule } from "@cron-reminder/domain";
+import type {
+  Reminder,
+  ReminderCategory,
+  Schedule,
+} from "@cron-reminder/domain";
 import {
   nextOccurrences,
   isValidScheduleTimestamp,
   isValidReminderId,
   validateSchedule,
   validateTimezone,
+  categoryNameKey,
+  validateCategoryName,
 } from "@cron-reminder/domain";
 import type { SupabaseClient } from "@supabase/supabase-js";
+export * from "./categories";
+export * from "./analytics";
+export type { DatabaseClient } from "./databaseClient";
 
 type SupabaseClientLike = Pick<SupabaseClient, "auth" | "from" | "functions">;
 const REMOTE_PAGE_SIZE = 1_000;
@@ -158,9 +167,10 @@ export class BrowserKeyValueStore implements KeyValueStore {
 }
 
 export interface Backup {
-  version: 1;
+  version: 1 | 2;
   exportedAt: string;
   reminders: Reminder[];
+  categories?: ReminderCategory[];
 }
 
 export interface ImportResult {
@@ -169,16 +179,21 @@ export interface ImportResult {
   skipped: number;
   invalid: number;
   conflicts: readonly SyncConflict[];
+  categories: ReminderCategory[];
 }
 
 export function exportBackup(
   reminders: readonly Reminder[],
   now: Date,
+  categories: readonly ReminderCategory[] = [],
 ): string {
   const backup: Backup = {
-    version: 1,
+    version: 2,
     exportedAt: now.toISOString(),
     reminders: reminders.map((reminder) => structuredClone(reminder)),
+    categories: categories
+      .filter((item) => !item.deletedAt)
+      .map((item) => structuredClone(item)),
   };
   return JSON.stringify(backup, null, 2);
 }
@@ -187,11 +202,47 @@ export function importBackup(
   input: string,
   existing: readonly Reminder[],
   ownerId: string,
+  existingCategories: readonly ReminderCategory[] = [],
 ): ImportResult {
   const parsed: unknown = JSON.parse(input);
   if (!isBackup(parsed))
     throw new Error("Invalid or unsupported reminder backup.");
   const merged = [...existing];
+  const categories = [...existingCategories];
+  const categoryIds = new Map<string, string>();
+  if (parsed.version === 2) {
+    for (const item of parsed.categories ?? []) {
+      const sameName = categories.find(
+        (category) =>
+          !category.deletedAt &&
+          categoryNameKey(category.name) === categoryNameKey(item.name),
+      );
+      if (sameName) {
+        categoryIds.set(item.id, sameName.id);
+        continue;
+      }
+      let id = item.id;
+      for (
+        let suffix = 1;
+        id === "all" ||
+        id === "uncategorized" ||
+        categories.some((category) => category.id === id);
+        suffix++
+      )
+        id = `${item.id}-import-${suffix}`;
+      const name = validateCategoryName(item.name, categories);
+      categories.push({
+        ...item,
+        id,
+        name,
+        ownerId,
+        revision: 1,
+        deletedAt: null,
+        updatedAt: new Date().toISOString(),
+      });
+      categoryIds.set(item.id, id);
+    }
+  }
   const conflicts: SyncConflict[] = [];
   let imported = 0;
   let skipped = 0;
@@ -201,7 +252,22 @@ export function importBackup(
       invalid++;
       continue;
     }
-    const incoming = { ...value, ownerId };
+    if (
+      parsed.version === 2 &&
+      value.categoryId &&
+      !categoryIds.has(value.categoryId)
+    ) {
+      invalid++;
+      continue;
+    }
+    const incoming = {
+      ...value,
+      ownerId,
+      categoryId:
+        parsed.version === 2 && value.categoryId
+          ? (categoryIds.get(value.categoryId) ?? null)
+          : null,
+    };
     const index = merged.findIndex(({ id }) => id === incoming.id);
     if (index < 0) {
       merged.push(incoming);
@@ -216,16 +282,35 @@ export function importBackup(
       conflicts.push({ id: incoming.id, local, remote: incoming });
     }
   }
-  return { merged, imported, skipped, invalid, conflicts };
+  return { merged, imported, skipped, invalid, conflicts, categories };
 }
 
 function isBackup(value: unknown): value is Backup {
   if (!isRecord(value)) return false;
   return (
-    value.version === 1 &&
+    (value.version === 1 ||
+      (value.version === 2 &&
+        Array.isArray(value.categories) &&
+        value.categories.every(isCategory))) &&
     typeof value.exportedAt === "string" &&
     isValidScheduleTimestamp(value.exportedAt) &&
     Array.isArray(value.reminders)
+  );
+}
+
+function isCategory(value: unknown): value is ReminderCategory {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.id === "string" &&
+    isValidReminderId(value.id) &&
+    typeof value.name === "string" &&
+    Boolean(value.name.trim()) &&
+    typeof value.ownerId === "string" &&
+    Number.isSafeInteger(value.revision) &&
+    Number(value.revision) > 0 &&
+    typeof value.updatedAt === "string" &&
+    isValidScheduleTimestamp(value.updatedAt) &&
+    value.deletedAt === null
   );
 }
 
@@ -272,6 +357,9 @@ function isReminder(value: unknown): value is Reminder {
     typeof value.notes !== "string" ||
     !Array.isArray(value.tags) ||
     !value.tags.every((tag) => typeof tag === "string") ||
+    (value.categoryId != null &&
+      (typeof value.categoryId !== "string" ||
+        !isValidReminderId(value.categoryId))) ||
     typeof value.timezone !== "string" ||
     typeof value.revision !== "number" ||
     !Number.isInteger(value.revision) ||
@@ -600,6 +688,7 @@ function toDatabase(
     title: reminder.title,
     notes: reminder.notes,
     tags: reminder.tags,
+    category_id: reminder.categoryId ?? null,
     schedule: reminder.schedule,
     timezone: reminder.timezone,
     sound: reminder.sound,
@@ -660,6 +749,8 @@ function fromDatabase(value: Record<string, unknown>): Reminder {
     title: String(value.title),
     notes: String(value.notes ?? ""),
     tags: Array.isArray(value.tags) ? value.tags.map(String) : [],
+    categoryId:
+      typeof value.category_id === "string" ? value.category_id : null,
     schedule: value.schedule as Reminder["schedule"],
     timezone: String(value.timezone),
     sound: value.sound as Reminder["sound"],

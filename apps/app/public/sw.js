@@ -39,6 +39,7 @@ self.addEventListener("notificationclick", (event) => {
           occurrenceId: data.occurrenceId,
           ownerId: data.ownerId,
           cacheKey: key,
+          actionId: key,
         };
         await cache.put(
           new Request(new URL(key, self.location.origin)),

@@ -22,6 +22,8 @@ services:
       - ./supabase/migrations/20261007000004_completed_reminder_status.sql:/docker-entrypoint-initdb.d/29b-completed-reminder-status.sql:ro
       - ./supabase/migrations/20261007000005_reminder_completion_and_notification_opt_out.sql:/docker-entrypoint-initdb.d/29c-reminder-completion-and-notification-opt-out.sql:ro
       - ./test/integration/sql/30-grants.sql:/docker-entrypoint-initdb.d/30-grants.sql:ro
+      - ./supabase/migrations/20261009000000_reminder_categories.sql:/docker-entrypoint-initdb.d/31-reminder-categories.sql:ro
+      - ./supabase/migrations/20261009000001_habit_analytics.sql:/docker-entrypoint-initdb.d/32-habit-analytics.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 2s

@@ -66,6 +66,50 @@ choice; use **Enable notifications on this device** to opt back in.
 Opting back in reuses the retained browser subscription rather than deleting it.
 Provider-rejected registrations are repaired separately.
 
+## Categories
+
+Today and Reminders share category tabs: **All**, **Uncategorized**, and your
+editable categories. Personal and Work are initialized once per account.
+Existing reminders stay Uncategorized until assigned. A reminder belongs to one
+category; its tags remain independent.
+
+Use **Manage categories** to create, rename, or remove a category, and choose a
+category in the reminder editor. Creating a reminder from a selected category
+preselects that category; duplicates retain their category. Removing a category
+keeps its reminders and moves them to Uncategorized. Category changes work
+offline and synchronize across devices; concurrent category renames require
+choosing the local or remote name. Removed categories are not recreated by
+stale devices.
+
+## Habit analytics
+
+Analytics shows completed occurrence and postponement counts, overall and per
+reminder, with trends for 7, 30, or 90 calendar days and all recorded time.
+Repeated successful postponements count separately. **Complete reminder** stops
+the whole schedule and is not counted as completing an occurrence.
+
+Daily counts use each reminder's timezone at the time the server accepts the
+action; changing a reminder's timezone does not move old counts. Pending offline
+actions are shown separately until accepted. Retrying the same queued action
+does not add another count. Cached analytics remains available when a refresh
+fails and is labeled with its last successful refresh time.
+
+Daily counts are retained beyond the 30-day detailed History window. The initial
+data is backfilled from retained History only: already-deleted events cannot be
+recovered. The dashboard shows the coverage start, and all-time totals mean
+recorded data, not a reconstructed lifetime total. Deleting a reminder also
+deletes its analytics; account deletion removes all associated data.
+
+Version-2 JSON backups include category definitions and reminder assignments.
+Version-1 backups remain supported and import as Uncategorized. Imports remap
+category IDs/name matches to the destination account without reviving removed
+categories. Backups do not include analytics, action receipts, or credentials,
+and importing reminders does not synthesize historical actions.
+
+Deploy the category and analytics migrations before the updated
+`occurrence-action` function and frontend. The existing ordered production
+workflow performs these steps; older clients remain supported.
+
 ## Web app installation
 
 The web export includes a linked PWA manifest and install icons. On a supported
@@ -264,7 +308,8 @@ Functions, runs the state-transition suite, and removes the containers. Set
 - Reminders are private and Supabase RLS restricts every row to its owner.
 - Offline changes are stored locally and synchronized after reconnection.
 - Concurrent revisions are preserved for manual resolution.
-- History is removed after 30 days.
+- Detailed History is removed after 30 days; compact daily habit counts remain
+  until their reminder or account is deleted.
 - JSON backup excludes credentials, sessions, and device push tokens.
 - Account deletion uses a verified Edge Function and database cascades.
 

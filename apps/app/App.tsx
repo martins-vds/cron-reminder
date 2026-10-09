@@ -1,5 +1,5 @@
 import { StatusBar } from "expo-status-bar";
-import { Stack, router, usePathname } from "expo-router";
+import { Stack, router, usePathname, useFocusEffect } from "expo-router";
 import { getLocales } from "expo-localization";
 import * as Crypto from "expo-crypto";
 import * as DocumentPicker from "expo-document-picker";
@@ -58,6 +58,10 @@ import {
   type Postponement,
   type Reminder,
   type ReminderSound,
+  type ReminderCategory,
+  type AnalyticsSnapshot,
+  type AnalyticsRange,
+  summarizeAnalytics,
 } from "@cron-reminder/domain";
 import {
   createTranslator,
@@ -84,6 +88,14 @@ import {
   supabase,
   synchronizeReminders,
   updateRememberedDeviceToken,
+  categoryRepository,
+  saveCategory,
+  removeCategory,
+  getCategoryConflicts,
+  resolveCategoryConflict,
+  subscribeToDataChanges,
+  loadAnalytics,
+  cachedAnalytics,
 } from "./src/services";
 import {
   DeviceNotificationAdapter,
@@ -93,6 +105,7 @@ import { NotificationRegistrationError } from "./src/notificationErrors";
 import { DateTimeField, TimeField } from "./src/NativeDateTimeField";
 import { NumberField } from "./src/NativeNumberField";
 import { OptionPicker } from "./src/OptionPicker";
+import { CategoryTabs } from "./src/CategoryTabs";
 import appIcon from "./assets/icon.png";
 import {
   darkColors,
@@ -142,6 +155,10 @@ interface AppContextValue {
   colors: Colors;
   requestedPostponeId: string;
   setRequestedPostponeId: (id: string) => void;
+  categories: readonly ReminderCategory[];
+  selectedCategory: string;
+  setSelectedCategory: (id: string) => void;
+  categoryError: string;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -149,6 +166,7 @@ const navigationItems = [
   { key: "agenda", path: "/" },
   { key: "reminders", path: "/reminders" },
   { key: "history", path: "/history" },
+  { key: "analytics", path: "/analytics" },
   { key: "settings", path: "/settings" },
 ] as const;
 
@@ -170,6 +188,17 @@ export function RootNavigator() {
     normalizeLocale(getLocales()[0]?.languageTag),
   );
   const [ownerId, setOwnerId] = useState<string | null>(null);
+  const [categories, setCategories] = useState<ReminderCategory[]>([]);
+  const [categoryOwner, setCategoryOwner] = useState<string | null>(null);
+  const [categorySelection, setCategorySelection] = useState({
+    ownerId: "",
+    id: "all",
+  });
+  const selectedCategory =
+    categorySelection.ownerId === ownerId ? categorySelection.id : "all";
+  const setSelectedCategory = (id: string) =>
+    setCategorySelection({ ownerId: ownerId ?? "", id });
+  const [categoryError, setCategoryError] = useState("");
   const [syncRevision, setSyncRevision] = useState(0);
   const [requestedPostponeId, setRequestedPostponeId] = useState("");
   const [backgroundSyncConflicts, setBackgroundSyncConflicts] = useState<
@@ -181,6 +210,42 @@ export function RootNavigator() {
   const isWide = width >= 880;
   const colors = isDark ? darkColors : lightColors;
   const t = createTranslator(locale);
+  useEffect(
+    () =>
+      subscribeToDataChanges(() => setSyncRevision((revision) => revision + 1)),
+    [],
+  );
+  useEffect(() => {
+    let active = true;
+    if (!ownerId) {
+      setCategories([]);
+      setCategoryOwner(null);
+      return;
+    }
+    const account = ownerId;
+    void categoryRepository
+      .initialize(account, locale === "pt-BR")
+      .then(() => categoryRepository.list(account))
+      .then((items) => {
+        if (!active) return;
+        setCategories(items);
+        setCategoryOwner(account);
+        setCategoryError("");
+        if (
+          selectedCategory !== "all" &&
+          selectedCategory !== "uncategorized" &&
+          !items.some((item) => item.id === selectedCategory && !item.deletedAt)
+        )
+          setCategorySelection({ ownerId: account, id: "uncategorized" });
+      })
+      .catch((reason: unknown) => {
+        console.error("Unable to load categories", reason);
+        if (active) setCategoryError(t("categoryFailed"));
+      });
+    return () => {
+      active = false;
+    };
+  }, [ownerId, syncRevision, locale, selectedCategory]);
 
   useEffect(() => {
     const retry = () => {
@@ -238,7 +303,7 @@ export function RootNavigator() {
     let active = true;
     setBackgroundSyncConflicts([]);
     const retry = () => {
-      void synchronizeReminders(ownerId)
+      void synchronizeReminders(ownerId, locale === "pt-BR")
         .then((conflicts) => {
           if (!active) return;
           setBackgroundSyncConflicts(conflicts);
@@ -266,7 +331,7 @@ export function RootNavigator() {
       subscription.remove();
       unsubscribeNetwork();
     };
-  }, [ownerId]);
+  }, [ownerId, locale]);
 
   useEffect(() => {
     if (!ownerId) return;
@@ -298,6 +363,12 @@ export function RootNavigator() {
               data.occurrenceId,
               data.action,
               ownerId,
+              undefined,
+              typeof data.actionId === "string"
+                ? data.actionId
+                : typeof data.cacheKey === "string"
+                  ? data.cacheKey
+                  : undefined,
             );
           }
           setSyncRevision((revision) => revision + 1);
@@ -363,7 +434,13 @@ export function RootNavigator() {
             setRequestedPostponeId(occurrenceId);
             router.navigate("/");
           } else {
-            await submitNotificationAction(occurrenceId, action, ownerId);
+            await submitNotificationAction(
+              occurrenceId,
+              action,
+              ownerId,
+              undefined,
+              `native-${response.notification.request.identifier}-${action}`,
+            );
           }
           setSyncRevision((revision) => revision + 1);
         }
@@ -413,6 +490,10 @@ export function RootNavigator() {
     colors,
     requestedPostponeId,
     setRequestedPostponeId,
+    categories: categoryOwner === ownerId ? categories : [],
+    selectedCategory,
+    setSelectedCategory,
+    categoryError,
   };
   const navigationButtons = (
     <View style={[styles.navItems, isWide && styles.navItemsWide]}>
@@ -549,6 +630,605 @@ export function SettingsRoute() {
   );
 }
 
+export function AnalyticsRoute() {
+  const { ownerId, syncRevision, locale, colors } = useAppContext();
+  return (
+    <AnalyticsScreen
+      key={ownerId}
+      ownerId={ownerId}
+      syncRevision={syncRevision}
+      locale={locale}
+      colors={colors}
+    />
+  );
+}
+
+function AnalyticsScreen({
+  ownerId,
+  syncRevision,
+  locale,
+  colors,
+}: {
+  ownerId: string;
+  syncRevision: number;
+  locale: Locale;
+  colors: Colors;
+}) {
+  const t = createTranslator(locale);
+  const [range, setRange] = useState<AnalyticsRange>("30");
+  const [snapshot, setSnapshot] = useState<AnalyticsSnapshot | null>(null);
+  const [reminders, setReminders] = useState<Reminder[]>([]);
+  const [pending, setPending] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [requestVersion, setRequestVersion] = useState(0);
+  const [showTrendData, setShowTrendData] = useState(false);
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      async function refresh() {
+        setLoading(true);
+        try {
+          const [cached, local, actions] = await Promise.all([
+            cachedAnalytics(ownerId),
+            localRepository.list(ownerId),
+            getPendingNotificationActions(ownerId),
+          ]);
+          if (!active) return;
+          const ids = new Set(local.map((item) => item.id));
+          setReminders(local);
+          setPending(
+            actions.filter((item) => item.action !== "dismiss").length,
+          );
+          if (cached)
+            setSnapshot({
+              ...cached,
+              days: cached.days.filter((row) => ids.has(row.reminderId)),
+            });
+          const updated = await loadAnalytics(ownerId);
+          if (active) {
+            setSnapshot(updated);
+            setError("");
+          }
+        } catch (reason) {
+          console.warn("Unable to refresh analytics", reason);
+          if (active)
+            setError(
+              copy(
+                locale,
+                "Could not refresh analytics. Check your connection and try again. Any displayed counts are from the last successful refresh.",
+                "Não foi possível atualizar as análises. Verifique sua conexão e tente novamente. Os números exibidos são da última atualização bem-sucedida.",
+              ),
+            );
+        } finally {
+          if (active) setLoading(false);
+        }
+      }
+      void refresh();
+      return () => {
+        active = false;
+      };
+    }, [ownerId, locale, syncRevision, requestVersion]),
+  );
+  const summary = useMemo(
+    () => (snapshot ? summarizeAnalytics(snapshot, range, new Date()) : null),
+    [snapshot, range],
+  );
+  const maximum = Math.max(
+    1,
+    ...(summary?.trend.flatMap((row) => [row.completed, row.postponed]) ?? []),
+  );
+  const completedLabel = copy(
+    locale,
+    "Completed occurrences",
+    "Ocorrências concluídas",
+  );
+  const postponedLabel = copy(locale, "Postponements", "Adiamentos");
+  const formatDay = (day: string) =>
+    new Date(`${day}T12:00:00Z`).toLocaleDateString(locale, {
+      timeZone: "UTC",
+      year: range === "all" ? "numeric" : undefined,
+      month: "short",
+      day: range === "all" ? undefined : "numeric",
+    });
+  return (
+    <ScrollView contentContainerStyle={styles.page}>
+      <PageHeader
+        eyebrow={copy(locale, "Your habits", "Seus hábitos")}
+        title={t("analytics")}
+        description={copy(
+          locale,
+          "Understand how often you complete or postpone reminders, without changing their schedules.",
+          "Entenda com que frequência você conclui ou adia lembretes, sem alterar suas agendas.",
+        )}
+        colors={colors}
+        action={
+          <Button
+            label={t("refresh")}
+            colors={colors}
+            variant="secondary"
+            loading={loading}
+            onPress={() => setRequestVersion((value) => value + 1)}
+          />
+        }
+      />
+      <View
+        style={styles.chips}
+        accessibilityLabel={copy(
+          locale,
+          "Analytics date range",
+          "Período das análises",
+        )}
+      >
+        {(["7", "30", "90", "all"] as const).map((value) => (
+          <Button
+            key={value}
+            label={
+              value === "all"
+                ? copy(locale, "All time", "Todo o período")
+                : `${value} ${copy(locale, "days", "dias")}`
+            }
+            colors={colors}
+            variant="chip"
+            selected={range === value}
+            active={range === value}
+            onPress={() => setRange(value)}
+          />
+        ))}
+      </View>
+      {error ? <Notice tone="warning" colors={colors} text={error} /> : null}
+      {pending > 0 ? (
+        <Notice
+          tone="neutral"
+          colors={colors}
+          text={copy(
+            locale,
+            `${pending} action(s) waiting to sync. They are not included in these counts yet.`,
+            `${pending} ação(ões) aguardam sincronização. Elas ainda não estão incluídas nestes números.`,
+          )}
+        />
+      ) : null}
+      {!snapshot && loading ? (
+        <ActivityIndicator
+          color={colors.accent}
+          accessibilityLabel={copy(
+            locale,
+            "Loading analytics",
+            "Carregando análises",
+          )}
+        />
+      ) : null}
+      {summary && snapshot ? (
+        <>
+          <SectionCard
+            title={copy(
+              locale,
+              "Activity in this period",
+              "Atividade neste período",
+            )}
+            colors={colors}
+            description={copy(
+              locale,
+              "Successful occurrence actions, including repeated postponements.",
+              "Ações bem-sucedidas em ocorrências, incluindo adiamentos repetidos.",
+            )}
+          >
+            <Text style={[styles.heading, { color: colors.text }]}>
+              {summary.totals.completed.toLocaleString(locale)}
+            </Text>
+            <Text style={[styles.body, { color: colors.text }]}>
+              {completedLabel}
+            </Text>
+            <Text style={[styles.cardTitle, { color: colors.muted }]}>
+              {summary.totals.postponed.toLocaleString(locale)}{" "}
+              {postponedLabel.toLocaleLowerCase(locale)}
+            </Text>
+          </SectionCard>
+          {summary.totals.completed + summary.totals.postponed === 0 ? (
+            <EmptyState
+              title={copy(
+                locale,
+                "No actions in this period",
+                "Nenhuma ação neste período",
+              )}
+              message={copy(
+                locale,
+                "Complete or postpone an occurrence in Today to start seeing your habits here.",
+                "Conclua ou adie uma ocorrência em Hoje para começar a acompanhar seus hábitos aqui.",
+              )}
+              colors={colors}
+            />
+          ) : (
+            <>
+              <SectionCard
+                title={copy(locale, "Activity trend", "Tendência de atividade")}
+                description={copy(
+                  locale,
+                  "Compare completions and postponements across the period. Dates follow each reminder's timezone.",
+                  "Compare conclusões e adiamentos no período. As datas seguem o fuso horário de cada lembrete.",
+                )}
+                colors={colors}
+              >
+                <Text style={[styles.caption, { color: colors.muted }]}>
+                  {copy(
+                    locale,
+                    `Scale: 0 to ${maximum} actions per ${range === "all" ? "month" : range === "90" ? "week" : "day"}.`,
+                    `Escala: 0 a ${maximum} ações por ${range === "all" ? "mês" : range === "90" ? "semana" : "dia"}.`,
+                  )}
+                </Text>
+                <View
+                  aria-hidden
+                  accessibilityElementsHidden
+                  importantForAccessibility="no-hide-descendants"
+                  style={[
+                    styles.analyticsPlot,
+                    { borderColor: colors.borderStrong },
+                  ]}
+                  testID="analytics-trend"
+                >
+                  {summary.trend.map((row) => (
+                    <View key={row.day} style={styles.analyticsColumn}>
+                      <View
+                        style={[
+                          styles.analyticsSeriesBar,
+                          {
+                            height: `${(row.completed / maximum) * 100}%`,
+                            backgroundColor: colors.success,
+                          },
+                        ]}
+                      />
+                      <View
+                        style={[
+                          styles.analyticsSeriesBar,
+                          {
+                            height: `${(row.postponed / maximum) * 100}%`,
+                            backgroundColor: colors.accent,
+                          },
+                        ]}
+                      />
+                    </View>
+                  ))}
+                </View>
+                <View style={styles.sectionHeadingRow}>
+                  <Text style={[styles.caption, { color: colors.muted }]}>
+                    {formatDay(
+                      summary.trend[0]?.day ??
+                        snapshot.availableSince.slice(0, 10),
+                    )}
+                  </Text>
+                  <Text style={[styles.caption, { color: colors.muted }]}>
+                    {formatDay(
+                      summary.trend.at(-1)?.day ??
+                        snapshot.availableSince.slice(0, 10),
+                    )}
+                  </Text>
+                </View>
+                <View style={styles.formStack}>
+                  <View style={styles.analyticsLegend}>
+                    <View
+                      aria-hidden
+                      style={[
+                        styles.analyticsSwatch,
+                        { backgroundColor: colors.success },
+                      ]}
+                    />
+                    <Text style={[styles.caption, { color: colors.text }]}>
+                      {completedLabel}:{" "}
+                      {summary.totals.completed.toLocaleString(locale)}
+                    </Text>
+                  </View>
+                  <View style={styles.analyticsLegend}>
+                    <View
+                      aria-hidden
+                      style={[
+                        styles.analyticsSwatch,
+                        { backgroundColor: colors.accent },
+                      ]}
+                    />
+                    <Text style={[styles.caption, { color: colors.text }]}>
+                      {postponedLabel}:{" "}
+                      {summary.totals.postponed.toLocaleString(locale)}
+                    </Text>
+                  </View>
+                </View>
+                <Button
+                  label={
+                    showTrendData
+                      ? copy(
+                          locale,
+                          "Hide trend counts",
+                          "Ocultar números da tendência",
+                        )
+                      : copy(
+                          locale,
+                          "Show trend counts",
+                          "Mostrar números da tendência",
+                        )
+                  }
+                  colors={colors}
+                  variant="secondary"
+                  expanded={showTrendData}
+                  controls="analytics-trend-data"
+                  onPress={() => setShowTrendData(!showTrendData)}
+                />
+                <View
+                  nativeID="analytics-trend-data"
+                  style={[styles.formStack, !showTrendData && styles.hidden]}
+                >
+                  {summary.trend.map((row) => (
+                    <View key={row.day} style={styles.analyticsDataRow}>
+                      <Text style={[styles.label, { color: colors.text }]}>
+                        {range === "90"
+                          ? `${copy(locale, "Week of", "Semana de")} `
+                          : ""}
+                        {formatDay(row.day)}
+                      </Text>
+                      <Text style={[styles.caption, { color: colors.muted }]}>
+                        {completedLabel}: {row.completed.toLocaleString(locale)}
+                        ; {postponedLabel}:{" "}
+                        {row.postponed.toLocaleString(locale)}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              </SectionCard>
+              <SectionCard
+                title={copy(locale, "By reminder", "Por lembrete")}
+                colors={colors}
+                description={copy(
+                  locale,
+                  "Reminders with activity in the selected period.",
+                  "Lembretes com atividade no período selecionado.",
+                )}
+              >
+                {summary.reminders.map((row) => (
+                  <View key={row.reminderId} style={styles.formStack}>
+                    <Text style={[styles.cardTitle, { color: colors.text }]}>
+                      {reminders.find((item) => item.id === row.reminderId)
+                        ?.title ?? row.reminderId}
+                    </Text>
+                    <Text style={[styles.body, { color: colors.muted }]}>
+                      {completedLabel}: {row.completed.toLocaleString(locale)};{" "}
+                      {postponedLabel}: {row.postponed.toLocaleString(locale)}
+                    </Text>
+                  </View>
+                ))}
+              </SectionCard>
+            </>
+          )}
+          <Text style={[styles.caption, { color: colors.subtle }]}>
+            {copy(
+              locale,
+              `Recorded data available since ${new Date(snapshot.availableSince).toLocaleDateString(locale)}. Older deleted History cannot be recovered. Counts use server-accepted actions; completing a whole schedule is not counted. Last refreshed ${new Date(snapshot.fetchedAt).toLocaleString(locale)}.`,
+              `Dados registrados disponíveis desde ${new Date(snapshot.availableSince).toLocaleDateString(locale)}. O Histórico antigo excluído não pode ser recuperado. Os números usam ações aceitas pelo servidor; concluir uma agenda inteira não é contado. Última atualização: ${new Date(snapshot.fetchedAt).toLocaleString(locale)}.`,
+            )}
+          </Text>
+        </>
+      ) : null}
+    </ScrollView>
+  );
+}
+
+function categoryMessage(reason: unknown, locale: Locale): string {
+  const t = createTranslator(locale);
+  const key = reason instanceof Error ? reason.message : "";
+  if (
+    key === "categoryNameRequired" ||
+    key === "categoryNameReserved" ||
+    key === "categoryNameDuplicate" ||
+    key === "categoryNotFound" ||
+    key === "categoryConcurrentEdit" ||
+    key === "categoryConnectionRequired"
+  )
+    return t(key);
+  console.error("Category operation failed", reason);
+  return t("categoryFailed");
+}
+
+function CategoryControls({ panelId }: { panelId: string }) {
+  const {
+    ownerId,
+    categories,
+    selectedCategory,
+    setSelectedCategory,
+    locale,
+    colors,
+    categoryError,
+  } = useAppContext();
+  const t = createTranslator(locale);
+  const [managing, setManaging] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [editingId, setEditingId] = useState<string | undefined>();
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const managerRef = useRef<ElementRef<typeof Pressable>>(null);
+  const live = categories.filter((item) => !item.deletedAt);
+  const options = [
+    { value: "all", label: t("allCategories") },
+    { value: "uncategorized", label: t("uncategorized") },
+    ...live.map((item) => ({ value: item.id, label: item.name })),
+  ];
+  async function mutate(operation: () => Promise<void>) {
+    setBusy(true);
+    setMessage("");
+    try {
+      await operation();
+      setDraft("");
+      setEditingId(undefined);
+      try {
+        await synchronizeReminders(ownerId);
+      } catch (reason) {
+        console.warn("Category change is waiting to synchronize", reason);
+        setMessage(t("categoryPending"));
+      }
+      managerRef.current?.focus();
+    } catch (reason) {
+      setMessage(categoryMessage(reason, locale));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <View style={styles.formStack}>
+      <CategoryTabs
+        options={options}
+        selected={selectedCategory}
+        onSelect={setSelectedCategory}
+        colors={colors}
+        label={t("categories")}
+        panelId={panelId}
+      />
+      <View style={styles.actions}>
+        <Button
+          label={t("manageCategories")}
+          colors={colors}
+          variant="secondary"
+          compact
+          buttonRef={managerRef}
+          expanded={managing}
+          controls={`${panelId}-management`}
+          onPress={() => {
+            setManaging(!managing);
+            setMessage("");
+          }}
+        />
+      </View>
+      {categoryError ? (
+        <Notice tone="warning" colors={colors} text={categoryError} />
+      ) : null}
+      {!managing && getCategoryConflicts(ownerId).length > 0 ? (
+        <Notice tone="warning" colors={colors} text={t("categoryConflict")} />
+      ) : null}
+      {managing ? (
+        <View
+          nativeID={`${panelId}-management`}
+          style={[
+            styles.controlPanel,
+            { backgroundColor: colors.surface, borderColor: colors.border },
+          ]}
+        >
+          <Field
+            label={t("categoryName")}
+            value={draft}
+            onChangeText={setDraft}
+            colors={colors}
+          />
+          <View style={styles.actions}>
+            <Button
+              label={editingId ? t("save") : t("create")}
+              colors={colors}
+              variant="primary"
+              loading={busy}
+              onPress={() =>
+                void mutate(() => saveCategory(ownerId, draft, editingId))
+              }
+            />
+            {editingId ? (
+              <Button
+                label={t("cancel")}
+                colors={colors}
+                variant="secondary"
+                disabled={busy}
+                onPress={() => {
+                  setEditingId(undefined);
+                  setDraft("");
+                  managerRef.current?.focus();
+                }}
+              />
+            ) : null}
+          </View>
+          {message ? (
+            <Notice tone="warning" colors={colors} text={message}>
+              <Button
+                label={t("refresh")}
+                colors={colors}
+                variant="secondary"
+                compact
+                loading={busy}
+                onPress={() =>
+                  void mutate(async () => {
+                    await synchronizeReminders(ownerId);
+                  })
+                }
+              />
+            </Notice>
+          ) : null}
+          {getCategoryConflicts(ownerId).map((conflict) => (
+            <Notice
+              key={conflict.local.id}
+              tone="warning"
+              colors={colors}
+              text={t("categoryConflict")}
+            >
+              <View style={styles.actions}>
+                {(["local", "remote"] as const).map((choice) => (
+                  <Button
+                    key={choice}
+                    label={`${copy(locale, "Keep", "Manter")}: ${conflict[choice].name}`}
+                    colors={colors}
+                    variant="secondary"
+                    disabled={busy}
+                    onPress={() =>
+                      void mutate(() =>
+                        resolveCategoryConflict(ownerId, conflict, choice),
+                      )
+                    }
+                  />
+                ))}
+              </View>
+            </Notice>
+          ))}
+          {live.map((category) => (
+            <View key={category.id} style={styles.formStack}>
+              <Text style={[styles.cardTitle, { color: colors.text }]}>
+                {category.name}
+              </Text>
+              <View style={styles.actions}>
+                <Button
+                  label={t("edit")}
+                  accessibilityLabel={`${t("edit")}: ${category.name}`}
+                  colors={colors}
+                  disabled={busy}
+                  onPress={() => {
+                    setEditingId(category.id);
+                    setDraft(category.name);
+                    setMessage("");
+                  }}
+                />
+                <Button
+                  label={t("delete")}
+                  accessibilityLabel={`${t("delete")}: ${category.name}`}
+                  colors={colors}
+                  variant="danger"
+                  disabled={busy}
+                  onPress={() =>
+                    confirmDestructiveAction(
+                      t("delete"),
+                      copy(
+                        locale,
+                        `Remove "${category.name}"? Its reminders will move to Uncategorized; no reminders will be deleted.`,
+                        `Remover "${category.name}"? Os lembretes serão movidos para Sem categoria; nenhum lembrete será excluído.`,
+                      ),
+                      t("cancel"),
+                      `${t("delete")}: ${category.name}`,
+                      () =>
+                        void mutate(async () => {
+                          await removeCategory(ownerId, category.id);
+                          if (selectedCategory === category.id)
+                            setSelectedCategory("uncategorized");
+                        }),
+                    )
+                  }
+                />
+              </View>
+            </View>
+          ))}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 interface HistoryRow {
   id: string;
   reminder_id: string;
@@ -579,6 +1259,8 @@ function AgendaScreen({
   onPostponeRequestHandled: () => void;
 }) {
   const t = createTranslator(locale);
+  const { selectedCategory, setSelectedCategory } = useAppContext();
+  const [agendaReminders, setAgendaReminders] = useState<Reminder[]>([]);
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
   const [items, setItems] = useState<AgendaItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -592,6 +1274,7 @@ function AgendaScreen({
     try {
       const now = new Date();
       const reminders = await localRepository.list(ownerId);
+      setAgendaReminders(reminders);
       const occurrences: StoredAgendaOccurrence[] = [];
       const occurrenceCounts = new Map<string, number>();
       if (supabase) {
@@ -782,7 +1465,24 @@ function AgendaScreen({
   }
 
   const now = new Date();
-  const groups = groupAgendaItems(items, now, timezone);
+  useEffect(() => {
+    if (requestedPostponeId) setSelectedCategory("all");
+  }, [requestedPostponeId]);
+  const filteredIds = new Set(
+    filterReminders(agendaReminders, {
+      categoryId:
+        selectedCategory === "all"
+          ? undefined
+          : selectedCategory === "uncategorized"
+            ? null
+            : selectedCategory,
+    }).map((item) => item.id),
+  );
+  const groups = groupAgendaItems(
+    items.filter((item) => filteredIds.has(item.reminderId)),
+    now,
+    timezone,
+  );
   const visibleGroups = agendaGroupOrder.filter(
     (group) => groups[group].length > 0,
   );
@@ -827,71 +1527,79 @@ function AgendaScreen({
           </View>
         </Notice>
       )}
-      {loading && items.length === 0 ? (
-        <View style={styles.agendaLoading}>
-          <ActivityIndicator
-            color={colors.accent}
-            accessibilityLabel={copy(
-              locale,
-              "Loading agenda",
-              "Carregando agenda",
-            )}
-          />
-        </View>
-      ) : visibleGroups.length === 0 ? (
-        <EmptyState
-          title={copy(
-            locale,
-            "Nothing needs attention",
-            "Nada precisa de atenção",
-          )}
-          message={copy(
-            locale,
-            "Create or enable a reminder to see its next occurrence here.",
-            "Crie ou ative um lembrete para ver a próxima ocorrência aqui.",
-          )}
-          colors={colors}
-          action={
-            <Button
-              label={t("addReminder")}
-              onPress={() => router.navigate("/reminders")}
-              colors={colors}
-              variant="primary"
+      <CategoryControls panelId="agenda-category-panel" />
+      <View
+        nativeID="agenda-category-panel"
+        role={Platform.OS === "web" ? "tabpanel" : undefined}
+        aria-labelledby={`agenda-category-panel-${selectedCategory}`}
+        style={styles.formStack}
+      >
+        {loading && items.length === 0 ? (
+          <View style={styles.agendaLoading}>
+            <ActivityIndicator
+              color={colors.accent}
+              accessibilityLabel={copy(
+                locale,
+                "Loading agenda",
+                "Carregando agenda",
+              )}
             />
-          }
-        />
-      ) : (
-        visibleGroups.map((group) => (
-          <View key={group} style={styles.agendaGroup}>
-            <View style={styles.sectionHeadingRow}>
-              <Text style={[styles.agendaGroupTitle, { color: colors.text }]}>
-                {agendaGroupLabel(group, locale)}
-              </Text>
-              <Text style={[styles.caption, { color: colors.subtle }]}>
-                {groups[group].length}
-              </Text>
-            </View>
-            <View style={styles.agendaList}>
-              {groups[group].map((item) => (
-                <AgendaItemCard
-                  key={item.id}
-                  item={item}
-                  actionKey={actionKey}
-                  locale={locale}
-                  colors={colors}
-                  onDismiss={() => void actOnOccurrence(item, "dismiss")}
-                  onSnooze={(postponement) =>
-                    void actOnOccurrence(item, "snooze", postponement)
-                  }
-                  onComplete={() => void actOnOccurrence(item, "complete")}
-                  postponeRequested={requestedPostponeId === item.id}
-                  onPostponeRequestHandled={onPostponeRequestHandled}
-                />
-              ))}
-            </View>
           </View>
-        ))
-      )}
+        ) : visibleGroups.length === 0 ? (
+          <EmptyState
+            title={copy(
+              locale,
+              "Nothing needs attention",
+              "Nada precisa de atenção",
+            )}
+            message={copy(
+              locale,
+              "Create or enable a reminder to see its next occurrence here.",
+              "Crie ou ative um lembrete para ver a próxima ocorrência aqui.",
+            )}
+            colors={colors}
+            action={
+              <Button
+                label={t("addReminder")}
+                onPress={() => router.navigate("/reminders")}
+                colors={colors}
+                variant="primary"
+              />
+            }
+          />
+        ) : (
+          visibleGroups.map((group) => (
+            <View key={group} style={styles.agendaGroup}>
+              <View style={styles.sectionHeadingRow}>
+                <Text style={[styles.agendaGroupTitle, { color: colors.text }]}>
+                  {agendaGroupLabel(group, locale)}
+                </Text>
+                <Text style={[styles.caption, { color: colors.subtle }]}>
+                  {groups[group].length}
+                </Text>
+              </View>
+              <View style={styles.agendaList}>
+                {groups[group].map((item) => (
+                  <AgendaItemCard
+                    key={item.id}
+                    item={item}
+                    actionKey={actionKey}
+                    locale={locale}
+                    colors={colors}
+                    onDismiss={() => void actOnOccurrence(item, "dismiss")}
+                    onSnooze={(postponement) =>
+                      void actOnOccurrence(item, "snooze", postponement)
+                    }
+                    onComplete={() => void actOnOccurrence(item, "complete")}
+                    postponeRequested={requestedPostponeId === item.id}
+                    onPostponeRequestHandled={onPostponeRequestHandled}
+                  />
+                ))}
+              </View>
+            </View>
+          ))
+        )}
+      </View>
     </ScrollView>
   );
 }
@@ -1636,6 +2344,7 @@ function ReminderList({
   colors: Colors;
 }) {
   const t = createTranslator(locale);
+  const { selectedCategory } = useAppContext();
   const [reminders, setReminders] = useState<Reminder[]>([]);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<Reminder["status"] | "all">("all");
@@ -1676,8 +2385,19 @@ function ReminderList({
     };
   }, [locale, ownerId, refresh]);
   const visible = useMemo(
-    () => filterReminders(reminders, { query, status, sort: "updated" }),
-    [query, reminders, status],
+    () =>
+      filterReminders(reminders, {
+        query,
+        status,
+        sort: "updated",
+        categoryId:
+          selectedCategory === "all"
+            ? undefined
+            : selectedCategory === "uncategorized"
+              ? null
+              : selectedCategory,
+      }),
+    [query, reminders, status, selectedCategory],
   );
   const activeSyncConflicts = useMemo(
     () =>
@@ -1778,295 +2498,307 @@ function ReminderList({
           </View>
         </Notice>
       ) : null}
-      {activeSyncConflicts.length > 0 && (
-        <Notice
-          tone="warning"
-          colors={colors}
-          text={`${activeSyncConflicts.length} concurrent edit(s) need manual resolution. Local versions are preserved.`}
-        />
-      )}
-      {activeSyncConflicts.map((conflict) => (
-        <View
-          key={conflict.id}
-          style={[
-            styles.conflictCard,
-            {
-              backgroundColor: colors.warningSoft,
-              borderColor: colors.warning,
-            },
-          ]}
-        >
-          <View style={styles.flex}>
-            <Text style={[styles.cardTitle, { color: colors.text }]}>
-              Resolve concurrent edit
-            </Text>
-            <Text style={[styles.body, { color: colors.muted }]}>
-              Local: {conflict.local.title}. Remote: {conflict.remote.title}.
-            </Text>
-          </View>
-          <View style={styles.actions}>
-            {(["local", "remote"] as const).map((choice) => (
-              <Button
-                key={choice}
-                label={`Keep ${choice}`}
-                colors={colors}
-                variant="secondary"
-                onPress={() =>
-                  void resolveSynchronizationConflict(
-                    conflict,
-                    conflict[choice],
-                  ).then(() => {
-                    setSyncConflicts((items) =>
-                      items.filter(({ id }) => id !== conflict.id),
-                    );
-                    refresh();
-                  })
-                }
-              />
-            ))}
-          </View>
-        </View>
-      ))}
+      <CategoryControls panelId="reminders-category-panel" />
       <View
-        style={[
-          styles.controlPanel,
-          {
-            backgroundColor: colors.surface,
-            borderColor: colors.border,
-          },
-        ]}
-        testID="reminder-search-panel"
+        nativeID="reminders-category-panel"
+        role={Platform.OS === "web" ? "tabpanel" : undefined}
+        aria-labelledby={`reminders-category-panel-${selectedCategory}`}
+        style={styles.formStack}
       >
-        <Field
-          label={t("search")}
-          placeholder={copy(
-            locale,
-            "Search by title, schedule, or tag",
-            "Busque por título, agenda ou etiqueta",
-          )}
-          value={query}
-          onChangeText={setQuery}
-          colors={colors}
-        />
-      </View>
-      <View style={styles.filterGroup} testID="schedule-filters">
-        <View style={styles.sectionHeadingRow}>
-          <Text
-            accessibilityRole="header"
-            aria-level={2}
-            style={[styles.sectionLabel, { color: colors.subtle }]}
+        {activeSyncConflicts.length > 0 && (
+          <Notice
+            tone="warning"
+            colors={colors}
+            text={`${activeSyncConflicts.length} concurrent edit(s) need manual resolution. Local versions are preserved.`}
+          />
+        )}
+        {activeSyncConflicts.map((conflict) => (
+          <View
+            key={conflict.id}
+            style={[
+              styles.conflictCard,
+              {
+                backgroundColor: colors.warningSoft,
+                borderColor: colors.warning,
+              },
+            ]}
           >
-            {copy(locale, "Your schedules", "Suas agendas")}
-          </Text>
-          <Text style={[styles.caption, { color: colors.subtle }]}>
-            {visible.length} {copy(locale, "shown", "exibidos")}
-          </Text>
-        </View>
-        <View style={styles.chips}>
-          {(
-            ["all", "active", "disabled", "completed", "archived"] as const
-          ).map((item) => (
-            <Button
-              key={item}
-              label={
-                item === "all"
-                  ? copy(locale, "All", "Todos")
-                  : item === "active"
-                    ? t("enabled")
-                    : t(item)
-              }
-              onPress={() => setStatus(item)}
-              active={status === item}
-              selected={status === item}
-              colors={colors}
-              variant="chip"
-              compact
-            />
-          ))}
-        </View>
-      </View>
-      {visible.length === 0 && (
-        <EmptyState
-          title={
-            reminders.length === 0
-              ? t("empty")
-              : copy(
-                  locale,
-                  "No matching reminders",
-                  "Nenhum lembrete encontrado",
-                )
-          }
-          message={
-            reminders.length === 0
-              ? copy(
-                  locale,
-                  "Start with the next thing you cannot afford to miss.",
-                  "Comece pela próxima coisa que você não pode esquecer.",
-                )
-              : copy(
-                  locale,
-                  "Try a different search or status filter.",
-                  "Tente outra busca ou filtro de status.",
-                )
-          }
-          colors={colors}
-          action={
-            reminders.length === 0 ? (
-              <Button
-                label={t("addReminder")}
-                onPress={() => setEditing("new")}
-                colors={colors}
-                variant="primary"
-              />
-            ) : undefined
-          }
-        />
-      )}
-      {visible.map((reminder) => (
+            <View style={styles.flex}>
+              <Text style={[styles.cardTitle, { color: colors.text }]}>
+                Resolve concurrent edit
+              </Text>
+              <Text style={[styles.body, { color: colors.muted }]}>
+                Local: {conflict.local.title}. Remote: {conflict.remote.title}.
+              </Text>
+            </View>
+            <View style={styles.actions}>
+              {(["local", "remote"] as const).map((choice) => (
+                <Button
+                  key={choice}
+                  label={`Keep ${choice}`}
+                  colors={colors}
+                  variant="secondary"
+                  onPress={() =>
+                    void resolveSynchronizationConflict(
+                      conflict,
+                      conflict[choice],
+                    ).then(() => {
+                      setSyncConflicts((items) =>
+                        items.filter(({ id }) => id !== conflict.id),
+                      );
+                      refresh();
+                    })
+                  }
+                />
+              ))}
+            </View>
+          </View>
+        ))}
         <View
-          key={reminder.id}
           style={[
-            styles.reminderCard,
+            styles.controlPanel,
             {
               backgroundColor: colors.surface,
               borderColor: colors.border,
             },
           ]}
+          testID="reminder-search-panel"
         >
-          <View style={styles.titleRow}>
-            <View style={styles.flex}>
-              <View style={styles.reminderTitleRow}>
-                <Text style={[styles.cardTitle, { color: colors.text }]}>
-                  {reminder.title}
-                </Text>
-                <StatusBadge
-                  label={
-                    reminder.status === "active"
-                      ? t("enabled")
-                      : t(reminder.status)
-                  }
-                  tone={
-                    reminder.status === "active"
-                      ? "success"
-                      : reminder.status === "archived" ||
-                          reminder.status === "completed"
-                        ? "neutral"
-                        : "warning"
-                  }
-                  colors={colors}
-                />
-              </View>
-              <Text style={[styles.body, { color: colors.muted }]}>
-                {describeSchedule(reminder.schedule, locale, reminder.timezone)}
-              </Text>
-              {reminder.tags.length > 0 && (
-                <View style={styles.tagRow}>
-                  {reminder.tags.map((tag) => (
-                    <Text
-                      key={tag}
-                      style={[
-                        styles.tag,
-                        {
-                          color: colors.accent,
-                          backgroundColor: colors.accentSoft,
-                        },
-                      ]}
-                    >
-                      {tag}
-                    </Text>
-                  ))}
-                </View>
-              )}
-            </View>
-            {(reminder.status === "active" ||
-              reminder.status === "disabled") && (
-              <Switch
-                style={styles.reminderSwitch}
-                accessibilityLabel={`${reminder.title}: ${t("enabled")}`}
-                value={reminder.status === "active"}
-                trackColor={{
-                  false: colors.surfaceMuted,
-                  true: colors.accentSoft,
-                }}
-                thumbColor={
-                  reminder.status === "active"
-                    ? colors.accent
-                    : colors.borderStrong
-                }
-                onValueChange={(value) =>
-                  void mutate(() =>
-                    service.setEnabled(ownerId, reminder.id, value),
-                  )
-                }
-              />
+          <Field
+            label={t("search")}
+            placeholder={copy(
+              locale,
+              "Search by title, schedule, or tag",
+              "Busque por título, agenda ou etiqueta",
             )}
+            value={query}
+            onChangeText={setQuery}
+            colors={colors}
+          />
+        </View>
+        <View style={styles.filterGroup} testID="schedule-filters">
+          <View style={styles.sectionHeadingRow}>
+            <Text
+              accessibilityRole="header"
+              aria-level={2}
+              style={[styles.sectionLabel, { color: colors.subtle }]}
+            >
+              {copy(locale, "Your schedules", "Suas agendas")}
+            </Text>
+            <Text style={[styles.caption, { color: colors.subtle }]}>
+              {visible.length} {copy(locale, "shown", "exibidos")}
+            </Text>
           </View>
-          <View style={styles.actions}>
-            {(reminder.status === "active" ||
-              reminder.status === "disabled") && (
+          <View style={styles.chips}>
+            {(
+              ["all", "active", "disabled", "completed", "archived"] as const
+            ).map((item) => (
               <Button
-                label={t("completeReminder")}
-                onPress={() =>
-                  void mutate(() => service.complete(ownerId, reminder.id))
+                key={item}
+                label={
+                  item === "all"
+                    ? copy(locale, "All", "Todos")
+                    : item === "active"
+                      ? t("enabled")
+                      : t(item)
                 }
+                onPress={() => setStatus(item)}
+                active={status === item}
+                selected={status === item}
                 colors={colors}
-                variant="secondary"
+                variant="chip"
                 compact
               />
-            )}
-            {reminder.status === "completed" && (
-              <Button
-                label={t("reopen")}
-                onPress={() =>
-                  void mutate(() => service.restore(ownerId, reminder.id))
-                }
-                colors={colors}
-                variant="secondary"
-                compact
-              />
-            )}
-            <Button
-              label={t("edit")}
-              onPress={() => setEditing(reminder)}
-              colors={colors}
-              variant="secondary"
-              compact
-            />
-            <Button
-              label={t("duplicate")}
-              onPress={() =>
-                void mutate(() => service.duplicate(ownerId, reminder.id))
-              }
-              colors={colors}
-              variant="ghost"
-              compact
-            />
-            <Button
-              label={
-                reminder.status === "archived" ? t("restore") : t("archive")
-              }
-              onPress={() =>
-                void mutate(() =>
-                  reminder.status === "archived"
-                    ? service.restore(ownerId, reminder.id)
-                    : service.archive(ownerId, reminder.id),
-                )
-              }
-              colors={colors}
-              variant="ghost"
-              compact
-            />
-            <Button
-              label={t("delete")}
-              onPress={() => remove(reminder)}
-              colors={colors}
-              danger
-              variant="danger"
-              compact
-            />
+            ))}
           </View>
         </View>
-      ))}
+        {visible.length === 0 && (
+          <EmptyState
+            title={
+              reminders.length === 0
+                ? t("empty")
+                : copy(
+                    locale,
+                    "No matching reminders",
+                    "Nenhum lembrete encontrado",
+                  )
+            }
+            message={
+              reminders.length === 0
+                ? copy(
+                    locale,
+                    "Start with the next thing you cannot afford to miss.",
+                    "Comece pela próxima coisa que você não pode esquecer.",
+                  )
+                : copy(
+                    locale,
+                    "Try a different search or status filter.",
+                    "Tente outra busca ou filtro de status.",
+                  )
+            }
+            colors={colors}
+            action={
+              reminders.length === 0 ? (
+                <Button
+                  label={t("addReminder")}
+                  onPress={() => setEditing("new")}
+                  colors={colors}
+                  variant="primary"
+                />
+              ) : undefined
+            }
+          />
+        )}
+        {visible.map((reminder) => (
+          <View
+            key={reminder.id}
+            style={[
+              styles.reminderCard,
+              {
+                backgroundColor: colors.surface,
+                borderColor: colors.border,
+              },
+            ]}
+          >
+            <View style={styles.titleRow}>
+              <View style={styles.flex}>
+                <View style={styles.reminderTitleRow}>
+                  <Text style={[styles.cardTitle, { color: colors.text }]}>
+                    {reminder.title}
+                  </Text>
+                  <StatusBadge
+                    label={
+                      reminder.status === "active"
+                        ? t("enabled")
+                        : t(reminder.status)
+                    }
+                    tone={
+                      reminder.status === "active"
+                        ? "success"
+                        : reminder.status === "archived" ||
+                            reminder.status === "completed"
+                          ? "neutral"
+                          : "warning"
+                    }
+                    colors={colors}
+                  />
+                </View>
+                <Text style={[styles.body, { color: colors.muted }]}>
+                  {describeSchedule(
+                    reminder.schedule,
+                    locale,
+                    reminder.timezone,
+                  )}
+                </Text>
+                {reminder.tags.length > 0 && (
+                  <View style={styles.tagRow}>
+                    {reminder.tags.map((tag) => (
+                      <Text
+                        key={tag}
+                        style={[
+                          styles.tag,
+                          {
+                            color: colors.accent,
+                            backgroundColor: colors.accentSoft,
+                          },
+                        ]}
+                      >
+                        {tag}
+                      </Text>
+                    ))}
+                  </View>
+                )}
+              </View>
+              {(reminder.status === "active" ||
+                reminder.status === "disabled") && (
+                <Switch
+                  style={styles.reminderSwitch}
+                  accessibilityLabel={`${reminder.title}: ${t("enabled")}`}
+                  value={reminder.status === "active"}
+                  trackColor={{
+                    false: colors.surfaceMuted,
+                    true: colors.accentSoft,
+                  }}
+                  thumbColor={
+                    reminder.status === "active"
+                      ? colors.accent
+                      : colors.borderStrong
+                  }
+                  onValueChange={(value) =>
+                    void mutate(() =>
+                      service.setEnabled(ownerId, reminder.id, value),
+                    )
+                  }
+                />
+              )}
+            </View>
+            <View style={styles.actions}>
+              {(reminder.status === "active" ||
+                reminder.status === "disabled") && (
+                <Button
+                  label={t("completeReminder")}
+                  onPress={() =>
+                    void mutate(() => service.complete(ownerId, reminder.id))
+                  }
+                  colors={colors}
+                  variant="secondary"
+                  compact
+                />
+              )}
+              {reminder.status === "completed" && (
+                <Button
+                  label={t("reopen")}
+                  onPress={() =>
+                    void mutate(() => service.restore(ownerId, reminder.id))
+                  }
+                  colors={colors}
+                  variant="secondary"
+                  compact
+                />
+              )}
+              <Button
+                label={t("edit")}
+                onPress={() => setEditing(reminder)}
+                colors={colors}
+                variant="secondary"
+                compact
+              />
+              <Button
+                label={t("duplicate")}
+                onPress={() =>
+                  void mutate(() => service.duplicate(ownerId, reminder.id))
+                }
+                colors={colors}
+                variant="ghost"
+                compact
+              />
+              <Button
+                label={
+                  reminder.status === "archived" ? t("restore") : t("archive")
+                }
+                onPress={() =>
+                  void mutate(() =>
+                    reminder.status === "archived"
+                      ? service.restore(ownerId, reminder.id)
+                      : service.archive(ownerId, reminder.id),
+                  )
+                }
+                colors={colors}
+                variant="ghost"
+                compact
+              />
+              <Button
+                label={t("delete")}
+                onPress={() => remove(reminder)}
+                colors={colors}
+                danger
+                variant="danger"
+                compact
+              />
+            </View>
+          </View>
+        ))}
+      </View>
     </ScrollView>
   );
 }
@@ -2087,6 +2819,19 @@ function ReminderEditor({
   onSaved: (conflicts: readonly SyncConflict[], syncMessage: string) => void;
 }) {
   const t = createTranslator(locale);
+  const { categories, selectedCategory } = useAppContext();
+  const [categoryId, setCategoryId] = useState(
+    reminder?.categoryId ??
+      (selectedCategory === "all" || selectedCategory === "uncategorized"
+        ? ""
+        : selectedCategory),
+  );
+  const liveCategories = categories.filter((item) => !item.deletedAt);
+  const effectiveCategoryId = liveCategories.some(
+    (item) => item.id === categoryId,
+  )
+    ? categoryId
+    : "";
   const { width } = useWindowDimensions();
   const isWide = width >= 1120;
   const [title, setTitle] = useState(reminder?.title ?? "");
@@ -2273,6 +3018,7 @@ function ReminderEditor({
       const changes = {
         title,
         notes,
+        categoryId: effectiveCategoryId || null,
         tags: tags
           .split(",")
           .map((tag) => tag.trim())
@@ -2352,6 +3098,22 @@ function ReminderEditor({
                   "Add useful context or a checklist",
                   "Adicione um contexto útil ou uma lista",
                 )}
+              />
+              <OptionPicker
+                label={t("category")}
+                value={effectiveCategoryId}
+                onChange={setCategoryId}
+                colors={colors}
+                options={[
+                  { value: "", label: t("uncategorized") },
+                  ...liveCategories.map((item) => ({
+                    value: item.id,
+                    label: item.name,
+                  })),
+                ]}
+                cancelLabel={t("cancel")}
+                changeLabel={t("edit")}
+                selectedLabel={t("category")}
               />
               <Field
                 label={`${t("tags")} (${copy(locale, "comma separated", "separadas por vírgula")})`}
@@ -2954,7 +3716,11 @@ function Settings({
   }, [ownerId]);
 
   async function exportJson() {
-    const json = exportBackup(await localRepository.list(ownerId), new Date());
+    const json = exportBackup(
+      await localRepository.list(ownerId),
+      new Date(),
+      await categoryRepository.list(ownerId),
+    );
     if (Platform.OS === "web") {
       const url = URL.createObjectURL(
         new Blob([json], { type: "application/json" }),
@@ -3019,20 +3785,34 @@ function Settings({
     try {
       const result = await runReminderMutation(async () => {
         const current = await localRepository.list(ownerId);
-        const imported = importBackup(backupFile.contents, current, ownerId);
+        const imported = importBackup(
+          backupFile.contents,
+          current,
+          ownerId,
+          await categoryRepository.list(ownerId),
+        );
+        for (const category of imported.categories)
+          await categoryRepository.save(category);
         await Promise.all(
           imported.merged.map((item) => localRepository.save(item)),
         );
         return imported;
       });
-      await synchronizeReminders(ownerId).catch(() => []);
+      let syncFailed = false;
+      try {
+        await synchronizeReminders(ownerId);
+      } catch (reason) {
+        console.warn("Imported backup is waiting to synchronize", reason);
+        syncFailed = true;
+      }
       setImportConflicts(result.conflicts);
       setBackupMessage(
-        copy(
-          locale,
-          `${result.imported} imported, ${result.skipped} skipped, ${result.invalid} invalid, ${result.conflicts.length} conflict(s) require manual resolution.`,
-          `${result.imported} importado(s), ${result.skipped} ignorado(s), ${result.invalid} inválido(s), ${result.conflicts.length} conflito(s) exigem resolução manual.`,
-        ),
+        (syncFailed ? `${createTranslator(locale)("categoryPending")} ` : "") +
+          copy(
+            locale,
+            `${result.imported} imported, ${result.skipped} skipped, ${result.invalid} invalid, ${result.conflicts.length} conflict(s) require manual resolution.`,
+            `${result.imported} importado(s), ${result.skipped} ignorado(s), ${result.invalid} inválido(s), ${result.conflicts.length} conflito(s) exigem resolução manual.`,
+          ),
       );
       setBackupFile(null);
     } catch (error) {
@@ -3277,8 +4057,8 @@ function Settings({
             title={copy(locale, "Backup and restore", "Backup e restauração")}
             description={copy(
               locale,
-              "Export your reminders or merge a JSON backup into this account.",
-              "Exporte seus lembretes ou mescle um backup JSON nesta conta.",
+              "Export reminders and categories, or merge a JSON backup into this account. Analytics is not included.",
+              "Exporte lembretes e categorias ou mescle um backup JSON nesta conta. As análises não são incluídas.",
             )}
             colors={colors}
           >
@@ -3615,6 +4395,7 @@ function Button({
         narrow && styles.narrowButton,
         block && styles.blockButton,
         grow && styles.growButton,
+        grow && isNav && styles.mobileNavButton,
         {
           backgroundColor,
           borderColor: focused ? colors.focus : borderColor,
@@ -3940,6 +4721,39 @@ const styles = StyleSheet.create({
     paddingVertical: space["3xl"],
     gap: space.xl,
   },
+  analyticsPlot: {
+    height: size.controlLg * 3,
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: space.xxs,
+    borderBottomWidth: 1,
+  },
+  analyticsColumn: {
+    flex: 1,
+    minWidth: 0,
+    height: "100%",
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: space.xxs,
+  },
+  analyticsSeriesBar: {
+    flex: 1,
+    minWidth: 0,
+    borderTopLeftRadius: radius.sm,
+    borderTopRightRadius: radius.sm,
+  },
+  analyticsLegend: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.sm,
+  },
+  analyticsSwatch: {
+    width: space.md,
+    height: space.md,
+    borderRadius: radius.sm,
+  },
+  analyticsDataRow: { gap: space.xxs },
+  hidden: { display: "none" },
   screenGrid: {
     width: "100%",
     gap: space.xl,
@@ -4106,6 +4920,11 @@ const styles = StyleSheet.create({
     justifyContent: "flex-start",
   },
   growButton: { flex: 1 },
+  mobileNavButton: {
+    flexBasis: size.controlLg * 2,
+    flexGrow: 1,
+    flexShrink: 0,
+  },
   buttonText: {
     fontSize: type.label,
     lineHeight: type.captionLine,

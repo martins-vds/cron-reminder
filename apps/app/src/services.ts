@@ -3,19 +3,29 @@ import * as SecureStore from "expo-secure-store";
 import { createClient } from "@supabase/supabase-js";
 import { makeRedirectUri } from "expo-auth-session";
 import * as WebBrowser from "expo-web-browser";
+import * as Crypto from "expo-crypto";
 import {
   JsonReminderRepository,
   OfflineSynchronizationAdapter,
   SupabaseReminderRepository,
+  JsonCategoryRepository,
+  SupabaseCategoryRepository,
+  synchronizeCategories,
+  clearDeletedCategoryAssignments,
+  SupabaseAnalyticsRepository,
+  type DatabaseClient,
 } from "@cron-reminder/infrastructure";
 import type {
   AuthenticationPort,
   SyncConflict,
+  CategoryConflict,
 } from "@cron-reminder/application";
+import { CategoryService } from "@cron-reminder/application";
 import type {
   NotificationAction,
   Postponement,
   Reminder,
+  AnalyticsSnapshot,
 } from "@cron-reminder/domain";
 import { AppState, Platform } from "react-native";
 
@@ -24,6 +34,115 @@ export const localRepository = new JsonReminderRepository({
   set: (key, value) => AsyncStorage.setItem(key, value),
   remove: (key) => AsyncStorage.removeItem(key),
 });
+export const categoryRepository = new JsonCategoryRepository({
+  get: (key) => AsyncStorage.getItem(key),
+  set: (key, value) => AsyncStorage.setItem(key, value),
+  remove: (key) => AsyncStorage.removeItem(key),
+});
+const categoryService = new CategoryService(
+  categoryRepository,
+  () => new Date().toISOString(),
+  () => `category-${Crypto.randomUUID()}`,
+);
+const dataListeners = new Set<() => void>();
+const categoryConflicts = new Map<string, CategoryConflict[]>();
+export function subscribeToDataChanges(listener: () => void): () => void {
+  dataListeners.add(listener);
+  return () => {
+    dataListeners.delete(listener);
+  };
+}
+function dataChanged() {
+  for (const listener of dataListeners) listener();
+}
+export async function cachedAnalytics(
+  ownerId: string,
+): Promise<AnalyticsSnapshot | null> {
+  const value = await AsyncStorage.getItem(
+    `cron-reminder:analytics:${ownerId}`,
+  );
+  return value ? (JSON.parse(value) as AnalyticsSnapshot) : null;
+}
+export async function loadAnalytics(
+  ownerId: string,
+): Promise<AnalyticsSnapshot> {
+  return withSynchronization(async () => {
+    if (!supabase) throw new Error("analyticsConnectionRequired");
+    const snapshot = await new SupabaseAnalyticsRepository(databaseClient).load(
+      ownerId,
+    );
+    const reminders = await localRepository.list(ownerId);
+    const existing = new Set(reminders.map((item) => item.id));
+    snapshot.days = snapshot.days.filter((item) =>
+      existing.has(item.reminderId),
+    );
+    await AsyncStorage.setItem(
+      `cron-reminder:analytics:${ownerId}`,
+      JSON.stringify(snapshot),
+    );
+    return snapshot;
+  });
+}
+export function getCategoryConflicts(
+  ownerId: string,
+): readonly CategoryConflict[] {
+  return categoryConflicts.get(ownerId) ?? [];
+}
+export async function saveCategory(
+  ownerId: string,
+  name: string,
+  id?: string,
+): Promise<void> {
+  await withSynchronization(async () => {
+    await categoryRepository.initialize(ownerId);
+    await categoryService.save(ownerId, name, id);
+    dataChanged();
+  });
+}
+export async function removeCategory(
+  ownerId: string,
+  id: string,
+): Promise<void> {
+  await withSynchronization(async () => {
+    await categoryService.remove(ownerId, id);
+    await clearDeletedCategoryAssignments(
+      ownerId,
+      categoryRepository,
+      localRepository,
+    );
+    dataChanged();
+  });
+}
+export async function resolveCategoryConflict(
+  ownerId: string,
+  conflict: CategoryConflict,
+  choice: "local" | "remote",
+): Promise<void> {
+  await withSynchronization(async () => {
+    if (!supabase) throw new Error("categoryConnectionRequired");
+    if (choice === "local") {
+      const resolved = {
+        ...conflict.local,
+        revision:
+          Math.max(conflict.local.revision, conflict.remote.revision) + 1,
+      };
+      await new SupabaseCategoryRepository(databaseClient).save(
+        resolved,
+        conflict.remote.revision,
+      );
+      await categoryRepository.acknowledge(resolved);
+    } else {
+      await categoryRepository.acknowledge(conflict.remote);
+    }
+    categoryConflicts.set(
+      ownerId,
+      getCategoryConflicts(ownerId).filter(
+        (item) => item.local.id !== conflict.local.id,
+      ),
+    );
+    dataChanged();
+  });
+}
 
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
 const supabaseKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
@@ -48,6 +167,21 @@ export const supabase =
         },
       })
     : null;
+
+const databaseClient: DatabaseClient = {
+  async readPage(table, ownerId, order, offset, limit) {
+    if (!supabase) throw new Error("Connect to load synchronized data.");
+    let query = supabase.from(table).select("*").eq("owner_id", ownerId);
+    for (const column of order) query = query.order(column);
+    const result = await query.range(offset, offset + limit - 1);
+    return { data: result.data, error: result.error };
+  },
+  async rpc(name, args) {
+    if (!supabase) throw new Error("Connect to synchronize data.");
+    const { data, error } = await supabase.rpc(name, args);
+    return { data, error };
+  },
+};
 
 if (supabase && Platform.OS !== "web") {
   if (AppState.currentState === "active") supabase.auth.startAutoRefresh();
@@ -78,6 +212,7 @@ let deviceDeregistrationQueue = Promise.resolve();
 let pushTokenQueue = Promise.resolve();
 
 interface PendingNotificationAction {
+  actionId: string;
   occurrenceId: string;
   action: NotificationAction;
   ownerId: string;
@@ -157,6 +292,9 @@ export const authentication: AuthenticationPort | null = supabase
           const { error } = await supabase.functions.invoke("delete-account");
           if (error) throw error;
           if (ownerId) {
+            await categoryRepository.clear(ownerId);
+            await AsyncStorage.removeItem(`cron-reminder:analytics:${ownerId}`);
+            categoryConflicts.delete(ownerId);
             const reminders = await localRepository.list(ownerId);
             for (const reminder of reminders) {
               await localRepository.delete(ownerId, reminder.id);
@@ -397,6 +535,8 @@ export async function deleteReminder(
       await AsyncStorage.setItem(deletedKey, JSON.stringify(deleted));
     });
     await localRepository.delete(ownerId, id);
+    await AsyncStorage.removeItem(`cron-reminder:analytics:${ownerId}`);
+    dataChanged();
     void flushDeletedReminders(ownerId).catch(() => {});
   });
 }
@@ -435,20 +575,20 @@ export async function submitNotificationAction(
   action: NotificationAction,
   ownerId: string,
   postponement?: Postponement,
+  actionId?: string,
 ): Promise<void> {
   if (action === "snooze" && !postponement)
     throw new Error("Choose a postponement time.");
+  const logicalId = actionId ?? Crypto.randomUUID();
   await withNotificationActions(async () => {
     const pending = await readNotificationActions();
     if (
       !pending.some(
-        (item) =>
-          item.occurrenceId === occurrenceId &&
-          item.action === action &&
-          item.ownerId === ownerId,
+        (item) => item.actionId === logicalId && item.ownerId === ownerId,
       )
     ) {
       pending.push({
+        actionId: logicalId,
         occurrenceId,
         action,
         ownerId,
@@ -461,6 +601,7 @@ export async function submitNotificationAction(
           : {}),
       });
       await writeNotificationActions(pending);
+      dataChanged();
     }
   });
   await flushNotificationActions(ownerId);
@@ -489,11 +630,16 @@ export async function flushNotificationActions(ownerId: string): Promise<void> {
       const body =
         item.action === "snooze"
           ? {
+              actionId: item.actionId,
               occurrenceId: item.occurrenceId,
               action: item.action,
               ...(item.until ? { until: item.until } : { minutes: 10 }),
             }
-          : { occurrenceId: item.occurrenceId, action: item.action };
+          : {
+              occurrenceId: item.occurrenceId,
+              action: item.action,
+              actionId: item.actionId,
+            };
       const { error } = await supabase.functions.invoke("occurrence-action", {
         body,
       });
@@ -502,12 +648,12 @@ export async function flushNotificationActions(ownerId: string): Promise<void> {
         await writeNotificationActions(
           (await readNotificationActions()).filter(
             (value) =>
-              value.occurrenceId !== item.occurrenceId ||
-              value.action !== item.action ||
+              value.actionId !== item.actionId ||
               value.ownerId !== item.ownerId,
           ),
         );
       });
+      dataChanged();
       if (error) {
         if (
           typeof error === "object" &&
@@ -532,11 +678,26 @@ export async function flushNotificationActions(ownerId: string): Promise<void> {
 
 export async function synchronizeReminders(
   ownerId: string,
+  portuguese = false,
 ): Promise<readonly SyncConflict[]> {
   if (!synchronization) return [];
   return withSynchronization(async () => {
     await flushDeletedReminders(ownerId);
-    return synchronization.synchronize(ownerId);
+    if (supabase) {
+      categoryConflicts.set(
+        ownerId,
+        await synchronizeCategories(
+          ownerId,
+          categoryRepository,
+          new SupabaseCategoryRepository(databaseClient),
+          localRepository,
+          portuguese,
+        ),
+      );
+    }
+    const conflicts = await synchronization.synchronize(ownerId);
+    dataChanged();
+    return conflicts;
   });
 }
 
@@ -575,16 +736,30 @@ async function readNotificationActions(): Promise<PendingNotificationAction[]> {
   if (!value) return [];
   const parsed: unknown = JSON.parse(value);
   if (!Array.isArray(parsed)) return [];
-  return parsed.filter(
-    (item): item is PendingNotificationAction =>
+  const valid = parsed.filter(
+    (
+      item,
+    ): item is Omit<PendingNotificationAction, "actionId"> & {
+      actionId?: string;
+    } =>
       typeof item === "object" &&
       item !== null &&
+      ((item as Record<string, unknown>).actionId === undefined ||
+        (typeof (item as Record<string, unknown>).actionId === "string" &&
+          String((item as Record<string, unknown>).actionId).length > 0)) &&
       typeof (item as Record<string, unknown>).occurrenceId === "string" &&
       ((item as Record<string, unknown>).action === "dismiss" ||
         (item as Record<string, unknown>).action === "complete" ||
         (item as Record<string, unknown>).action === "snooze") &&
       typeof (item as Record<string, unknown>).ownerId === "string",
   );
+  const actions = valid.map((item) => ({
+    ...item,
+    actionId: item.actionId ?? Crypto.randomUUID(),
+  }));
+  if (valid.some((item) => !item.actionId))
+    await writeNotificationActions(actions);
+  return actions;
 }
 
 async function writeNotificationActions(
