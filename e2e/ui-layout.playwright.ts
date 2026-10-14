@@ -127,6 +127,16 @@ interface SubmittedAction {
   until?: string;
 }
 
+interface SeededCategory {
+  id: string;
+  name: string;
+}
+
+const defaultCategories: readonly SeededCategory[] = [
+  { id: "personal", name: "Personal" },
+  { id: "work", name: "Work" },
+];
+
 function fakeSession() {
   const encode = (value: object) =>
     Buffer.from(JSON.stringify(value)).toString("base64url");
@@ -163,28 +173,18 @@ async function mockSupabase(
   theme: "light" | "dark" = "light",
   seededReminders: readonly Reminder[] = reminders,
   reminderWrites: Array<Record<string, unknown>> = [],
+  seededCategories: readonly SeededCategory[] = defaultCategories,
 ): Promise<void> {
   const storedOccurrences = occurrences.map((item) => ({ ...item }));
   const storedReminders: Array<Record<string, unknown>> =
     seededReminders.map(toDatabaseReminder);
-  const storedCategories = [
-    {
-      id: "personal",
-      owner_id: ownerId,
-      name: "Personal",
-      revision: 1,
-      deleted_at: null as string | null,
-      updated_at: "2026-09-25T00:00:00Z",
-    },
-    {
-      id: "work",
-      owner_id: ownerId,
-      name: "Work",
-      revision: 1,
-      deleted_at: null as string | null,
-      updated_at: "2026-09-25T00:00:00Z",
-    },
-  ];
+  const storedCategories = seededCategories.map((category) => ({
+    ...category,
+    owner_id: ownerId,
+    revision: 1,
+    deleted_at: null as string | null,
+    updated_at: "2026-09-25T00:00:00Z",
+  }));
   const analytics = [
     {
       owner_id: ownerId,
@@ -838,14 +838,97 @@ test.describe("responsive UI layout", () => {
     );
 
     await manage.click();
+    const dialog = page.getByRole("dialog", { name: "Manage categories" });
+    await expect(dialog).toBeVisible();
+    await expect(
+      dialog.getByRole("button", { name: "Add category", exact: true }),
+    ).toBeFocused();
+    for (let index = 0; index < 8; index += 1) await page.keyboard.press("Tab");
+    await expect
+      .poll(() =>
+        dialog.evaluate((element) => element.contains(document.activeElement)),
+      )
+      .toBe(true);
     const closeManager = page.getByRole("button", {
       name: "Close category manager",
       exact: true,
     });
-    await expect(closeManager).toHaveAttribute("aria-expanded", "true");
-    await expect(closeManager).toContainText("Done");
-    await closeManager.click();
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    await expect(manage).toBeFocused();
     await expect(manage).toHaveAttribute("aria-expanded", "false");
+    await manage.click();
+    await closeManager.click();
+    await expect(dialog).toHaveCount(0);
+  });
+
+  test("category manager stays usable with ten categories in a short viewport", async ({
+    page,
+  }) => {
+    const seededCategories = Array.from({ length: 10 }, (_, index) => ({
+      id: `category-${index + 1}`,
+      name: `Category ${index + 1}`,
+    }));
+    await mockSupabase(page, [], "light", reminders, [], seededCategories);
+    await authenticate(page);
+    await page.setViewportSize({ width: 320, height: 600 });
+    await page.goto("/");
+
+    const manage = page.getByRole("button", {
+      name: "Manage categories",
+      exact: true,
+    });
+    await manage.click();
+    const dialog = page.getByRole("dialog", { name: "Manage categories" });
+    const body = page.getByTestId("agenda-category-panel-management-body");
+    const closeManager = dialog.getByRole("button", {
+      name: "Close category manager",
+      exact: true,
+    });
+    await expect(dialog).toBeVisible();
+    await expect(body).toBeVisible();
+    const bodyOverflow = await body.evaluate((element) => ({
+      clientHeight: element.clientHeight,
+      scrollHeight: element.scrollHeight,
+    }));
+    expect(bodyOverflow.scrollHeight).toBeGreaterThan(
+      bodyOverflow.clientHeight,
+    );
+    const headerTop = (await closeManager.boundingBox())!.y;
+    await body.evaluate((element) => {
+      element.scrollTop = element.scrollHeight;
+      element.dispatchEvent(new Event("scroll"));
+    });
+    await expect
+      .poll(async () => body.evaluate((element) => element.scrollTop))
+      .toBeGreaterThan(0);
+    expect((await closeManager.boundingBox())!.y).toBeCloseTo(headerTop, 0);
+
+    const firstActions = dialog.getByRole("button", {
+      name: "More actions for Category 1",
+      exact: true,
+    });
+    const secondActions = dialog.getByRole("button", {
+      name: "More actions for Category 2",
+      exact: true,
+    });
+    await firstActions.click();
+    await expect(
+      dialog.getByRole("button", { name: "Rename Category 1", exact: true }),
+    ).toBeVisible();
+    await secondActions.click();
+    await expect(
+      dialog.getByRole("button", { name: /^Rename Category / }),
+    ).toHaveCount(1);
+    await expect(
+      dialog.getByRole("button", { name: "Rename Category 2", exact: true }),
+    ).toBeVisible();
+
+    await page.getByTestId("agenda-category-panel-management-backdrop").click({
+      position: { x: 2, y: 2 },
+    });
+    await expect(dialog).toHaveCount(0);
+    await expect(manage).toBeFocused();
   });
 
   for (const theme of ["light", "dark"] as const) {
@@ -888,6 +971,9 @@ test.describe("responsive UI layout", () => {
         .getByRole("button", { name: "Manage categories", exact: true })
         .click();
       await page
+        .getByRole("button", { name: "Add category", exact: true })
+        .click();
+      await page
         .getByRole("textbox", { name: "Category name", exact: true })
         .fill("Health");
       await page.getByRole("button", { name: "Create", exact: true }).click();
@@ -895,7 +981,13 @@ test.describe("responsive UI layout", () => {
         page.getByRole("tab", { name: "Health", exact: true }),
       ).toBeVisible();
       await page
-        .getByRole("button", { name: "Edit: Health", exact: true })
+        .getByRole("button", {
+          name: "More actions for Health",
+          exact: true,
+        })
+        .click();
+      await page
+        .getByRole("button", { name: "Rename Health", exact: true })
         .click();
       await page
         .getByRole("textbox", { name: "Category name", exact: true })
@@ -906,6 +998,12 @@ test.describe("responsive UI layout", () => {
       ).toBeVisible();
       page.once("dialog", (dialog) => dialog.accept());
       await page
+        .getByRole("button", {
+          name: "More actions for Work",
+          exact: true,
+        })
+        .click();
+      await page
         .getByRole("button", { name: "Delete: Work", exact: true })
         .click();
       await expect(
@@ -915,6 +1013,15 @@ test.describe("responsive UI layout", () => {
         page.getByRole("tab", { name: "Uncategorized", exact: true }),
       ).toHaveAttribute("aria-selected", "true");
       await expect(reminderCard(page, assigned[0]!.title)).toBeVisible();
+      await page
+        .getByRole("button", {
+          name: "Close category manager",
+          exact: true,
+        })
+        .click();
+      await expect(
+        page.getByRole("dialog", { name: "Manage categories" }),
+      ).toHaveCount(0);
       for (const width of [280, 320, 414, 1120]) {
         await page.setViewportSize({ width, height: 900 });
         await expect
@@ -922,6 +1029,10 @@ test.describe("responsive UI layout", () => {
           .toEqual([]);
         await expectSoundLayout(page, `${theme} category tabs ${width}px`);
       }
+      await page.setViewportSize({ width: 320, height: 900 });
+      await page
+        .getByRole("button", { name: "Manage categories", exact: true })
+        .click();
       await page.mouse.move(0, 0);
       await page.addStyleTag({
         content: "*{transition:none!important;animation:none!important}",

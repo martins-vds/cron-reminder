@@ -101,6 +101,8 @@ export const size = {
   controlSm: 36,
   controlMd: 44,
   controlLg: 52,
+  iconMd: 20,
+  breakpointWide: 880,
   navigationIcon: 24,
   navigationBottom: 64,
   navigationWide: 244,

@@ -1,15 +1,12 @@
 import {
   AccessibilityInfo,
-  findNodeHandle,
-  InteractionManager,
-  Modal,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   View,
 } from "react-native";
-import { useEffect, useRef, useState, type ElementRef } from "react";
+import { useRef, useState, type ElementRef } from "react";
+import { Sheet } from "./Sheet";
 import { radius, size, space, type, type AppColors } from "./theme";
 
 export interface PickerOption {
@@ -39,29 +36,12 @@ export function OptionPicker({
   selectedLabel,
 }: OptionPickerProps) {
   const [open, setOpen] = useState(false);
-  const [reduceMotion, setReduceMotion] = useState(false);
   const triggerRef = useRef<ElementRef<typeof Pressable>>(null);
   const selectedRef = useRef<ElementRef<typeof Pressable>>(null);
   const selectedOption =
     options.find((option) => option.value === value) ?? options[0];
 
-  useEffect(() => {
-    void AccessibilityInfo.isReduceMotionEnabled().then(setReduceMotion);
-    const subscription = AccessibilityInfo.addEventListener(
-      "reduceMotionChanged",
-      setReduceMotion,
-    );
-    return () => subscription.remove();
-  }, []);
-
-  const focus = (target: ElementRef<typeof Pressable> | null) => {
-    const node = findNodeHandle(target);
-    if (node) AccessibilityInfo.setAccessibilityFocus(node);
-  };
-  const close = () => {
-    setOpen(false);
-    InteractionManager.runAfterInteractions(() => focus(triggerRef.current));
-  };
+  const close = () => setOpen(false);
   const select = (option: PickerOption) => {
     onChange(option.value);
     AccessibilityInfo.announceForAccessibility(`${label}: ${option.label}`);
@@ -94,97 +74,73 @@ export function OptionPicker({
           {changeLabel}
         </Text>
       </Pressable>
-      <Modal
-        animationType={reduceMotion ? "none" : "slide"}
-        transparent
+      <Sheet
         visible={open}
-        onRequestClose={close}
-        onShow={() => focus(selectedRef.current)}
-      >
-        <View style={styles.overlay}>
+        title={label}
+        closeLabel={cancelLabel}
+        colors={colors}
+        onClose={close}
+        returnFocusRef={triggerRef}
+        initialFocusRef={selectedRef}
+        bodyAccessibilityRole="radiogroup"
+        nativeID={`option-picker-${label.toLowerCase().replace(/\s+/g, "-")}`}
+        footer={
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel={cancelLabel}
             onPress={close}
-            style={[styles.backdrop, { backgroundColor: colors.overlay }]}
-          />
-          <View
-            accessibilityViewIsModal
-            style={[
-              styles.sheet,
+            style={({ pressed }) => [
+              styles.cancel,
               {
-                backgroundColor: colors.surfaceElevated,
-                borderColor: colors.border,
+                backgroundColor: pressed
+                  ? colors.surfaceMuted
+                  : colors.surfaceElevated,
+                borderColor: colors.borderStrong,
               },
             ]}
           >
-            <Text style={[styles.sheetTitle, { color: colors.text }]}>
-              {label}
+            <Text style={[styles.cancelText, { color: colors.text }]}>
+              {cancelLabel}
             </Text>
-            <ScrollView
-              accessibilityRole="radiogroup"
-              style={styles.optionsScroll}
-              contentContainerStyle={styles.options}
-            >
-              {options.map((option) => {
-                const selected = option.value === value;
-                return (
-                  <Pressable
-                    key={option.value}
-                    ref={selected ? selectedRef : undefined}
-                    accessibilityRole="radio"
-                    accessibilityState={{ checked: selected }}
-                    onPress={() => select(option)}
-                    style={({ pressed }) => [
-                      styles.option,
-                      {
-                        backgroundColor:
-                          selected || pressed
-                            ? colors.accentSoft
-                            : colors.surfaceElevated,
-                        borderColor: selected ? colors.accent : colors.border,
-                      },
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        styles.optionText,
-                        { color: selected ? colors.accent : colors.text },
-                      ]}
-                    >
-                      {option.label}
-                    </Text>
-                    {selected ? (
-                      <Text
-                        style={[styles.selectedText, { color: colors.accent }]}
-                      >
-                        {selectedLabel}
-                      </Text>
-                    ) : null}
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
+          </Pressable>
+        }
+      >
+        {options.map((option) => {
+          const selected = option.value === value;
+          return (
             <Pressable
-              accessibilityRole="button"
-              onPress={close}
+              key={option.value}
+              ref={selected ? selectedRef : undefined}
+              accessibilityRole="radio"
+              accessibilityState={{ checked: selected }}
+              onPress={() => select(option)}
               style={({ pressed }) => [
-                styles.cancel,
+                styles.option,
                 {
-                  backgroundColor: pressed
-                    ? colors.surfaceMuted
-                    : colors.surfaceElevated,
-                  borderColor: colors.borderStrong,
+                  backgroundColor:
+                    selected || pressed
+                      ? colors.accentSoft
+                      : colors.surfaceElevated,
+                  borderColor: selected ? colors.accent : colors.border,
                 },
               ]}
             >
-              <Text style={[styles.cancelText, { color: colors.text }]}>
-                {cancelLabel}
+              <Text
+                style={[
+                  styles.optionText,
+                  { color: selected ? colors.accent : colors.text },
+                ]}
+              >
+                {option.label}
               </Text>
+              {selected ? (
+                <Text style={[styles.selectedText, { color: colors.accent }]}>
+                  {selectedLabel}
+                </Text>
+              ) : null}
             </Pressable>
-          </View>
-        </View>
-      </Modal>
+          );
+        })}
+      </Sheet>
     </View>
   );
 }
@@ -219,31 +175,6 @@ const styles = StyleSheet.create({
     lineHeight: type.captionLine,
     fontWeight: "700",
   },
-  overlay: {
-    flex: 1,
-    justifyContent: "flex-end",
-  },
-  backdrop: {
-    position: "absolute",
-    top: 0,
-    right: 0,
-    bottom: 0,
-    left: 0,
-  },
-  sheet: {
-    borderWidth: 1,
-    borderTopLeftRadius: radius.xl,
-    borderTopRightRadius: radius.xl,
-    padding: space.xl,
-    gap: space.lg,
-  },
-  sheetTitle: {
-    fontSize: type.heading,
-    lineHeight: type.headingLine,
-    fontWeight: "700",
-  },
-  options: { gap: space.sm },
-  optionsScroll: { flexShrink: 1 },
   option: {
     minHeight: size.controlLg,
     borderWidth: 1,

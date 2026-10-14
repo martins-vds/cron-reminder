@@ -127,6 +127,7 @@ import { DateTimeField, TimeField } from "./src/NativeDateTimeField";
 import { NumberField } from "./src/NativeNumberField";
 import { OptionPicker } from "./src/OptionPicker";
 import { CategoryTabs } from "./src/CategoryTabs";
+import { Sheet } from "./src/Sheet";
 import appIcon from "./assets/icon.png";
 import {
   darkColors,
@@ -245,7 +246,7 @@ export function RootNavigator() {
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
   const pathname = usePathname();
   const isDark = (theme === "system" ? systemTheme : theme) === "dark";
-  const isWide = width >= 880;
+  const isWide = width >= size.breakpointWide;
   const colors = isDark ? darkColors : lightColors;
   const t = createTranslator(locale);
   useEffect(
@@ -1245,11 +1246,16 @@ function CategoryControls({ panelId }: { panelId: string }) {
   } = useAppContext();
   const t = createTranslator(locale);
   const [managing, setManaging] = useState(false);
+  const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState("");
   const [editingId, setEditingId] = useState<string | undefined>();
+  const [actionCategoryId, setActionCategoryId] = useState<
+    string | undefined
+  >();
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const managerRef = useRef<ElementRef<typeof Pressable>>(null);
+  const addCategoryRef = useRef<ElementRef<typeof Pressable>>(null);
   const live = categories.filter((item) => !item.deletedAt);
   const options = [
     { value: "all", label: t("allCategories") },
@@ -1262,14 +1268,16 @@ function CategoryControls({ panelId }: { panelId: string }) {
     try {
       await operation();
       setDraft("");
+      setAdding(false);
       setEditingId(undefined);
+      setActionCategoryId(undefined);
       try {
         await synchronizeReminders(ownerId);
       } catch (reason) {
         console.warn("Category change is waiting to synchronize", reason);
         setMessage(t("categoryPending"));
       }
-      managerRef.current?.focus();
+      addCategoryRef.current?.focus();
     } catch (reason) {
       setMessage(categoryMessage(reason, locale));
     } finally {
@@ -1283,20 +1291,8 @@ function CategoryControls({ panelId }: { panelId: string }) {
           {t("categories")}
         </Text>
         <Button
-          label={
-            managing
-              ? copy(locale, "Done", "Concluir")
-              : copy(locale, "Manage", "Gerenciar")
-          }
-          accessibilityLabel={
-            managing
-              ? copy(
-                  locale,
-                  "Close category manager",
-                  "Fechar gerenciador de categorias",
-                )
-              : t("manageCategories")
-          }
+          label={copy(locale, "Manage", "Gerenciar")}
+          accessibilityLabel={t("manageCategories")}
           colors={colors}
           variant="ghost"
           compact
@@ -1305,7 +1301,7 @@ function CategoryControls({ panelId }: { panelId: string }) {
           expanded={managing}
           controls={`${panelId}-management`}
           onPress={() => {
-            setManaging(!managing);
+            setManaging(true);
             setMessage("");
           }}
         />
@@ -1321,135 +1317,252 @@ function CategoryControls({ panelId }: { panelId: string }) {
       {categoryError ? (
         <Notice tone="warning" colors={colors} text={categoryError} />
       ) : null}
-      {!managing && getCategoryConflicts(ownerId).length > 0 ? (
+      {getCategoryConflicts(ownerId).length > 0 ? (
         <Notice tone="warning" colors={colors} text={t("categoryConflict")} />
       ) : null}
-      {managing ? (
-        <View
-          nativeID={`${panelId}-management`}
-          style={[
-            styles.controlPanel,
-            { backgroundColor: colors.surface, borderColor: colors.border },
-          ]}
-        >
-          <Field
-            label={t("categoryName")}
-            value={draft}
-            onChangeText={setDraft}
-            colors={colors}
-          />
-          <View style={styles.actions}>
-            <Button
-              label={editingId ? t("save") : t("create")}
+      <Sheet
+        visible={managing}
+        title={t("manageCategories")}
+        description={copy(
+          locale,
+          "Add, rename, or remove categories.",
+          "Adicione, renomeie ou remova categorias.",
+        )}
+        closeLabel={copy(
+          locale,
+          "Close category manager",
+          "Fechar gerenciador de categorias",
+        )}
+        colors={colors}
+        onClose={() => {
+          setManaging(false);
+          setAdding(false);
+          setEditingId(undefined);
+          setActionCategoryId(undefined);
+          setDraft("");
+          setMessage("");
+        }}
+        returnFocusRef={managerRef}
+        initialFocusRef={addCategoryRef}
+        bodyTestID={`${panelId}-management-body`}
+        nativeID={`${panelId}-management`}
+      >
+        <Button
+          label={copy(locale, "Add category", "Adicionar categoria")}
+          colors={colors}
+          variant="primary"
+          block
+          disabled={adding || editingId !== undefined || busy}
+          buttonRef={addCategoryRef}
+          onPress={() => {
+            setAdding(true);
+            setEditingId(undefined);
+            setActionCategoryId(undefined);
+            setDraft("");
+            setMessage("");
+          }}
+        />
+        {adding || editingId ? (
+          <View
+            style={[
+              styles.categoryForm,
+              {
+                backgroundColor: colors.surfaceMuted,
+                borderColor: colors.border,
+              },
+            ]}
+          >
+            <Text style={[styles.cardTitle, { color: colors.text }]}>
+              {editingId
+                ? copy(locale, "Rename category", "Renomear categoria")
+                : copy(locale, "New category", "Nova categoria")}
+            </Text>
+            <Field
+              label={t("categoryName")}
+              value={draft}
+              onChangeText={setDraft}
               colors={colors}
-              variant="primary"
-              loading={busy}
-              onPress={() =>
-                void mutate(() => saveCategory(ownerId, draft, editingId))
-              }
+              autoFocus
             />
-            {editingId ? (
+            <View style={styles.actions}>
+              <Button
+                label={editingId ? t("save") : t("create")}
+                colors={colors}
+                variant="primary"
+                loading={busy}
+                onPress={() =>
+                  void mutate(() => saveCategory(ownerId, draft, editingId))
+                }
+              />
               <Button
                 label={t("cancel")}
                 colors={colors}
                 variant="secondary"
                 disabled={busy}
                 onPress={() => {
+                  setAdding(false);
                   setEditingId(undefined);
                   setDraft("");
-                  managerRef.current?.focus();
+                  addCategoryRef.current?.focus();
                 }}
               />
-            ) : null}
+            </View>
           </View>
-          {message ? (
-            <Notice tone="warning" colors={colors} text={message}>
-              <Button
-                label={t("refresh")}
-                colors={colors}
-                variant="secondary"
-                compact
-                loading={busy}
-                onPress={() =>
-                  void mutate(async () => {
-                    await synchronizeReminders(ownerId);
-                  })
-                }
-              />
-            </Notice>
-          ) : null}
-          {getCategoryConflicts(ownerId).map((conflict) => (
-            <Notice
-              key={conflict.local.id}
-              tone="warning"
+        ) : null}
+        {message ? (
+          <Notice tone="warning" colors={colors} text={message}>
+            <Button
+              label={t("refresh")}
               colors={colors}
-              text={t("categoryConflict")}
-            >
-              <View style={styles.actions}>
-                {(["local", "remote"] as const).map((choice) => (
-                  <Button
-                    key={choice}
-                    label={`${copy(locale, "Keep", "Manter")}: ${conflict[choice].name}`}
-                    colors={colors}
-                    variant="secondary"
-                    disabled={busy}
-                    onPress={() =>
-                      void mutate(() =>
-                        resolveCategoryConflict(ownerId, conflict, choice),
-                      )
-                    }
-                  />
-                ))}
-              </View>
-            </Notice>
-          ))}
-          {live.map((category) => (
-            <View key={category.id} style={styles.formStack}>
-              <Text style={[styles.cardTitle, { color: colors.text }]}>
-                {category.name}
-              </Text>
-              <View style={styles.actions}>
+              variant="secondary"
+              compact
+              loading={busy}
+              onPress={() =>
+                void mutate(async () => {
+                  await synchronizeReminders(ownerId);
+                })
+              }
+            />
+          </Notice>
+        ) : null}
+        {getCategoryConflicts(ownerId).map((conflict) => (
+          <Notice
+            key={conflict.local.id}
+            tone="warning"
+            colors={colors}
+            text={t("categoryConflict")}
+          >
+            <View style={styles.actions}>
+              {(["local", "remote"] as const).map((choice) => (
                 <Button
-                  label={t("edit")}
-                  accessibilityLabel={`${t("edit")}: ${category.name}`}
+                  key={choice}
+                  label={`${copy(locale, "Keep", "Manter")}: ${conflict[choice].name}`}
                   colors={colors}
-                  disabled={busy}
-                  onPress={() => {
-                    setEditingId(category.id);
-                    setDraft(category.name);
-                    setMessage("");
-                  }}
-                />
-                <Button
-                  label={t("delete")}
-                  accessibilityLabel={`${t("delete")}: ${category.name}`}
-                  colors={colors}
-                  variant="danger"
+                  variant="secondary"
                   disabled={busy}
                   onPress={() =>
-                    confirmDestructiveAction(
-                      t("delete"),
-                      copy(
-                        locale,
-                        `Remove "${category.name}"? Its reminders will move to Uncategorized; no reminders will be deleted.`,
-                        `Remover "${category.name}"? Os lembretes serão movidos para Sem categoria; nenhum lembrete será excluído.`,
-                      ),
-                      t("cancel"),
-                      `${t("delete")}: ${category.name}`,
-                      () =>
-                        void mutate(async () => {
-                          await removeCategory(ownerId, category.id);
-                          if (selectedCategory === category.id)
-                            setSelectedCategory("uncategorized");
-                        }),
+                    void mutate(() =>
+                      resolveCategoryConflict(ownerId, conflict, choice),
                     )
                   }
                 />
-              </View>
+              ))}
             </View>
-          ))}
+          </Notice>
+        ))}
+        <View
+          style={[
+            styles.categoryList,
+            { borderColor: colors.border, backgroundColor: colors.surface },
+          ]}
+        >
+          {live.length === 0 ? (
+            <Text style={[styles.categoryEmpty, { color: colors.muted }]}>
+              {copy(
+                locale,
+                "No categories yet. Add one to organize your reminders.",
+                "Nenhuma categoria ainda. Adicione uma para organizar seus lembretes.",
+              )}
+            </Text>
+          ) : null}
+          {live.map((category, index) => {
+            const actionsOpen = actionCategoryId === category.id;
+            return (
+              <View
+                key={category.id}
+                style={[
+                  styles.categoryRow,
+                  index < live.length - 1 && {
+                    borderBottomColor: colors.border,
+                    borderBottomWidth: 1,
+                  },
+                ]}
+              >
+                <View style={styles.categoryRowHeader}>
+                  <Text
+                    numberOfLines={2}
+                    style={[styles.categoryRowName, { color: colors.text }]}
+                  >
+                    {category.name}
+                  </Text>
+                  <Button
+                    label={copy(
+                      locale,
+                      `More actions for ${category.name}`,
+                      `Mais ações para ${category.name}`,
+                    )}
+                    accessibilityLabel={copy(
+                      locale,
+                      `More actions for ${category.name}`,
+                      `Mais ações para ${category.name}`,
+                    )}
+                    icon={MoreHorizontal}
+                    iconOnly
+                    colors={colors}
+                    variant="ghost"
+                    compact
+                    expanded={actionsOpen}
+                    controls={`${panelId}-${category.id}-actions`}
+                    disabled={busy || adding || editingId !== undefined}
+                    onPress={() =>
+                      setActionCategoryId(actionsOpen ? undefined : category.id)
+                    }
+                  />
+                </View>
+                {actionsOpen ? (
+                  <View
+                    nativeID={`${panelId}-${category.id}-actions`}
+                    style={styles.categoryRowActions}
+                  >
+                    <Button
+                      label={copy(locale, "Rename", "Renomear")}
+                      accessibilityLabel={copy(
+                        locale,
+                        `Rename ${category.name}`,
+                        `Renomear ${category.name}`,
+                      )}
+                      colors={colors}
+                      disabled={busy}
+                      onPress={() => {
+                        setAdding(false);
+                        setEditingId(category.id);
+                        setDraft(category.name);
+                        setMessage("");
+                        setActionCategoryId(undefined);
+                      }}
+                    />
+                    <Button
+                      label={t("delete")}
+                      accessibilityLabel={`${t("delete")}: ${category.name}`}
+                      colors={colors}
+                      variant="danger"
+                      disabled={busy}
+                      onPress={() =>
+                        confirmDestructiveAction(
+                          t("delete"),
+                          copy(
+                            locale,
+                            `Remove "${category.name}"? Its reminders will move to Uncategorized; no reminders will be deleted.`,
+                            `Remover "${category.name}"? Os lembretes serão movidos para Sem categoria; nenhum lembrete será excluído.`,
+                          ),
+                          t("cancel"),
+                          `${t("delete")}: ${category.name}`,
+                          () =>
+                            void mutate(async () => {
+                              await removeCategory(ownerId, category.id);
+                              if (selectedCategory === category.id)
+                                setSelectedCategory("uncategorized");
+                            }),
+                        )
+                      }
+                    />
+                  </View>
+                ) : null}
+              </View>
+            );
+          })}
         </View>
-      ) : null}
+      </Sheet>
     </View>
   );
 }
@@ -5521,6 +5634,7 @@ function Field({
   colors,
   placeholder,
   hint,
+  inputRef,
   ...props
 }: {
   label: string;
@@ -5533,12 +5647,15 @@ function Field({
   keyboardType?: "number-pad";
   autoCapitalize?: "none" | "sentences" | "words" | "characters";
   autoCorrect?: boolean;
+  autoFocus?: boolean;
+  inputRef?: Ref<ElementRef<typeof TextInput>>;
 }) {
   const [focused, setFocused] = useState(false);
   return (
     <View style={styles.field}>
       <Text style={[styles.label, { color: colors.text }]}>{label}</Text>
       <TextInput
+        ref={inputRef}
         accessibilityLabel={label}
         placeholder={placeholder}
         placeholderTextColor={colors.subtle}
@@ -5583,6 +5700,8 @@ function Button({
   block = false,
   grow = false,
   buttonRef,
+  icon: Icon,
+  iconOnly = false,
 }: {
   label: string;
   accessibilityLabel?: string;
@@ -5601,6 +5720,8 @@ function Button({
   block?: boolean;
   grow?: boolean;
   buttonRef?: Ref<ElementRef<typeof Pressable>>;
+  icon?: LucideIcon;
+  iconOnly?: boolean;
 }) {
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
@@ -5671,6 +5792,7 @@ function Button({
         block && styles.blockButton,
         grow && styles.growButton,
         grow && isNav && styles.mobileNavButton,
+        iconOnly && styles.iconButton,
         {
           backgroundColor,
           borderColor: focused ? colors.focus : borderColor,
@@ -5680,7 +5802,12 @@ function Button({
       ]}
     >
       {loading && <ActivityIndicator color={textColor} size="small" />}
-      <Text style={[styles.buttonText, { color: textColor }]}>{label}</Text>
+      {!loading && Icon ? (
+        <Icon color={textColor} size={size.iconMd} strokeWidth={2} />
+      ) : null}
+      {!iconOnly ? (
+        <Text style={[styles.buttonText, { color: textColor }]}>{label}</Text>
+      ) : null}
     </Pressable>
   );
 }
@@ -6160,6 +6287,47 @@ const styles = StyleSheet.create({
     lineHeight: type.captionLine,
     fontWeight: "700",
   },
+  categoryForm: {
+    borderWidth: 1,
+    borderRadius: radius.lg,
+    padding: space.lg,
+    gap: space.lg,
+  },
+  categoryList: {
+    borderWidth: 1,
+    borderRadius: radius.lg,
+    overflow: "hidden",
+  },
+  categoryEmpty: {
+    padding: space.xl,
+    fontSize: type.body,
+    lineHeight: type.bodyLine,
+    textAlign: "center",
+  },
+  categoryRow: {
+    paddingHorizontal: space.lg,
+    paddingVertical: space.md,
+    gap: space.sm,
+  },
+  categoryRowHeader: {
+    minHeight: size.controlMd,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.md,
+  },
+  categoryRowName: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: type.body,
+    lineHeight: type.bodyLine,
+    fontWeight: "600",
+  },
+  categoryRowActions: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "flex-end",
+    gap: space.sm,
+  },
   sectionCard: {
     borderWidth: 1,
     borderRadius: radius.lg,
@@ -6238,6 +6406,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.md,
   },
   narrowButton: { paddingHorizontal: space.sm },
+  iconButton: {
+    width: size.controlMd,
+    paddingHorizontal: 0,
+  },
   blockButton: {
     width: "100%",
     justifyContent: "flex-start",
