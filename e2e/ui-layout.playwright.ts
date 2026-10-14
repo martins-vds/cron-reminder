@@ -2036,6 +2036,98 @@ test.describe("responsive UI layout", () => {
     }
   });
 
+  for (const collection of [
+    {
+      path: "/tasks",
+      heading: "Tasks",
+      action: "Add task",
+      duplicate: "Add first task",
+    },
+    {
+      path: "/reminders",
+      heading: "Reminders",
+      action: "Add reminder",
+      duplicate: "Add first reminder",
+    },
+  ]) {
+    test(`${collection.heading} uses one persistent mobile creation action and a desktop header action`, async ({
+      page,
+    }) => {
+      await mockSupabase(page);
+      await authenticate(page);
+      await page.setViewportSize({ width: 320, height: 600 });
+      await page.goto(collection.path);
+
+      const mobileAction = page.getByRole("button", {
+        name: collection.action,
+        exact: true,
+      });
+      await expect(mobileAction).toHaveCount(1);
+      await expect(mobileAction).toBeVisible();
+      await expect(
+        page.getByRole("button", {
+          name: collection.duplicate,
+          exact: true,
+        }),
+      ).toHaveCount(0);
+      await expect(page.getByTestId("persistent-create-action")).toHaveCount(1);
+
+      const navigation = page.getByRole("button", {
+        name: "Today",
+        exact: true,
+      });
+      const initialActionBox = await mobileAction.boundingBox();
+      const navigationBox = await navigation.boundingBox();
+      expect(initialActionBox).not.toBeNull();
+      expect(navigationBox).not.toBeNull();
+      expect(initialActionBox!.y + initialActionBox!.height).toBeLessThan(
+        navigationBox!.y,
+      );
+
+      const scrollTop = await page
+        .getByRole("heading", { name: collection.heading, exact: true })
+        .evaluate((heading) => {
+          let element = heading.parentElement;
+          while (element) {
+            const style = getComputedStyle(element);
+            if (
+              /(auto|scroll)/.test(style.overflowY) &&
+              element.scrollHeight > element.clientHeight
+            ) {
+              element.scrollTop = element.scrollHeight;
+              element.dispatchEvent(new Event("scroll"));
+              return element.scrollTop;
+            }
+            element = element.parentElement;
+          }
+          return 0;
+        });
+      expect(scrollTop).toBeGreaterThan(0);
+      await expect
+        .poll(async () => (await mobileAction.boundingBox())?.y)
+        .toBeCloseTo(initialActionBox!.y, 0);
+
+      await page.setViewportSize({ width: 1120, height: 900 });
+      await page.goto(collection.path);
+      const desktopAction = page.getByRole("button", {
+        name: collection.action,
+        exact: true,
+      });
+      await expect(desktopAction).toHaveCount(1);
+      await expect(desktopAction).toBeVisible();
+      await expect(page.getByTestId("persistent-create-action")).toHaveCount(0);
+      const desktopActionBox = await desktopAction.boundingBox();
+      const categoriesBox = await page
+        .getByText("Categories", { exact: true })
+        .boundingBox();
+      expect(desktopActionBox).not.toBeNull();
+      expect(categoriesBox).not.toBeNull();
+      expect(desktopActionBox!.y + desktopActionBox!.height).toBeLessThan(
+        categoriesBox!.y,
+      );
+    });
+  }
+
   for (const theme of ["light", "dark"] as const) {
     test(`small-screen navigation keeps primary destinations stable and exposes more destinations in ${theme} mode`, async ({
       page,
