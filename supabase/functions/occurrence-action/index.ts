@@ -2,6 +2,9 @@ import { createClient } from '@supabase/supabase-js';
 import { nextPostponementAt, resolvePostponement, type Reminder } from '../../../packages/domain/src/index.ts';
 import { corsHeaders } from '../_shared/cors.ts';
 
+// deno-lint-ignore no-explicit-any
+type ServiceClient = ReturnType<typeof createClient<any>>;
+
 type ReminderAction = {
   type?: 'reminder';
   entityType?: 'reminder';
@@ -34,7 +37,9 @@ Deno.serve(async (request) => {
   const url = Deno.env.get('SUPABASE_URL');
   const anonKey = Deno.env.get('SUPABASE_ANON_KEY');
   if (!authorization || !url || !anonKey) return response({ error: 'Unauthorized' }, 401);
-  const client = createClient(url, anonKey, { global: { headers: { Authorization: authorization } } });
+  const client = createClient(url, anonKey, {
+    global: { headers: { Authorization: authorization } },
+  });
   let input: unknown;
   try {
     input = await request.json();
@@ -120,7 +125,7 @@ Deno.serve(async (request) => {
 });
 
 async function handleTaskAction(
-  client: ReturnType<typeof createClient>,
+  client: ServiceClient,
   input: TaskAction,
 ): Promise<Response> {
   const requestedUntil =
@@ -146,7 +151,7 @@ async function handleTaskAction(
       .from('task_occurrence_action_receipts')
       .select('request_key,result')
       .eq('action_id', input.actionId)
-      .maybeSingle();
+      .maybeSingle<{ request_key: string; result: unknown }>();
     if (error) return response({ error: 'Unable to verify task action' }, 500);
     if (receipt) {
       if (receipt.request_key !== requestKey)
