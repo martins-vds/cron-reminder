@@ -101,7 +101,10 @@ export const size = {
   controlSm: 36,
   controlMd: 44,
   controlLg: 52,
+  navigationIcon: 24,
+  navigationBottom: 64,
   navigationWide: 244,
+  navigationOverflow: 320,
   contentMax: 960,
   readable: 680,
 } as const;

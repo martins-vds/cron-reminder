@@ -41,6 +41,16 @@ import {
   findNodeHandle,
 } from "react-native";
 import {
+  BarChart3,
+  Bell,
+  CalendarDays,
+  History,
+  ListTodo,
+  MoreHorizontal,
+  Settings as SettingsIcon,
+  type LucideIcon,
+} from "lucide-react-native";
+import {
   ReminderService,
   TaskService,
   filterReminders,
@@ -185,13 +195,15 @@ interface AppContextValue {
 
 const AppContext = createContext<AppContextValue | null>(null);
 const navigationItems = [
-  { key: "agenda", path: "/" },
-  { key: "tasks", path: "/tasks" },
-  { key: "reminders", path: "/reminders" },
-  { key: "history", path: "/history" },
-  { key: "analytics", path: "/analytics" },
-  { key: "settings", path: "/settings" },
+  { key: "agenda", path: "/", icon: CalendarDays },
+  { key: "tasks", path: "/tasks", icon: ListTodo },
+  { key: "reminders", path: "/reminders", icon: Bell },
+  { key: "history", path: "/history", icon: History },
+  { key: "analytics", path: "/analytics", icon: BarChart3 },
+  { key: "settings", path: "/settings", icon: SettingsIcon },
 ] as const;
+const mobilePrimaryNavigationItems = navigationItems.slice(0, 3);
+const mobileOverflowNavigationItems = navigationItems.slice(3);
 
 function useAppContext() {
   const context = useContext(AppContext);
@@ -230,6 +242,7 @@ export function RootNavigator() {
     readonly SyncConflict[]
   >([]);
   const [loadingSession, setLoadingSession] = useState(true);
+  const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
   const pathname = usePathname();
   const isDark = (theme === "system" ? systemTheme : theme) === "dark";
   const isWide = width >= 880;
@@ -553,16 +566,14 @@ export function RootNavigator() {
     setSelectedCategory,
     categoryError,
   };
-  const navigationButtons = (
+  const navigationLabel = (key: (typeof navigationItems)[number]["key"]) =>
+    key === "tasks" ? copy(locale, "Tasks", "Tarefas") : t(key);
+  const desktopNavigationButtons = (
     <View style={[styles.navItems, isWide && styles.navItemsWide]}>
       {navigationItems.map((item) => (
         <Button
           key={item.key}
-          label={
-            item.key === "tasks"
-              ? copy(locale, "Tasks", "Tarefas")
-              : t(item.key)
-          }
+          label={navigationLabel(item.key)}
           onPress={() => router.navigate(item.path)}
           active={pathname === item.path}
           selected={pathname === item.path}
@@ -606,7 +617,7 @@ export function RootNavigator() {
                 )}
               </View>
             </View>
-            {isWide && navigationButtons}
+            {isWide && desktopNavigationButtons}
           </View>
           <View
             style={[styles.content, { backgroundColor: colors.background }]}
@@ -628,12 +639,133 @@ export function RootNavigator() {
                 },
               ]}
             >
-              {navigationButtons}
+              <View style={styles.bottomNavItems}>
+                {mobilePrimaryNavigationItems.map((item) => (
+                  <BottomNavigationItem
+                    key={item.key}
+                    label={navigationLabel(item.key)}
+                    icon={item.icon}
+                    selected={pathname === item.path}
+                    onPress={() => {
+                      setMobileNavigationOpen(false);
+                      router.navigate(item.path);
+                    }}
+                    colors={colors}
+                  />
+                ))}
+                <BottomNavigationItem
+                  label={copy(locale, "More", "Mais")}
+                  icon={MoreHorizontal}
+                  selected={mobileOverflowNavigationItems.some(
+                    (item) => pathname === item.path,
+                  )}
+                  expanded={mobileNavigationOpen}
+                  controls="mobile-navigation-more"
+                  onPress={() => setMobileNavigationOpen((isOpen) => !isOpen)}
+                  colors={colors}
+                />
+              </View>
+            </View>
+          )}
+          {!isWide && mobileNavigationOpen && (
+            <View
+              nativeID="mobile-navigation-more"
+              accessibilityLabel={copy(
+                locale,
+                "More destinations",
+                "Mais destinos",
+              )}
+              role={Platform.OS === "web" ? "navigation" : undefined}
+              style={[
+                styles.mobileNavigationOverflow,
+                {
+                  backgroundColor: colors.surfaceElevated,
+                  borderColor: colors.borderStrong,
+                },
+              ]}
+            >
+              {mobileOverflowNavigationItems.map((item) => (
+                <Button
+                  key={item.key}
+                  label={navigationLabel(item.key)}
+                  onPress={() => {
+                    setMobileNavigationOpen(false);
+                    router.navigate(item.path);
+                  }}
+                  active={pathname === item.path}
+                  selected={pathname === item.path}
+                  colors={colors}
+                  variant="nav"
+                  block
+                />
+              ))}
             </View>
           )}
         </View>
       </SafeAreaView>
     </AppContext.Provider>
+  );
+}
+
+function BottomNavigationItem({
+  label,
+  icon: Icon,
+  selected,
+  expanded,
+  controls,
+  onPress,
+  colors,
+}: {
+  label: string;
+  icon: LucideIcon;
+  selected: boolean;
+  expanded?: boolean;
+  controls?: string;
+  onPress: () => void;
+  colors: Colors;
+}) {
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const foregroundColor = selected ? colors.accent : colors.muted;
+  const backgroundColor = selected
+    ? colors.accentSoft
+    : hovered
+      ? colors.surfaceMuted
+      : "transparent";
+
+  return (
+    <Pressable
+      accessibilityLabel={label}
+      accessibilityRole="button"
+      accessibilityState={{ expanded, selected }}
+      aria-controls={controls}
+      aria-expanded={expanded}
+      aria-current={selected && !expanded ? "page" : undefined}
+      onPress={onPress}
+      onHoverIn={() => setHovered(true)}
+      onHoverOut={() => setHovered(false)}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+      style={({ pressed }) => [
+        styles.bottomNavItem,
+        {
+          backgroundColor: pressed ? colors.surfaceMuted : backgroundColor,
+          borderColor: focused ? colors.focus : "transparent",
+        },
+      ]}
+    >
+      <Icon
+        color={foregroundColor}
+        size={size.navigationIcon}
+        strokeWidth={selected ? 2.25 : 2}
+      />
+      <Text
+        numberOfLines={1}
+        style={[styles.bottomNavLabel, { color: foregroundColor }]}
+      >
+        {label}
+      </Text>
+    </Pressable>
   );
 }
 
@@ -5801,9 +5933,45 @@ const styles = StyleSheet.create({
   },
   bottomNavigation: {
     borderTopWidth: 1,
-    paddingHorizontal: space.lg,
-    paddingVertical: space.sm,
-    zIndex: 2,
+    height: size.navigationBottom,
+    paddingHorizontal: space.xs,
+    paddingVertical: space.xs,
+    zIndex: 3,
+  },
+  bottomNavItems: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "stretch",
+  },
+  bottomNavItem: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: size.controlLg,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: space.xxs,
+    borderWidth: 1,
+    borderRadius: radius.md,
+    paddingHorizontal: space.xs,
+  },
+  bottomNavLabel: {
+    width: "100%",
+    textAlign: "center",
+    fontSize: type.caption,
+    lineHeight: type.captionLine,
+    fontWeight: "700",
+  },
+  mobileNavigationOverflow: {
+    position: "absolute",
+    right: space.lg,
+    bottom: size.navigationBottom + space.sm,
+    width: "80%",
+    maxWidth: size.navigationOverflow,
+    borderWidth: 1,
+    borderRadius: radius.lg,
+    padding: space.sm,
+    gap: space.xs,
+    zIndex: 4,
   },
   brandLockup: {
     minWidth: 0,

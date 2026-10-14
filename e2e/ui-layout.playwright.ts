@@ -1817,6 +1817,59 @@ test.describe("responsive UI layout", () => {
     }
   });
 
+  for (const theme of ["light", "dark"] as const) {
+    test(`small-screen navigation keeps primary destinations stable and exposes more destinations in ${theme} mode`, async ({
+      page,
+    }, testInfo) => {
+      await mockSupabase(page, [], theme);
+      await authenticate(page);
+      await page.setViewportSize({ width: 320, height: 720 });
+      await page.goto("/reminders");
+
+      for (const label of ["Today", "Tasks", "Reminders", "More"]) {
+        const item = page.getByRole("button", { name: label, exact: true });
+        await expect(item).toBeVisible();
+        await expect(item).toHaveCSS("min-height", `${size.controlLg}px`);
+      }
+      await expect(
+        page.getByRole("button", { name: "History", exact: true }),
+      ).toHaveCount(0);
+      await page.mouse.move(0, 0);
+      await testInfo.attach(`bottom-navigation-${theme}`, {
+        body: await page.screenshot(),
+        contentType: "image/png",
+      });
+
+      const more = page.getByRole("button", { name: "More", exact: true });
+      await more.focus();
+      await page.keyboard.press("Enter");
+      await expect(more).toHaveAttribute("aria-expanded", "true");
+      for (const label of ["History", "Analytics", "Settings"]) {
+        await expect(
+          page.getByRole("button", { name: label, exact: true }),
+        ).toBeVisible();
+      }
+      await page.mouse.move(0, 0);
+      await testInfo.attach(`bottom-navigation-${theme}-more`, {
+        body: await page.screenshot(),
+        contentType: "image/png",
+      });
+
+      await page.keyboard.press("Tab");
+      const history = page.getByRole("button", {
+        name: "History",
+        exact: true,
+      });
+      await expect(history).toBeFocused();
+      await page.keyboard.press("Enter");
+      await expect(page).toHaveURL(/\/history$/);
+      await expect(
+        page.getByRole("heading", { name: "History" }),
+      ).toBeVisible();
+      await expect(more).toHaveAttribute("aria-expanded", "false");
+    });
+  }
+
   test("unauthenticated screen has no overflow, clipping, or overlap", async ({
     page,
   }) => {
