@@ -1,5 +1,11 @@
 import { StatusBar } from "expo-status-bar";
-import { Stack, router, usePathname, useFocusEffect } from "expo-router";
+import {
+  Stack,
+  router,
+  usePathname,
+  useFocusEffect,
+  useNavigation,
+} from "expo-router";
 import { getLocales } from "expo-localization";
 import * as Crypto from "expo-crypto";
 import * as DocumentPicker from "expo-document-picker";
@@ -10,6 +16,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -44,6 +51,8 @@ import {
   BarChart3,
   Bell,
   CalendarDays,
+  ChevronDown,
+  ChevronUp,
   History,
   ListTodo,
   MoreHorizontal,
@@ -192,6 +201,7 @@ interface AppContextValue {
   selectedCategory: string;
   setSelectedCategory: (id: string) => void;
   categoryError: string;
+  setEditorActive: (active: boolean) => void;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -244,11 +254,15 @@ export function RootNavigator() {
   >([]);
   const [loadingSession, setLoadingSession] = useState(true);
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
+  const [editorActive, setEditorActive] = useState(false);
   const pathname = usePathname();
   const isDark = (theme === "system" ? systemTheme : theme) === "dark";
   const isWide = width >= size.breakpointWide;
   const colors = isDark ? darkColors : lightColors;
   const t = createTranslator(locale);
+  useEffect(() => {
+    if (editorActive) setMobileNavigationOpen(false);
+  }, [editorActive]);
   useEffect(
     () =>
       subscribeToDataChanges(() => setSyncRevision((revision) => revision + 1)),
@@ -566,6 +580,7 @@ export function RootNavigator() {
     selectedCategory,
     setSelectedCategory,
     categoryError,
+    setEditorActive,
   };
   const navigationLabel = (key: (typeof navigationItems)[number]["key"]) =>
     key === "tasks" ? copy(locale, "Tasks", "Tarefas") : t(key);
@@ -595,31 +610,33 @@ export function RootNavigator() {
       >
         <StatusBar style={isDark ? "light" : "dark"} />
         <View style={[styles.shell, isWide && styles.wideShell]}>
-          <View
-            style={[
-              styles.navigation,
-              isWide ? styles.sideNavigation : styles.mobileHeader,
-              {
-                backgroundColor: colors.surface,
-                borderColor: colors.border,
-              },
-            ]}
-          >
-            <View style={styles.brandLockup}>
-              <BrandMark />
-              <View style={styles.brandCopy}>
-                <Text style={[styles.brand, { color: colors.text }]}>
-                  Cron Reminder
-                </Text>
-                {isWide && (
-                  <Text style={[styles.brandMeta, { color: colors.subtle }]}>
-                    Scheduled, simply.
+          {!editorActive ? (
+            <View
+              style={[
+                styles.navigation,
+                isWide ? styles.sideNavigation : styles.mobileHeader,
+                {
+                  backgroundColor: colors.surface,
+                  borderColor: colors.border,
+                },
+              ]}
+            >
+              <View style={styles.brandLockup}>
+                <BrandMark />
+                <View style={styles.brandCopy}>
+                  <Text style={[styles.brand, { color: colors.text }]}>
+                    Cron Reminder
                   </Text>
-                )}
+                  {isWide && (
+                    <Text style={[styles.brandMeta, { color: colors.subtle }]}>
+                      Scheduled, simply.
+                    </Text>
+                  )}
+                </View>
               </View>
+              {isWide && desktopNavigationButtons}
             </View>
-            {isWide && desktopNavigationButtons}
-          </View>
+          ) : null}
           <View
             style={[styles.content, { backgroundColor: colors.background }]}
           >
@@ -630,7 +647,7 @@ export function RootNavigator() {
               }}
             />
           </View>
-          {!isWide && (
+          {!isWide && !editorActive && (
             <View
               style={[
                 styles.bottomNavigation,
@@ -668,7 +685,7 @@ export function RootNavigator() {
               </View>
             </View>
           )}
-          {!isWide && mobileNavigationOpen && (
+          {!isWide && !editorActive && mobileNavigationOpen && (
             <View
               nativeID="mobile-navigation-more"
               accessibilityLabel={copy(
@@ -3203,23 +3220,37 @@ function TaskEditor({
     [now],
   );
   const primary = task?.reminderPolicy.primary;
-  const [title, setTitle] = useState(task?.title ?? "");
-  const [notes, setNotes] = useState(task?.notes ?? "");
-  const [tags, setTags] = useState(task?.tags.join(", ") ?? "");
-  const [dueAt, setDueAt] = useState(task?.dueAt ?? defaultDue);
-  const [primaryScheduleEditor, setPrimaryScheduleEditor] =
-    useState<ScheduleEditorState>(() =>
-      createScheduleEditorState(primary, now),
-    );
-  const [overdueScheduleEditor, setOverdueScheduleEditor] =
-    useState<ScheduleEditorState>(() =>
+  const initialTitle = task?.title ?? "";
+  const initialNotes = task?.notes ?? "";
+  const initialTags = task?.tags.join(", ") ?? "";
+  const initialDueAt = task?.dueAt ?? defaultDue;
+  const initialCategoryId =
+    task?.categoryId ??
+    (selectedCategory === "all" || selectedCategory === "uncategorized"
+      ? ""
+      : selectedCategory);
+  const initialPrimaryScheduleEditor = useMemo(
+    () => createScheduleEditorState(primary, now),
+    [now, primary],
+  );
+  const initialOverdueScheduleEditor = useMemo(
+    () =>
       createScheduleEditorState(
         primary?.kind === "once"
           ? task?.reminderPolicy.overdue
           : { kind: "cron", expression: "*/30 * * * *" },
         now,
       ),
-    );
+    [now, primary?.kind, task?.reminderPolicy.overdue],
+  );
+  const [title, setTitle] = useState(initialTitle);
+  const [notes, setNotes] = useState(initialNotes);
+  const [tags, setTags] = useState(initialTags);
+  const [dueAt, setDueAt] = useState(initialDueAt);
+  const [primaryScheduleEditor, setPrimaryScheduleEditor] =
+    useState<ScheduleEditorState>(initialPrimaryScheduleEditor);
+  const [overdueScheduleEditor, setOverdueScheduleEditor] =
+    useState<ScheduleEditorState>(initialOverdueScheduleEditor);
   const primarySchedule = buildSchedule({
     ...primaryScheduleEditor,
     ends: "never",
@@ -3255,12 +3286,12 @@ function TaskEditor({
         reason instanceof Error ? reason.message : "Invalid reminder policy.";
     }
   }
-  const [categoryId, setCategoryId] = useState(
-    task?.categoryId ??
-      (selectedCategory === "all" || selectedCategory === "uncategorized"
-        ? ""
-        : selectedCategory),
+  const [categoryId, setCategoryId] = useState(initialCategoryId);
+  const [showMoreDetails, setShowMoreDetails] = useState(
+    Boolean(initialNotes || initialTags || initialCategoryId),
   );
+  const [titleTouched, setTitleTouched] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const timezone =
     task?.timezone ??
@@ -3269,8 +3300,20 @@ function TaskEditor({
   const validCategoryId = liveCategories.some(({ id }) => id === categoryId)
     ? categoryId
     : "";
+  const dirty =
+    title !== initialTitle ||
+    notes !== initialNotes ||
+    tags !== initialTags ||
+    dueAt !== initialDueAt ||
+    categoryId !== initialCategoryId ||
+    JSON.stringify(primaryScheduleEditor) !==
+      JSON.stringify(initialPrimaryScheduleEditor) ||
+    JSON.stringify(overdueScheduleEditor) !==
+      JSON.stringify(initialOverdueScheduleEditor);
+  const requestCancel = useEditorMode(dirty, locale, onCancel);
 
   async function save() {
+    setTitleTouched(true);
     if (!reminderPolicy) {
       setError(
         policyValidationError ||
@@ -3283,6 +3326,7 @@ function TaskEditor({
       return;
     }
     setError("");
+    setSaving(true);
     try {
       const changes = {
         title,
@@ -3310,6 +3354,7 @@ function TaskEditor({
       }
       onSaved(conflicts, syncMessage);
     } catch (reason) {
+      setSaving(false);
       setError(
         reason instanceof Error
           ? reason.message
@@ -3319,169 +3364,204 @@ function TaskEditor({
   }
 
   return (
-    <ScrollView
-      contentContainerStyle={styles.page}
-      keyboardShouldPersistTaps="handled"
-    >
-      <PageHeader
-        eyebrow={copy(locale, "Task setup", "Configuração da tarefa")}
-        title={
-          task
-            ? copy(locale, "Edit task", "Editar tarefa")
-            : copy(locale, "Add task", "Adicionar tarefa")
-        }
-        description={copy(
-          locale,
-          "Set the due date separately from the reminder policy.",
-          "Defina o prazo separadamente da política de lembretes.",
-        )}
-        colors={colors}
-      />
-      {error ? <Notice tone="danger" colors={colors} text={error} /> : null}
-      <View style={styles.screenGrid}>
-        <SectionCard
-          title={copy(locale, "Details", "Detalhes")}
+    <View style={[styles.editorScreen, { backgroundColor: colors.background }]}>
+      <ScrollView
+        contentContainerStyle={styles.editorPage}
+        keyboardShouldPersistTaps="handled"
+      >
+        <PageHeader
+          eyebrow={copy(locale, "Task setup", "Configuração da tarefa")}
+          title={
+            task
+              ? copy(locale, "Edit task", "Editar tarefa")
+              : copy(locale, "Add task", "Adicionar tarefa")
+          }
           description={copy(
             locale,
-            "Describe the work and when it is due.",
-            "Descreva o trabalho e quando ele deve ser concluído.",
+            "Set the due date separately from the reminder policy.",
+            "Defina o prazo separadamente da política de lembretes.",
           )}
           colors={colors}
-        >
-          <View style={styles.formStack}>
-            <Field
-              label={copy(locale, "Title", "Título")}
-              value={title}
-              onChangeText={setTitle}
-              colors={colors}
-              placeholder={copy(
-                locale,
-                "For example, submit expense report",
-                "Por exemplo, enviar relatório de despesas",
-              )}
-            />
-            <Field
-              label={copy(locale, "Notes", "Notas")}
-              value={notes}
-              onChangeText={setNotes}
-              colors={colors}
-              multiline
-            />
-            <DateTimeField
-              label={copy(locale, "Due date and time", "Data e hora do prazo")}
-              value={dueAt}
-              onChange={setDueAt}
-              colors={colors}
-              locale={locale}
-              hint={timezone}
-            />
-            <OptionPicker
-              label={copy(locale, "Category", "Categoria")}
-              value={validCategoryId}
-              onChange={setCategoryId}
-              colors={colors}
-              options={[
-                {
-                  value: "",
-                  label: copy(locale, "Uncategorized", "Sem categoria"),
-                },
-                ...liveCategories.map((item) => ({
-                  value: item.id,
-                  label: item.name,
-                })),
-              ]}
-              cancelLabel={copy(locale, "Cancel", "Cancelar")}
-              changeLabel={copy(locale, "Change", "Alterar")}
-              selectedLabel={copy(locale, "Selected", "Selecionada")}
-            />
-            <Field
-              label={copy(
-                locale,
-                "Tags (comma separated)",
-                "Etiquetas (separadas por vírgula)",
-              )}
-              value={tags}
-              onChangeText={setTags}
-              colors={colors}
-            />
-          </View>
-        </SectionCard>
-        <SectionCard
-          title={copy(locale, "Reminder policy", "Política de lembretes")}
-          description={copy(
-            locale,
-            "Choose one policy. Notifications stop when the task is completed or archived.",
-            "Escolha uma política. As notificações param quando a tarefa é concluída ou arquivada.",
-          )}
-          colors={colors}
-        >
-          <View style={styles.formStack}>
-            <TaskScheduleFields
-              editor={primaryScheduleEditor}
-              onChange={setPrimaryScheduleEditor}
-              locale={locale}
-              colors={colors}
-              timezone={timezone}
-              allowOnce
-            />
-            {primarySchedule.kind === "once" ? (
-              <View style={styles.formStack}>
-                <Text style={[styles.sectionLabel, { color: colors.subtle }]}>
-                  {copy(locale, "Overdue reminders", "Lembretes após o prazo")}
-                </Text>
-                <Text style={[styles.body, { color: colors.muted }]}>
-                  {copy(
-                    locale,
-                    "Choose how often to remind you after the due date while the task remains open.",
-                    "Escolha quando lembrar após o prazo enquanto a tarefa estiver aberta.",
-                  )}
-                </Text>
-                <TaskScheduleFields
-                  editor={overdueScheduleEditor}
-                  onChange={setOverdueScheduleEditor}
-                  locale={locale}
-                  colors={colors}
-                  timezone={timezone}
-                  allowOnce={false}
-                />
-              </View>
-            ) : null}
-            {!primaryScheduleValid || !overdueScheduleValid ? (
-              <Notice
-                tone="danger"
+        />
+        {error ? <Notice tone="danger" colors={colors} text={error} /> : null}
+        <View style={styles.screenGrid}>
+          <SectionCard
+            title={copy(locale, "Task", "Tarefa")}
+            description={copy(
+              locale,
+              "Name the work and choose when it is due.",
+              "Nomeie o trabalho e escolha quando ele deve ser concluído.",
+            )}
+            colors={colors}
+          >
+            <View style={styles.formStack}>
+              <Field
+                label={copy(locale, "Title", "Título")}
+                value={title}
+                onChangeText={setTitle}
                 colors={colors}
-                text={copy(
+                required
+                requiredLabel={copy(locale, "required", "obrigatório")}
+                error={
+                  titleTouched && !title.trim()
+                    ? copy(
+                        locale,
+                        "Title is required.",
+                        "O título é obrigatório.",
+                      )
+                    : undefined
+                }
+                onBlur={() => setTitleTouched(true)}
+                placeholder={copy(
                   locale,
-                  "Check the schedule values. Times use HH:MM.",
-                  "Revise os valores da agenda. Use HH:MM para horários.",
+                  "For example, submit expense report",
+                  "Por exemplo, enviar relatório de despesas",
                 )}
               />
-            ) : !reminderPolicy && policyValidationError ? (
-              <Notice
-                tone="danger"
+              <DateTimeField
+                label={copy(
+                  locale,
+                  "Due date and time",
+                  "Data e hora do prazo",
+                )}
+                value={dueAt}
+                onChange={setDueAt}
                 colors={colors}
-                text={policyValidationError}
+                locale={locale}
+                hint={timezone}
               />
-            ) : null}
-          </View>
-        </SectionCard>
-      </View>
-      <View style={[styles.editorActions, { borderColor: colors.border }]}>
-        <Button
-          label={copy(locale, "Cancel", "Cancelar")}
-          onPress={onCancel}
-          colors={colors}
-          variant="secondary"
-        />
-        <Button
-          label={copy(locale, "Save task", "Salvar tarefa")}
-          onPress={() => void save()}
-          colors={colors}
-          variant="primary"
-          disabled={!title.trim() || !reminderPolicy}
-        />
-      </View>
-    </ScrollView>
+              <DisclosureButton
+                label={copy(
+                  locale,
+                  showMoreDetails ? "Hide more details" : "More details",
+                  showMoreDetails ? "Ocultar mais detalhes" : "Mais detalhes",
+                )}
+                expanded={showMoreDetails}
+                controls="task-more-details"
+                colors={colors}
+                onPress={() => setShowMoreDetails((shown) => !shown)}
+              />
+              {showMoreDetails ? (
+                <View nativeID="task-more-details" style={styles.formStack}>
+                  <Field
+                    label={copy(locale, "Notes", "Notas")}
+                    value={notes}
+                    onChangeText={setNotes}
+                    colors={colors}
+                    multiline
+                  />
+                  <OptionPicker
+                    label={copy(locale, "Category", "Categoria")}
+                    value={validCategoryId}
+                    onChange={setCategoryId}
+                    colors={colors}
+                    options={[
+                      {
+                        value: "",
+                        label: copy(locale, "Uncategorized", "Sem categoria"),
+                      },
+                      ...liveCategories.map((item) => ({
+                        value: item.id,
+                        label: item.name,
+                      })),
+                    ]}
+                    cancelLabel={copy(locale, "Cancel", "Cancelar")}
+                    changeLabel={copy(locale, "Change", "Alterar")}
+                    selectedLabel={copy(locale, "Selected", "Selecionada")}
+                  />
+                  <Field
+                    label={copy(
+                      locale,
+                      "Tags (comma separated)",
+                      "Etiquetas (separadas por vírgula)",
+                    )}
+                    value={tags}
+                    onChangeText={setTags}
+                    colors={colors}
+                  />
+                </View>
+              ) : null}
+            </View>
+          </SectionCard>
+          <SectionCard
+            title={copy(locale, "Reminder policy", "Política de lembretes")}
+            description={copy(
+              locale,
+              "Choose one policy. Notifications stop when the task is completed or archived.",
+              "Escolha uma política. As notificações param quando a tarefa é concluída ou arquivada.",
+            )}
+            colors={colors}
+          >
+            <View style={styles.formStack}>
+              <TaskScheduleFields
+                editor={primaryScheduleEditor}
+                onChange={setPrimaryScheduleEditor}
+                locale={locale}
+                colors={colors}
+                timezone={timezone}
+                allowOnce
+              />
+              {primarySchedule.kind === "once" ? (
+                <View style={styles.formStack}>
+                  <Text style={[styles.sectionLabel, { color: colors.subtle }]}>
+                    {copy(
+                      locale,
+                      "Overdue reminders",
+                      "Lembretes após o prazo",
+                    )}
+                  </Text>
+                  <Text style={[styles.body, { color: colors.muted }]}>
+                    {copy(
+                      locale,
+                      "Choose how often to remind you after the due date while the task remains open.",
+                      "Escolha quando lembrar após o prazo enquanto a tarefa estiver aberta.",
+                    )}
+                  </Text>
+                  <TaskScheduleFields
+                    editor={overdueScheduleEditor}
+                    onChange={setOverdueScheduleEditor}
+                    locale={locale}
+                    colors={colors}
+                    timezone={timezone}
+                    allowOnce={false}
+                  />
+                </View>
+              ) : null}
+              {!primaryScheduleValid || !overdueScheduleValid ? (
+                <Notice
+                  tone="danger"
+                  colors={colors}
+                  text={copy(
+                    locale,
+                    "Check the schedule values. Times use HH:MM.",
+                    "Revise os valores da agenda. Use HH:MM para horários.",
+                  )}
+                />
+              ) : !reminderPolicy && policyValidationError ? (
+                <Notice
+                  tone="danger"
+                  colors={colors}
+                  text={policyValidationError}
+                />
+              ) : null}
+            </View>
+          </SectionCard>
+        </View>
+      </ScrollView>
+      <EditorActions
+        cancelLabel={copy(locale, "Cancel", "Cancelar")}
+        saveLabel={
+          task
+            ? copy(locale, "Save changes", "Salvar alterações")
+            : copy(locale, "Create task", "Criar tarefa")
+        }
+        colors={colors}
+        disabled={!title.trim() || !reminderPolicy}
+        loading={saving}
+        onCancel={requestCancel}
+        onSave={() => void save()}
+      />
+    </View>
   );
 }
 
@@ -4208,12 +4288,20 @@ function ReminderEditor({
 }) {
   const t = createTranslator(locale);
   const { categories, selectedCategory } = useAppContext();
-  const [categoryId, setCategoryId] = useState(
+  const initialCategoryId =
     reminder?.categoryId ??
-      (selectedCategory === "all" || selectedCategory === "uncategorized"
-        ? ""
-        : selectedCategory),
+    (selectedCategory === "all" || selectedCategory === "uncategorized"
+      ? ""
+      : selectedCategory);
+  const initialTitle = reminder?.title ?? "";
+  const initialNotes = reminder?.notes ?? "";
+  const initialTags = reminder?.tags.join(", ") ?? "";
+  const initialScheduleEditor = useMemo(
+    () => createScheduleEditorState(reminder?.schedule),
+    [reminder?.schedule],
   );
+  const initialSound = reminder?.sound ?? { mode: "default" as const };
+  const [categoryId, setCategoryId] = useState(initialCategoryId);
   const liveCategories = categories.filter((item) => !item.deletedAt);
   const effectiveCategoryId = liveCategories.some(
     (item) => item.id === categoryId,
@@ -4222,15 +4310,22 @@ function ReminderEditor({
     : "";
   const { width } = useWindowDimensions();
   const isWide = width >= 1120;
-  const [title, setTitle] = useState(reminder?.title ?? "");
-  const [notes, setNotes] = useState(reminder?.notes ?? "");
-  const [tags, setTags] = useState(reminder?.tags.join(", ") ?? "");
+  const [title, setTitle] = useState(initialTitle);
+  const [notes, setNotes] = useState(initialNotes);
+  const [tags, setTags] = useState(initialTags);
   const [scheduleEditor, setScheduleEditor] = useState<ScheduleEditorState>(
-    () => createScheduleEditorState(reminder?.schedule),
+    initialScheduleEditor,
   );
-  const [sound, setSound] = useState<ReminderSound>(
-    reminder?.sound ?? { mode: "default" },
+  const [sound, setSound] = useState<ReminderSound>(initialSound);
+  const [showMoreDetails, setShowMoreDetails] = useState(
+    Boolean(initialNotes || initialTags || initialCategoryId),
   );
+  const [showPreview, setShowPreview] = useState(false);
+  const [showSoundSettings, setShowSoundSettings] = useState(
+    initialSound.mode !== "default",
+  );
+  const [titleTouched, setTitleTouched] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const deviceTimezone =
     Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
@@ -4399,9 +4494,19 @@ function ReminderEditor({
       preview = [];
     }
   }
+  const dirty =
+    title !== initialTitle ||
+    notes !== initialNotes ||
+    tags !== initialTags ||
+    categoryId !== initialCategoryId ||
+    JSON.stringify(scheduleEditor) !== JSON.stringify(initialScheduleEditor) ||
+    JSON.stringify(sound) !== JSON.stringify(initialSound);
+  const requestCancel = useEditorMode(dirty, locale, onCancel);
 
   async function save() {
+    setTitleTouched(true);
     setError("");
+    setSaving(true);
     try {
       const changes = {
         title,
@@ -4429,6 +4534,7 @@ function ReminderEditor({
       }
       onSaved(conflicts, syncMessage);
     } catch (reason) {
+      setSaving(false);
       setError(
         reason instanceof Error ? reason.message : "Unable to save reminder.",
       );
@@ -4436,565 +4542,662 @@ function ReminderEditor({
   }
 
   return (
-    <ScrollView
-      contentContainerStyle={styles.page}
-      keyboardShouldPersistTaps="handled"
-    >
-      <PageHeader
-        eyebrow={copy(locale, "Reminder setup", "Configuração do lembrete")}
-        title={reminder ? t("edit") : t("addReminder")}
-        description={copy(
-          locale,
-          "Define what should happen and when. You can refine the schedule before saving.",
-          "Defina o que deve acontecer e quando. Você pode ajustar a agenda antes de salvar.",
-        )}
-        colors={colors}
-      />
-      <View style={[styles.screenGrid, isWide && styles.screenGridWide]}>
-        <View
-          style={[styles.screenColumn, isWide && styles.editorDetailsColumn]}
-        >
-          <SectionCard
-            title={copy(locale, "Details", "Detalhes")}
-            description={copy(
-              locale,
-              "Give this reminder a clear name and optional context.",
-              "Dê um nome claro e um contexto opcional a este lembrete.",
-            )}
-            colors={colors}
+    <View style={[styles.editorScreen, { backgroundColor: colors.background }]}>
+      <ScrollView
+        contentContainerStyle={styles.editorPage}
+        keyboardShouldPersistTaps="handled"
+      >
+        <PageHeader
+          eyebrow={copy(locale, "Reminder setup", "Configuração do lembrete")}
+          title={reminder ? t("edit") : t("addReminder")}
+          description={copy(
+            locale,
+            "Define what should happen and when. You can refine the schedule before saving.",
+            "Defina o que deve acontecer e quando. Você pode ajustar a agenda antes de salvar.",
+          )}
+          colors={colors}
+        />
+        <View style={[styles.screenGrid, isWide && styles.screenGridWide]}>
+          <View
+            style={[styles.screenColumn, isWide && styles.editorDetailsColumn]}
           >
-            <View style={styles.formStack}>
-              <Field
-                label={t("title")}
-                value={title}
-                onChangeText={setTitle}
-                colors={colors}
-                placeholder={copy(
-                  locale,
-                  "For example, submit weekly report",
-                  "Por exemplo, enviar relatório semanal",
-                )}
-              />
-              <Field
-                label={t("notes")}
-                value={notes}
-                onChangeText={setNotes}
-                colors={colors}
-                multiline
-                placeholder={copy(
-                  locale,
-                  "Add useful context or a checklist",
-                  "Adicione um contexto útil ou uma lista",
-                )}
-              />
-              <OptionPicker
-                label={t("category")}
-                value={effectiveCategoryId}
-                onChange={setCategoryId}
-                colors={colors}
-                options={[
-                  { value: "", label: t("uncategorized") },
-                  ...liveCategories.map((item) => ({
-                    value: item.id,
-                    label: item.name,
-                  })),
-                ]}
-                cancelLabel={t("cancel")}
-                changeLabel={t("edit")}
-                selectedLabel={t("category")}
-              />
-              <Field
-                label={`${t("tags")} (${copy(locale, "comma separated", "separadas por vírgula")})`}
-                value={tags}
-                onChangeText={setTags}
-                colors={colors}
-                placeholder={copy(
-                  locale,
-                  "work, finance",
-                  "trabalho, finanças",
-                )}
-              />
-            </View>
-          </SectionCard>
-        </View>
-        <View
-          style={[styles.screenColumn, isWide && styles.editorScheduleColumn]}
-        >
-          <SectionCard
-            title={t("schedule")}
-            description={copy(
-              locale,
-              "Choose a frequency, then configure only the details it needs.",
-              "Escolha uma frequência e configure apenas os detalhes necessários.",
-            )}
-            colors={colors}
-          >
-            <View style={styles.formStack}>
-              <OptionPicker
-                label={copy(locale, "Frequency", "Frequência")}
-                value={kind}
-                options={frequencyOptions}
-                onChange={(value) => chooseKind(value as ScheduleEditorKind)}
-                colors={colors}
-                cancelLabel={t("cancel")}
-                changeLabel={copy(locale, "Change", "Alterar")}
-                selectedLabel={copy(locale, "Selected", "Selecionado")}
-              />
-              <View
-                key={kind}
-                accessibilityLiveRegion="polite"
-                accessibilityLabel={copy(
-                  locale,
-                  `${frequencyOptions.find((option) => option.value === kind)?.label ?? ""} schedule settings`,
-                  `Configurações da agenda ${frequencyOptions.find((option) => option.value === kind)?.label ?? ""}`,
-                )}
-                style={styles.scheduleConfiguration}
-              >
-                {kind === "once" ? (
-                  <DateTimeField
-                    label={copy(locale, "Date and time", "Data e hora")}
-                    value={scheduleEditor.onceAt}
-                    onChange={(onceAt) => updateScheduleEditor({ onceAt })}
-                    colors={colors}
-                    locale={locale}
-                    hint={timezone}
-                  />
-                ) : kind === "daily" ? (
-                  <View style={styles.formStack}>
-                    <Text style={[styles.body, { color: colors.muted }]}>
-                      {copy(
-                        locale,
-                        "Choose one or more times for this daily reminder.",
-                        "Escolha um ou mais horários para este lembrete diário.",
-                      )}
-                    </Text>
-                    {scheduleEditor.dailyTimes.map((time, index) => (
-                      <View key={index} style={styles.dailyTimeRow}>
-                        <View style={styles.dailyTimeField}>
-                          <TimeField
-                            label={copy(
-                              locale,
-                              `Time ${index + 1}`,
-                              `Horário ${index + 1}`,
-                            )}
-                            value={time}
-                            onChange={(value) => updateDailyTime(index, value)}
-                            colors={colors}
-                            locale={locale}
-                          />
-                        </View>
-                        {index > 0 ? (
-                          <Button
-                            label={copy(locale, "Remove", "Remover")}
-                            accessibilityLabel={copy(
-                              locale,
-                              `Remove time ${index + 1}`,
-                              `Remover horário ${index + 1}`,
-                            )}
-                            onPress={() => removeDailyTime(index)}
-                            colors={colors}
-                            variant="danger"
-                            narrow
-                          />
-                        ) : null}
-                      </View>
-                    ))}
-                    <View style={styles.scheduleAddTime}>
-                      <Button
-                        label={copy(
+            <SectionCard
+              title={copy(locale, "Reminder", "Lembrete")}
+              description={copy(
+                locale,
+                "Start with a clear name. Add optional context only when it helps.",
+                "Comece com um nome claro. Adicione contexto opcional somente quando ajudar.",
+              )}
+              colors={colors}
+            >
+              <View style={styles.formStack}>
+                <Field
+                  label={t("title")}
+                  value={title}
+                  onChangeText={setTitle}
+                  colors={colors}
+                  required
+                  requiredLabel={copy(locale, "required", "obrigatório")}
+                  error={
+                    titleTouched && !title.trim()
+                      ? copy(
                           locale,
-                          "Add another time",
-                          "Adicionar outro horário",
-                        )}
-                        onPress={addDailyTime}
-                        colors={colors}
-                        variant="secondary"
-                        compact
-                        disabled={
-                          scheduleEditor.dailyTimes.length >= MAX_DAILY_TIMES
-                        }
-                      />
-                      <Text style={[styles.caption, { color: colors.subtle }]}>
+                          "Title is required.",
+                          "O título é obrigatório.",
+                        )
+                      : undefined
+                  }
+                  onBlur={() => setTitleTouched(true)}
+                  placeholder={copy(
+                    locale,
+                    "For example, submit weekly report",
+                    "Por exemplo, enviar relatório semanal",
+                  )}
+                />
+                <DisclosureButton
+                  label={copy(
+                    locale,
+                    showMoreDetails ? "Hide more details" : "More details",
+                    showMoreDetails ? "Ocultar mais detalhes" : "Mais detalhes",
+                  )}
+                  expanded={showMoreDetails}
+                  controls="reminder-more-details"
+                  colors={colors}
+                  onPress={() => setShowMoreDetails((shown) => !shown)}
+                />
+                {showMoreDetails ? (
+                  <View
+                    nativeID="reminder-more-details"
+                    style={styles.formStack}
+                  >
+                    <Field
+                      label={t("notes")}
+                      value={notes}
+                      onChangeText={setNotes}
+                      colors={colors}
+                      multiline
+                      placeholder={copy(
+                        locale,
+                        "Add useful context or a checklist",
+                        "Adicione um contexto útil ou uma lista",
+                      )}
+                    />
+                    <OptionPicker
+                      label={t("category")}
+                      value={effectiveCategoryId}
+                      onChange={setCategoryId}
+                      colors={colors}
+                      options={[
+                        { value: "", label: t("uncategorized") },
+                        ...liveCategories.map((item) => ({
+                          value: item.id,
+                          label: item.name,
+                        })),
+                      ]}
+                      cancelLabel={t("cancel")}
+                      changeLabel={t("edit")}
+                      selectedLabel={t("category")}
+                    />
+                    <Field
+                      label={`${t("tags")} (${copy(locale, "comma separated", "separadas por vírgula")})`}
+                      value={tags}
+                      onChangeText={setTags}
+                      colors={colors}
+                      placeholder={copy(
+                        locale,
+                        "work, finance",
+                        "trabalho, finanças",
+                      )}
+                    />
+                  </View>
+                ) : null}
+              </View>
+            </SectionCard>
+          </View>
+          <View
+            style={[styles.screenColumn, isWide && styles.editorScheduleColumn]}
+          >
+            <SectionCard
+              title={t("schedule")}
+              description={copy(
+                locale,
+                "Choose a frequency, then configure only the details it needs.",
+                "Escolha uma frequência e configure apenas os detalhes necessários.",
+              )}
+              colors={colors}
+            >
+              <View style={styles.formStack}>
+                <OptionPicker
+                  label={copy(locale, "Frequency", "Frequência")}
+                  value={kind}
+                  options={frequencyOptions}
+                  onChange={(value) => chooseKind(value as ScheduleEditorKind)}
+                  colors={colors}
+                  cancelLabel={t("cancel")}
+                  changeLabel={copy(locale, "Change", "Alterar")}
+                  selectedLabel={copy(locale, "Selected", "Selecionado")}
+                />
+                <View
+                  key={kind}
+                  accessibilityLiveRegion="polite"
+                  accessibilityLabel={copy(
+                    locale,
+                    `${frequencyOptions.find((option) => option.value === kind)?.label ?? ""} schedule settings`,
+                    `Configurações da agenda ${frequencyOptions.find((option) => option.value === kind)?.label ?? ""}`,
+                  )}
+                  style={styles.scheduleConfiguration}
+                >
+                  {kind === "once" ? (
+                    <DateTimeField
+                      label={copy(locale, "Date and time", "Data e hora")}
+                      value={scheduleEditor.onceAt}
+                      onChange={(onceAt) => updateScheduleEditor({ onceAt })}
+                      colors={colors}
+                      locale={locale}
+                      hint={timezone}
+                    />
+                  ) : kind === "daily" ? (
+                    <View style={styles.formStack}>
+                      <Text style={[styles.body, { color: colors.muted }]}>
                         {copy(
                           locale,
-                          `Up to ${MAX_DAILY_TIMES} times. Uses the ${timezone} timezone.`,
-                          `Até ${MAX_DAILY_TIMES} horários. Usa o fuso horário ${timezone}.`,
+                          "Choose one or more times for this daily reminder.",
+                          "Escolha um ou mais horários para este lembrete diário.",
                         )}
                       </Text>
+                      {scheduleEditor.dailyTimes.map((time, index) => (
+                        <View key={index} style={styles.dailyTimeRow}>
+                          <View style={styles.dailyTimeField}>
+                            <TimeField
+                              label={copy(
+                                locale,
+                                `Time ${index + 1}`,
+                                `Horário ${index + 1}`,
+                              )}
+                              value={time}
+                              onChange={(value) =>
+                                updateDailyTime(index, value)
+                              }
+                              colors={colors}
+                              locale={locale}
+                            />
+                          </View>
+                          {index > 0 ? (
+                            <Button
+                              label={copy(locale, "Remove", "Remover")}
+                              accessibilityLabel={copy(
+                                locale,
+                                `Remove time ${index + 1}`,
+                                `Remover horário ${index + 1}`,
+                              )}
+                              onPress={() => removeDailyTime(index)}
+                              colors={colors}
+                              variant="danger"
+                              narrow
+                            />
+                          ) : null}
+                        </View>
+                      ))}
+                      <View style={styles.scheduleAddTime}>
+                        <Button
+                          label={copy(
+                            locale,
+                            "Add another time",
+                            "Adicionar outro horário",
+                          )}
+                          onPress={addDailyTime}
+                          colors={colors}
+                          variant="secondary"
+                          compact
+                          disabled={
+                            scheduleEditor.dailyTimes.length >= MAX_DAILY_TIMES
+                          }
+                        />
+                        <Text
+                          style={[styles.caption, { color: colors.subtle }]}
+                        >
+                          {copy(
+                            locale,
+                            `Up to ${MAX_DAILY_TIMES} times. Uses the ${timezone} timezone.`,
+                            `Até ${MAX_DAILY_TIMES} horários. Usa o fuso horário ${timezone}.`,
+                          )}
+                        </Text>
+                      </View>
                     </View>
-                  </View>
-                ) : kind === "advanced" ? (
-                  <Field
-                    label={copy(locale, "Advanced cron", "Cron avançado")}
-                    value={scheduleEditor.advancedCron}
-                    onChangeText={(advancedCron) =>
-                      updateScheduleEditor({ advancedCron })
-                    }
-                    colors={colors}
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    hint={copy(
-                      locale,
-                      "Five fields: minute, hour, day, month, weekday.",
-                      "Cinco campos: minuto, hora, dia, mês e dia da semana.",
-                    )}
-                  />
-                ) : (
+                  ) : kind === "advanced" ? (
+                    <Field
+                      label={copy(locale, "Advanced cron", "Cron avançado")}
+                      value={scheduleEditor.advancedCron}
+                      onChangeText={(advancedCron) =>
+                        updateScheduleEditor({ advancedCron })
+                      }
+                      colors={colors}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      hint={copy(
+                        locale,
+                        "Five fields: minute, hour, day, month, weekday.",
+                        "Cinco campos: minuto, hora, dia, mês e dia da semana.",
+                      )}
+                    />
+                  ) : (
+                    <View style={styles.formStack}>
+                      {kind === "interval" && (
+                        <NumberField
+                          label={copy(
+                            locale,
+                            "Repeat every (minutes)",
+                            "Repetir a cada (minutos)",
+                          )}
+                          value={scheduleEditor.intervalMinutes}
+                          onChange={(intervalMinutes) =>
+                            updateScheduleEditor({ intervalMinutes })
+                          }
+                          colors={colors}
+                          minimum={1}
+                          maximum={59}
+                          hint={copy(
+                            locale,
+                            "Enter a value from 1 to 59.",
+                            "Insira um valor de 1 a 59.",
+                          )}
+                        />
+                      )}
+                      {kind === "weekdays" && (
+                        <TimeField
+                          label={copy(locale, "Time", "Horário")}
+                          value={scheduleEditor.time}
+                          onChange={(time) => updateScheduleEditor({ time })}
+                          colors={colors}
+                          locale={locale}
+                          hint={copy(
+                            locale,
+                            `Uses the ${timezone} timezone.`,
+                            `Usa o fuso horário ${timezone}.`,
+                          )}
+                        />
+                      )}
+                      {kind === "monthly" && (
+                        <View style={styles.scheduleFieldsRow}>
+                          <View style={styles.scheduleField}>
+                            <NumberField
+                              label={copy(locale, "Day of month", "Dia do mês")}
+                              value={scheduleEditor.monthDay}
+                              onChange={(monthDay) =>
+                                updateScheduleEditor({ monthDay })
+                              }
+                              colors={colors}
+                              minimum={1}
+                              maximum={31}
+                              hint={copy(locale, "1 to 31", "1 a 31")}
+                            />
+                          </View>
+                          <View style={styles.scheduleField}>
+                            <TimeField
+                              label={copy(locale, "Time", "Horário")}
+                              value={scheduleEditor.time}
+                              onChange={(time) =>
+                                updateScheduleEditor({ time })
+                              }
+                              colors={colors}
+                              locale={locale}
+                              hint={timezone}
+                            />
+                          </View>
+                        </View>
+                      )}
+                      {kind === "yearly" && (
+                        <View style={styles.scheduleFieldsRow}>
+                          <View style={styles.scheduleField}>
+                            <NumberField
+                              label={copy(locale, "Month", "Mês")}
+                              value={scheduleEditor.yearMonth}
+                              onChange={(yearMonth) =>
+                                updateScheduleEditor({ yearMonth })
+                              }
+                              colors={colors}
+                              minimum={1}
+                              maximum={12}
+                              hint={copy(locale, "1 to 12", "1 a 12")}
+                            />
+                          </View>
+                          <View style={styles.scheduleField}>
+                            <NumberField
+                              label={copy(locale, "Day", "Dia")}
+                              value={scheduleEditor.yearDay}
+                              onChange={(yearDay) =>
+                                updateScheduleEditor({ yearDay })
+                              }
+                              colors={colors}
+                              minimum={1}
+                              maximum={31}
+                              hint={copy(locale, "1 to 31", "1 a 31")}
+                            />
+                          </View>
+                          <View style={styles.scheduleField}>
+                            <TimeField
+                              label={copy(locale, "Time", "Horário")}
+                              value={scheduleEditor.time}
+                              onChange={(time) =>
+                                updateScheduleEditor({ time })
+                              }
+                              colors={colors}
+                              locale={locale}
+                              hint={timezone}
+                            />
+                          </View>
+                        </View>
+                      )}
+                    </View>
+                  )}
+                </View>
+                {kind !== "once" && (
                   <View style={styles.formStack}>
-                    {kind === "interval" && (
-                      <NumberField
-                        label={copy(
-                          locale,
-                          "Repeat every (minutes)",
-                          "Repetir a cada (minutos)",
-                        )}
-                        value={scheduleEditor.intervalMinutes}
-                        onChange={(intervalMinutes) =>
-                          updateScheduleEditor({ intervalMinutes })
-                        }
-                        colors={colors}
-                        minimum={1}
-                        maximum={59}
-                        hint={copy(
-                          locale,
-                          "Enter a value from 1 to 59.",
-                          "Insira um valor de 1 a 59.",
-                        )}
-                      />
-                    )}
-                    {kind === "weekdays" && (
-                      <TimeField
-                        label={copy(locale, "Time", "Horário")}
-                        value={scheduleEditor.time}
-                        onChange={(time) => updateScheduleEditor({ time })}
+                    <OptionPicker
+                      label={copy(locale, "Ends", "Termina")}
+                      value={scheduleEditor.ends}
+                      options={endOptions}
+                      onChange={(value) => {
+                        if (
+                          value === "never" ||
+                          value === "until" ||
+                          value === "count"
+                        )
+                          updateScheduleEditor({ ends: value });
+                      }}
+                      colors={colors}
+                      cancelLabel={t("cancel")}
+                      changeLabel={copy(locale, "Change", "Alterar")}
+                      selectedLabel={copy(locale, "Selected", "Selecionado")}
+                    />
+                    {(scheduleEditor.ends === "until" ||
+                      scheduleEditor.ends === "until-or-count") && (
+                      <DateTimeField
+                        label={copy(locale, "Until", "Até")}
+                        value={scheduleEditor.endAt}
+                        onChange={(endAt) => updateScheduleEditor({ endAt })}
                         colors={colors}
                         locale={locale}
                         hint={copy(
                           locale,
-                          `Uses the ${timezone} timezone.`,
-                          `Usa o fuso horário ${timezone}.`,
+                          `Includes occurrences at this time. Shown in ${deviceTimezone}.`,
+                          `Inclui ocorrências neste horário. Exibido em ${deviceTimezone}.`,
                         )}
                       />
                     )}
-                    {kind === "monthly" && (
-                      <View style={styles.scheduleFieldsRow}>
-                        <View style={styles.scheduleField}>
-                          <NumberField
-                            label={copy(locale, "Day of month", "Dia do mês")}
-                            value={scheduleEditor.monthDay}
-                            onChange={(monthDay) =>
-                              updateScheduleEditor({ monthDay })
-                            }
-                            colors={colors}
-                            minimum={1}
-                            maximum={31}
-                            hint={copy(locale, "1 to 31", "1 a 31")}
-                          />
-                        </View>
-                        <View style={styles.scheduleField}>
-                          <TimeField
-                            label={copy(locale, "Time", "Horário")}
-                            value={scheduleEditor.time}
-                            onChange={(time) => updateScheduleEditor({ time })}
-                            colors={colors}
-                            locale={locale}
-                            hint={timezone}
-                          />
-                        </View>
-                      </View>
+                    {(scheduleEditor.ends === "count" ||
+                      scheduleEditor.ends === "until-or-count") && (
+                      <NumberField
+                        label={copy(
+                          locale,
+                          "Total occurrences",
+                          "Total de ocorrências",
+                        )}
+                        value={scheduleEditor.occurrenceLimit}
+                        onChange={(occurrenceLimit) =>
+                          updateScheduleEditor({ occurrenceLimit })
+                        }
+                        colors={colors}
+                        minimum={1}
+                        hint={copy(
+                          locale,
+                          "Counts each scheduled occurrence, including those already generated. Postponing does not add to the count.",
+                          "Conta cada ocorrência agendada, incluindo as já geradas. Adiar não aumenta a contagem.",
+                        )}
+                      />
                     )}
-                    {kind === "yearly" && (
-                      <View style={styles.scheduleFieldsRow}>
-                        <View style={styles.scheduleField}>
-                          <NumberField
-                            label={copy(locale, "Month", "Mês")}
-                            value={scheduleEditor.yearMonth}
-                            onChange={(yearMonth) =>
-                              updateScheduleEditor({ yearMonth })
-                            }
-                            colors={colors}
-                            minimum={1}
-                            maximum={12}
-                            hint={copy(locale, "1 to 12", "1 a 12")}
-                          />
-                        </View>
-                        <View style={styles.scheduleField}>
-                          <NumberField
-                            label={copy(locale, "Day", "Dia")}
-                            value={scheduleEditor.yearDay}
-                            onChange={(yearDay) =>
-                              updateScheduleEditor({ yearDay })
-                            }
-                            colors={colors}
-                            minimum={1}
-                            maximum={31}
-                            hint={copy(locale, "1 to 31", "1 a 31")}
-                          />
-                        </View>
-                        <View style={styles.scheduleField}>
-                          <TimeField
-                            label={copy(locale, "Time", "Horário")}
-                            value={scheduleEditor.time}
-                            onChange={(time) => updateScheduleEditor({ time })}
-                            colors={colors}
-                            locale={locale}
-                            hint={timezone}
-                          />
-                        </View>
-                      </View>
-                    )}
+                    {generatedOccurrences !== null &&
+                      (scheduleEditor.ends === "count" ||
+                        scheduleEditor.ends === "until-or-count") && (
+                        <Text style={[styles.caption, { color: colors.muted }]}>
+                          {copy(
+                            locale,
+                            `${generatedOccurrences} occurrences already generated.`,
+                            `${generatedOccurrences} ocorrências já geradas.`,
+                          )}
+                        </Text>
+                      )}
+                    {countError &&
+                    (scheduleEditor.ends === "count" ||
+                      scheduleEditor.ends === "until-or-count") ? (
+                      <Notice
+                        tone="warning"
+                        colors={colors}
+                        text={countError}
+                      />
+                    ) : null}
                   </View>
                 )}
-              </View>
-              {kind !== "once" && (
-                <View style={styles.formStack}>
-                  <OptionPicker
-                    label={copy(locale, "Ends", "Termina")}
-                    value={scheduleEditor.ends}
-                    options={endOptions}
-                    onChange={(value) => {
-                      if (
-                        value === "never" ||
-                        value === "until" ||
-                        value === "count"
-                      )
-                        updateScheduleEditor({ ends: value });
-                    }}
+                {!validation.valid && (
+                  <Notice
+                    tone="danger"
                     colors={colors}
-                    cancelLabel={t("cancel")}
-                    changeLabel={copy(locale, "Change", "Alterar")}
-                    selectedLabel={copy(locale, "Selected", "Selecionado")}
+                    text={copy(
+                      locale,
+                      !endValuesValid
+                        ? scheduleEditor.ends === "until"
+                          ? "Choose a valid end date and time on or after the schedule start."
+                          : scheduleEditor.ends === "count"
+                            ? "Enter a positive whole number of total occurrences."
+                            : "Choose a valid end date and a positive whole number of occurrences."
+                        : kind === "advanced"
+                          ? "Enter a valid five-field cron expression."
+                          : kind === "daily"
+                            ? `Add 1 to ${MAX_DAILY_TIMES} unique times.`
+                            : "Check the schedule values. Times use HH:MM.",
+                      !endValuesValid
+                        ? scheduleEditor.ends === "until"
+                          ? "Escolha uma data e hora finais válidas, iguais ou posteriores ao início da agenda."
+                          : scheduleEditor.ends === "count"
+                            ? "Insira um número inteiro positivo de ocorrências totais."
+                            : "Escolha uma data final válida e um número inteiro positivo de ocorrências."
+                        : kind === "advanced"
+                          ? "Insira uma expressão cron válida de cinco campos."
+                          : kind === "daily"
+                            ? `Adicione de 1 a ${MAX_DAILY_TIMES} horários únicos.`
+                            : "Revise os valores da agenda. Use HH:MM para horários.",
+                    )}
                   />
-                  {(scheduleEditor.ends === "until" ||
-                    scheduleEditor.ends === "until-or-count") && (
-                    <DateTimeField
-                      label={copy(locale, "Until", "Até")}
-                      value={scheduleEditor.endAt}
-                      onChange={(endAt) => updateScheduleEditor({ endAt })}
-                      colors={colors}
-                      locale={locale}
-                      hint={copy(
-                        locale,
-                        `Includes occurrences at this time. Shown in ${deviceTimezone}.`,
-                        `Inclui ocorrências neste horário. Exibido em ${deviceTimezone}.`,
-                      )}
-                    />
-                  )}
-                  {(scheduleEditor.ends === "count" ||
-                    scheduleEditor.ends === "until-or-count") && (
-                    <NumberField
+                )}
+                {validation.valid && (
+                  <View
+                    style={[
+                      styles.preview,
+                      {
+                        borderColor: colors.border,
+                        backgroundColor: colors.surfaceMuted,
+                      },
+                    ]}
+                  >
+                    <Text style={[styles.cardTitle, { color: colors.text }]}>
+                      {describeSchedule(schedule, locale, timezone)}
+                    </Text>
+                    <DisclosureButton
                       label={copy(
                         locale,
-                        "Total occurrences",
-                        "Total de ocorrências",
+                        showPreview
+                          ? "Hide next occurrences"
+                          : "View next occurrences",
+                        showPreview
+                          ? "Ocultar próximas ocorrências"
+                          : "Ver próximas ocorrências",
                       )}
-                      value={scheduleEditor.occurrenceLimit}
-                      onChange={(occurrenceLimit) =>
-                        updateScheduleEditor({ occurrenceLimit })
-                      }
+                      expanded={showPreview}
+                      controls="reminder-occurrence-preview"
                       colors={colors}
-                      minimum={1}
-                      hint={copy(
-                        locale,
-                        "Counts each scheduled occurrence, including those already generated. Postponing does not add to the count.",
-                        "Conta cada ocorrência agendada, incluindo as já geradas. Adiar não aumenta a contagem.",
-                      )}
+                      onPress={() => setShowPreview((shown) => !shown)}
                     />
-                  )}
-                  {generatedOccurrences !== null &&
-                    (scheduleEditor.ends === "count" ||
-                      scheduleEditor.ends === "until-or-count") && (
-                      <Text style={[styles.caption, { color: colors.muted }]}>
-                        {copy(
-                          locale,
-                          `${generatedOccurrences} occurrences already generated.`,
-                          `${generatedOccurrences} ocorrências já geradas.`,
-                        )}
-                      </Text>
-                    )}
-                  {countError &&
-                  (scheduleEditor.ends === "count" ||
-                    scheduleEditor.ends === "until-or-count") ? (
-                    <Notice tone="warning" colors={colors} text={countError} />
-                  ) : null}
-                </View>
-              )}
-              {!validation.valid && (
-                <Notice
-                  tone="danger"
-                  colors={colors}
-                  text={copy(
-                    locale,
-                    !endValuesValid
-                      ? scheduleEditor.ends === "until"
-                        ? "Choose a valid end date and time on or after the schedule start."
-                        : scheduleEditor.ends === "count"
-                          ? "Enter a positive whole number of total occurrences."
-                          : "Choose a valid end date and a positive whole number of occurrences."
-                      : kind === "advanced"
-                        ? "Enter a valid five-field cron expression."
-                        : kind === "daily"
-                          ? `Add 1 to ${MAX_DAILY_TIMES} unique times.`
-                          : "Check the schedule values. Times use HH:MM.",
-                    !endValuesValid
-                      ? scheduleEditor.ends === "until"
-                        ? "Escolha uma data e hora finais válidas, iguais ou posteriores ao início da agenda."
-                        : scheduleEditor.ends === "count"
-                          ? "Insira um número inteiro positivo de ocorrências totais."
-                          : "Escolha uma data final válida e um número inteiro positivo de ocorrências."
-                      : kind === "advanced"
-                        ? "Insira uma expressão cron válida de cinco campos."
-                        : kind === "daily"
-                          ? `Adicione de 1 a ${MAX_DAILY_TIMES} horários únicos.`
-                          : "Revise os valores da agenda. Use HH:MM para horários.",
-                  )}
-                />
-              )}
-              {validation.valid && (
-                <View
-                  style={[
-                    styles.preview,
-                    {
-                      borderColor: colors.border,
-                      backgroundColor: colors.surfaceMuted,
-                    },
-                  ]}
-                >
-                  <Text style={[styles.cardTitle, { color: colors.text }]}>
-                    {describeSchedule(schedule, locale, timezone)}
-                  </Text>
-                  <Text style={[styles.sectionLabel, { color: colors.subtle }]}>
-                    {t("upcoming")}
-                  </Text>
-                  <View style={styles.previewList}>
-                    {preview.length === 0 && (
-                      <Text style={[styles.caption, { color: colors.muted }]}>
-                        {copy(
-                          locale,
-                          schedule.kind !== "once" &&
-                            schedule.occurrenceLimit !== undefined &&
-                            generatedOccurrences === null
-                            ? "Waiting for the occurrence count to preview remaining reminders."
-                            : "No future occurrences within this schedule.",
-                          schedule.kind !== "once" &&
-                            schedule.occurrenceLimit !== undefined &&
-                            generatedOccurrences === null
-                            ? "Aguardando a contagem de ocorrências para visualizar os lembretes restantes."
-                            : "Não há ocorrências futuras nesta agenda.",
-                        )}
-                      </Text>
-                    )}
-                    {preview.map((date, index) => (
-                      <View key={date.toISOString()} style={styles.previewRow}>
+                    {showPreview ? (
+                      <View
+                        nativeID="reminder-occurrence-preview"
+                        style={styles.previewList}
+                      >
                         <Text
                           style={[
-                            styles.previewIndex,
-                            { color: colors.accent },
+                            styles.sectionLabel,
+                            { color: colors.subtle },
                           ]}
                         >
-                          {index + 1}
+                          {t("upcoming")}
                         </Text>
-                        <Text style={[styles.caption, { color: colors.muted }]}>
-                          {date.toLocaleString(locale, { timeZone: timezone })}
-                        </Text>
+                        {preview.length === 0 ? (
+                          <Text
+                            style={[styles.caption, { color: colors.muted }]}
+                          >
+                            {copy(
+                              locale,
+                              schedule.kind !== "once" &&
+                                schedule.occurrenceLimit !== undefined &&
+                                generatedOccurrences === null
+                                ? "Waiting for the occurrence count to preview remaining reminders."
+                                : "No future occurrences within this schedule.",
+                              schedule.kind !== "once" &&
+                                schedule.occurrenceLimit !== undefined &&
+                                generatedOccurrences === null
+                                ? "Aguardando a contagem de ocorrências para visualizar os lembretes restantes."
+                                : "Não há ocorrências futuras nesta agenda.",
+                            )}
+                          </Text>
+                        ) : null}
+                        {preview.map((date, index) => (
+                          <View
+                            key={date.toISOString()}
+                            style={styles.previewRow}
+                          >
+                            <Text
+                              style={[
+                                styles.previewIndex,
+                                { color: colors.accent },
+                              ]}
+                            >
+                              {index + 1}
+                            </Text>
+                            <Text
+                              style={[styles.caption, { color: colors.muted }]}
+                            >
+                              {date.toLocaleString(locale, {
+                                timeZone: timezone,
+                              })}
+                            </Text>
+                          </View>
+                        ))}
                       </View>
-                    ))}
+                    ) : null}
                   </View>
-                </View>
-              )}
-            </View>
-          </SectionCard>
-          <SectionCard
-            title={t("sound")}
-            description={copy(
-              locale,
-              "Choose how this reminder should get your attention.",
-              "Escolha como este lembrete deve chamar sua atenção.",
-            )}
-            colors={colors}
-          >
-            <View style={styles.formStack}>
-              <OptionPicker
-                label={copy(locale, "Alert style", "Estilo do alerta")}
-                value={sound.mode}
-                options={soundOptions}
-                onChange={(value) =>
-                  setSound({ mode: value as ReminderSound["mode"] })
-                }
-                colors={colors}
-                cancelLabel={t("cancel")}
-                changeLabel={copy(locale, "Change", "Alterar")}
-                selectedLabel={copy(locale, "Selected", "Selecionado")}
-              />
-              <View
-                key={sound.mode}
-                accessibilityLiveRegion="polite"
-                accessibilityLabel={copy(
-                  locale,
-                  `${soundOptions.find((option) => option.value === sound.mode)?.label ?? ""} alert settings`,
-                  `Configurações do alerta ${soundOptions.find((option) => option.value === sound.mode)?.label ?? ""}`,
                 )}
-                style={styles.soundConfiguration}
-              >
-                <Text style={[styles.body, { color: colors.muted }]}>
-                  {sound.mode === "silent"
-                    ? copy(
+              </View>
+            </SectionCard>
+            <SectionCard
+              title={copy(locale, "Alert", "Alerta")}
+              description={`${soundOptions.find((option) => option.value === sound.mode)?.label ?? ""}. ${copy(
+                locale,
+                "Change this only when the default alert is not appropriate.",
+                "Altere somente quando o alerta padrão não for adequado.",
+              )}`}
+              colors={colors}
+            >
+              <View style={styles.formStack}>
+                <DisclosureButton
+                  label={copy(
+                    locale,
+                    showSoundSettings
+                      ? "Hide alert settings"
+                      : "Change alert style",
+                    showSoundSettings
+                      ? "Ocultar configurações do alerta"
+                      : "Alterar estilo do alerta",
+                  )}
+                  expanded={showSoundSettings}
+                  controls="reminder-alert-settings"
+                  colors={colors}
+                  onPress={() => setShowSoundSettings((shown) => !shown)}
+                />
+                {showSoundSettings ? (
+                  <View
+                    nativeID="reminder-alert-settings"
+                    style={styles.formStack}
+                  >
+                    <OptionPicker
+                      label={copy(locale, "Alert style", "Estilo do alerta")}
+                      value={sound.mode}
+                      options={soundOptions}
+                      onChange={(value) =>
+                        setSound({ mode: value as ReminderSound["mode"] })
+                      }
+                      colors={colors}
+                      cancelLabel={t("cancel")}
+                      changeLabel={copy(locale, "Change", "Alterar")}
+                      selectedLabel={copy(locale, "Selected", "Selecionado")}
+                    />
+                    <View
+                      key={sound.mode}
+                      accessibilityLiveRegion="polite"
+                      accessibilityLabel={copy(
                         locale,
-                        "Notifications appear without sound or vibration.",
-                        "As notificações aparecem sem som ou vibração.",
-                      )
-                    : sound.mode === "vibrate"
-                      ? copy(
-                          locale,
-                          "Uses vibration when the device supports it.",
-                          "Usa vibração quando o dispositivo oferece suporte.",
-                        )
-                      : copy(
-                          locale,
-                          "Uses the device's standard notification sound.",
-                          "Usa o som de notificação padrão do dispositivo.",
-                        )}
-                </Text>
-                {sound.mode !== "silent" ? (
-                  <Button
-                    label={
-                      sound.mode === "vibrate"
-                        ? copy(locale, "Preview vibration", "Testar vibração")
-                        : copy(locale, "Preview sound", "Ouvir prévia")
-                    }
-                    onPress={() => void previewSound(sound)}
-                    colors={colors}
-                    variant="secondary"
-                    compact
-                  />
+                        `${soundOptions.find((option) => option.value === sound.mode)?.label ?? ""} alert settings`,
+                        `Configurações do alerta ${soundOptions.find((option) => option.value === sound.mode)?.label ?? ""}`,
+                      )}
+                      style={styles.soundConfiguration}
+                    >
+                      <Text style={[styles.body, { color: colors.muted }]}>
+                        {sound.mode === "silent"
+                          ? copy(
+                              locale,
+                              "Notifications appear without sound or vibration.",
+                              "As notificações aparecem sem som ou vibração.",
+                            )
+                          : sound.mode === "vibrate"
+                            ? copy(
+                                locale,
+                                "Uses vibration when the device supports it.",
+                                "Usa vibração quando o dispositivo oferece suporte.",
+                              )
+                            : copy(
+                                locale,
+                                "Uses the device's standard notification sound.",
+                                "Usa o som de notificação padrão do dispositivo.",
+                              )}
+                      </Text>
+                      {sound.mode !== "silent" ? (
+                        <Button
+                          label={
+                            sound.mode === "vibrate"
+                              ? copy(
+                                  locale,
+                                  "Preview vibration",
+                                  "Testar vibração",
+                                )
+                              : copy(locale, "Preview sound", "Ouvir prévia")
+                          }
+                          onPress={() => void previewSound(sound)}
+                          colors={colors}
+                          variant="secondary"
+                          compact
+                        />
+                      ) : null}
+                    </View>
+                  </View>
                 ) : null}
               </View>
-            </View>
-          </SectionCard>
+            </SectionCard>
+          </View>
         </View>
-      </View>
-      {error ? <Notice tone="danger" colors={colors} text={error} /> : null}
-      <View
-        style={[
-          styles.editorActions,
-          { borderColor: colors.border, backgroundColor: colors.background },
-        ]}
-      >
-        <Button
-          label={t("cancel")}
-          onPress={onCancel}
-          colors={colors}
-          variant="secondary"
-        />
-        <Button
-          label={t("save")}
-          onPress={() => void save()}
-          colors={colors}
-          variant="primary"
-          disabled={!validation.valid || !title.trim()}
-        />
-      </View>
-    </ScrollView>
+        {error ? <Notice tone="danger" colors={colors} text={error} /> : null}
+      </ScrollView>
+      <EditorActions
+        cancelLabel={t("cancel")}
+        saveLabel={
+          reminder
+            ? copy(locale, "Save changes", "Salvar alterações")
+            : copy(locale, "Create reminder", "Criar lembrete")
+        }
+        colors={colors}
+        disabled={!validation.valid || !title.trim()}
+        loading={saving}
+        onCancel={requestCancel}
+        onSave={() => void save()}
+      />
+    </View>
   );
 }
 
@@ -5629,12 +5832,77 @@ function confirmDestructiveAction(
   ]);
 }
 
+function confirmDiscardChanges(locale: Locale, onConfirm: () => void) {
+  const title = copy(locale, "Discard changes?", "Descartar alterações?");
+  const message = copy(
+    locale,
+    "Your unsaved changes will be lost.",
+    "Suas alterações não salvas serão perdidas.",
+  );
+  if (Platform.OS === "web") {
+    if (globalThis.confirm(`${title}\n\n${message}`)) onConfirm();
+    return;
+  }
+  Alert.alert(title, message, [
+    {
+      text: copy(locale, "Keep editing", "Continuar editando"),
+      style: "cancel",
+    },
+    {
+      text: copy(locale, "Discard changes", "Descartar alterações"),
+      style: "destructive",
+      onPress: onConfirm,
+    },
+  ]);
+}
+
+function useEditorMode(dirty: boolean, locale: Locale, onCancel: () => void) {
+  const { setEditorActive } = useAppContext();
+  const navigation = useNavigation();
+
+  useEffect(() => {
+    setEditorActive(true);
+    return () => setEditorActive(false);
+  }, [setEditorActive]);
+
+  useEffect(() => {
+    if (Platform.OS !== "web" || !dirty) return;
+    const preventUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    globalThis.addEventListener("beforeunload", preventUnload);
+    return () => globalThis.removeEventListener("beforeunload", preventUnload);
+  }, [dirty]);
+
+  useEffect(
+    () =>
+      navigation.addListener("beforeRemove", (event) => {
+        if (!dirty) return;
+        event.preventDefault();
+        confirmDiscardChanges(locale, () =>
+          navigation.dispatch(event.data.action),
+        );
+      }),
+    [dirty, locale, navigation],
+  );
+
+  return () => {
+    if (dirty) confirmDiscardChanges(locale, onCancel);
+    else onCancel();
+  };
+}
+
 function Field({
   label,
   colors,
   placeholder,
   hint,
   inputRef,
+  required = false,
+  requiredLabel = "required",
+  error,
+  onBlur,
   ...props
 }: {
   label: string;
@@ -5649,29 +5917,56 @@ function Field({
   autoCorrect?: boolean;
   autoFocus?: boolean;
   inputRef?: Ref<ElementRef<typeof TextInput>>;
+  required?: boolean;
+  requiredLabel?: string;
+  error?: string;
+  onBlur?: () => void;
 }) {
   const [focused, setFocused] = useState(false);
+  const fieldId = useId();
+  const errorId = `${fieldId}-error`;
   return (
     <View style={styles.field}>
-      <Text style={[styles.label, { color: colors.text }]}>{label}</Text>
+      <Text style={[styles.label, { color: colors.text }]}>
+        {required ? `${label} (${requiredLabel})` : label}
+      </Text>
       <TextInput
         ref={inputRef}
         accessibilityLabel={label}
+        aria-required={required}
+        aria-invalid={Boolean(error)}
+        aria-describedby={error ? errorId : undefined}
         placeholder={placeholder}
         placeholderTextColor={colors.subtle}
         onFocus={() => setFocused(true)}
-        onBlur={() => setFocused(false)}
+        onBlur={() => {
+          setFocused(false);
+          onBlur?.();
+        }}
         style={[
           styles.input,
           props.multiline && styles.multiline,
           {
             color: colors.text,
-            borderColor: focused ? colors.focus : colors.borderStrong,
+            borderColor: error
+              ? colors.danger
+              : focused
+                ? colors.focus
+                : colors.borderStrong,
             backgroundColor: colors.surface,
           },
         ]}
         {...props}
       />
+      {error ? (
+        <Text
+          nativeID={errorId}
+          accessibilityLiveRegion="polite"
+          style={[styles.fieldError, { color: colors.danger }]}
+        >
+          {error}
+        </Text>
+      ) : null}
       {hint ? (
         <Text style={[styles.fieldHint, { color: colors.subtle }]}>{hint}</Text>
       ) : null}
@@ -5858,6 +6153,85 @@ function PageHeader({
       </View>
       {action && <View style={styles.pageHeaderAction}>{action}</View>}
     </View>
+  );
+}
+
+function EditorActions({
+  cancelLabel,
+  saveLabel,
+  colors,
+  disabled,
+  loading,
+  onCancel,
+  onSave,
+}: {
+  cancelLabel: string;
+  saveLabel: string;
+  colors: Colors;
+  disabled: boolean;
+  loading: boolean;
+  onCancel: () => void;
+  onSave: () => void;
+}) {
+  const { width } = useWindowDimensions();
+  const grow = width < size.breakpointWide;
+  return (
+    <View
+      style={[
+        styles.editorActions,
+        {
+          borderColor: colors.border,
+          backgroundColor: colors.surfaceElevated,
+        },
+      ]}
+    >
+      <View style={styles.editorActionsInner}>
+        <Button
+          label={cancelLabel}
+          onPress={onCancel}
+          colors={colors}
+          variant="secondary"
+          disabled={loading}
+          grow={grow}
+        />
+        <Button
+          label={saveLabel}
+          onPress={onSave}
+          colors={colors}
+          variant="primary"
+          disabled={disabled}
+          loading={loading}
+          grow={grow}
+        />
+      </View>
+    </View>
+  );
+}
+
+function DisclosureButton({
+  label,
+  expanded,
+  controls,
+  colors,
+  onPress,
+}: {
+  label: string;
+  expanded: boolean;
+  controls: string;
+  colors: Colors;
+  onPress: () => void;
+}) {
+  return (
+    <Button
+      label={label}
+      icon={expanded ? ChevronUp : ChevronDown}
+      expanded={expanded}
+      controls={controls}
+      colors={colors}
+      variant="secondary"
+      block
+      onPress={onPress}
+    />
   );
 }
 
@@ -6159,6 +6533,19 @@ const styles = StyleSheet.create({
     paddingVertical: space["3xl"],
     gap: space.xl,
   },
+  editorScreen: {
+    flex: 1,
+    minHeight: 0,
+  },
+  editorPage: {
+    width: "100%",
+    maxWidth: size.contentMax,
+    alignSelf: "center",
+    paddingHorizontal: space.lg,
+    paddingTop: space["3xl"],
+    paddingBottom: space.xl,
+    gap: space.xl,
+  },
   analyticsPlot: {
     height: size.controlLg * 3,
     flexDirection: "row",
@@ -6344,6 +6731,12 @@ const styles = StyleSheet.create({
     marginTop: space.xs,
     fontSize: type.caption,
     lineHeight: type.captionLine,
+  },
+  fieldError: {
+    marginTop: space.xs,
+    fontSize: type.caption,
+    lineHeight: type.captionLine,
+    fontWeight: "600",
   },
   scheduleFieldsRow: {
     flexDirection: "row",
@@ -6570,9 +6963,15 @@ const styles = StyleSheet.create({
   },
   editorActions: {
     borderTopWidth: 1,
-    paddingTop: space.xl,
+    paddingHorizontal: space.lg,
+    paddingVertical: space.md,
+  },
+  editorActionsInner: {
+    width: "100%",
+    maxWidth: size.contentMax,
+    alignSelf: "center",
     flexDirection: "row",
-    flexWrap: "wrap",
+    alignItems: "center",
     justifyContent: "flex-end",
     gap: space.sm,
   },

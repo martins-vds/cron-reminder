@@ -1865,7 +1865,7 @@ test.describe("responsive UI layout", () => {
       await expectControlContrast(until, `${theme} recurrence end date`);
       await until.fill("");
       await expect(
-        page.getByRole("button", { name: "Save", exact: true }),
+        page.getByRole("button", { name: "Create reminder", exact: true }),
       ).toBeDisabled();
 
       await ends.selectOption("count");
@@ -1874,7 +1874,7 @@ test.describe("responsive UI layout", () => {
       for (const value of ["0", "1.5"]) {
         await count.fill(value);
         await expect(
-          page.getByRole("button", { name: "Save", exact: true }),
+          page.getByRole("button", { name: "Create reminder", exact: true }),
         ).toBeDisabled();
       }
       await count.fill("3");
@@ -1896,7 +1896,9 @@ test.describe("responsive UI layout", () => {
         }
       }
       await page.setViewportSize({ width: 390, height: 900 });
-      await page.getByRole("button", { name: "Save", exact: true }).click();
+      await page
+        .getByRole("button", { name: "Create reminder", exact: true })
+        .click();
       await expect
         .poll(() =>
           writes.some((write) => write.title === "Bounded daily reminder"),
@@ -1924,12 +1926,17 @@ test.describe("responsive UI layout", () => {
       await expect(
         page.getByText("2 occurrences already generated."),
       ).toBeVisible();
+      await page
+        .getByRole("button", { name: "View next occurrences", exact: true })
+        .click();
       await count.fill("2");
       await expect(
         page.getByText("No future occurrences within this schedule."),
       ).toBeVisible();
       await count.fill("3");
-      await page.getByRole("button", { name: "Save", exact: true }).click();
+      await page
+        .getByRole("button", { name: "Save changes", exact: true })
+        .click();
       await expect
         .poll(() =>
           writes.some(
@@ -1961,7 +1968,9 @@ test.describe("responsive UI layout", () => {
         testInfo.outputPath(`recurrence-${theme}.html`),
         await page.content(),
       );
-      await page.getByRole("button", { name: "Save", exact: true }).click();
+      await page
+        .getByRole("button", { name: "Save changes", exact: true })
+        .click();
       await expect
         .poll(() =>
           writes.some(
@@ -1975,7 +1984,9 @@ test.describe("responsive UI layout", () => {
       await expect(ends).toHaveValue("until");
       await expect(until).toHaveValue("2026-09-27T09:00");
       await ends.selectOption("never");
-      await page.getByRole("button", { name: "Save", exact: true }).click();
+      await page
+        .getByRole("button", { name: "Save changes", exact: true })
+        .click();
       await expect
         .poll(() => writes.at(-1)?.schedule)
         .toEqual(reminders[0]!.schedule);
@@ -2683,6 +2694,9 @@ test.describe("responsive UI layout", () => {
       await expect(
         page.getByRole("heading", { name: "Add reminder" }),
       ).toBeVisible();
+      await page
+        .getByRole("button", { name: "Change alert style", exact: true })
+        .click();
       await expect(
         page.getByRole("combobox", { name: "Alert style" }),
       ).toHaveValue("default");
@@ -2699,6 +2713,99 @@ test.describe("responsive UI layout", () => {
       consoleErrors,
       "reminder editor emitted layout console errors",
     ).toEqual([]);
+  });
+
+  test("mobile editors disclose optional fields and protect dirty drafts", async ({
+    page,
+  }) => {
+    await mockSupabase(page);
+    await authenticate(page);
+    await page.setViewportSize({ width: 320, height: 600 });
+    await page.goto("/tasks");
+    await page.getByRole("button", { name: "Add task", exact: true }).click();
+
+    await expect(
+      page.getByRole("button", { name: "Today", exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole("textbox", { name: "Notes", exact: true }),
+    ).toHaveCount(0);
+    const createTask = page.getByRole("button", {
+      name: "Create task",
+      exact: true,
+    });
+    await expect(createTask).toBeVisible();
+    const taskActionBox = await createTask.boundingBox();
+    expect(taskActionBox).not.toBeNull();
+    expect(taskActionBox!.y + taskActionBox!.height).toBeLessThanOrEqual(600);
+
+    const taskTitle = page.getByRole("textbox", {
+      name: "Title",
+      exact: true,
+    });
+    await taskTitle.fill("Protected draft");
+    page.once("dialog", (dialog) => dialog.dismiss());
+    await page.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(
+      page.getByRole("heading", { name: "Add task", exact: true }),
+    ).toBeVisible();
+    page.once("dialog", (dialog) => dialog.accept());
+    await page.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(
+      page.getByRole("button", { name: "Today", exact: true }),
+    ).toBeVisible();
+
+    await page.getByRole("button", { name: "Reminders", exact: true }).click();
+    await page
+      .getByRole("button", { name: "Add reminder", exact: true })
+      .click();
+    await expect(
+      page.getByRole("textbox", { name: "Notes", exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole("combobox", { name: "Alert style", exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByText("Next occurrences", { exact: true }),
+    ).toHaveCount(0);
+
+    await page
+      .getByRole("button", { name: "More details", exact: true })
+      .click();
+    await expect(
+      page.getByRole("textbox", { name: "Notes", exact: true }),
+    ).toBeVisible();
+    await page
+      .getByRole("button", { name: "View next occurrences", exact: true })
+      .click();
+    await expect(
+      page.getByText("Next occurrences", { exact: true }),
+    ).toBeVisible();
+    await page
+      .getByRole("button", { name: "Change alert style", exact: true })
+      .click();
+    await expect(
+      page.getByRole("combobox", { name: "Alert style", exact: true }),
+    ).toBeVisible();
+
+    const createReminder = page.getByRole("button", {
+      name: "Create reminder",
+      exact: true,
+    });
+    const reminderActionBox = await createReminder.boundingBox();
+    expect(reminderActionBox).not.toBeNull();
+    expect(
+      reminderActionBox!.y + reminderActionBox!.height,
+    ).toBeLessThanOrEqual(600);
+    const reminderTitle = page.getByRole("textbox", {
+      name: "Title",
+      exact: true,
+    });
+    await reminderTitle.focus();
+    await page.keyboard.press("Tab");
+    await expect(
+      page.getByText("Title is required.", { exact: true }),
+    ).toBeVisible();
   });
 
   test("schedule numbers use native constrained controls", async ({ page }) => {
