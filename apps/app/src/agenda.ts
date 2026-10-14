@@ -8,6 +8,18 @@ import {
 
 export type AgendaGroupKey = "overdue" | "today" | "tomorrow" | "later";
 export type AgendaItemStatus = "due" | "missed" | "postponed" | "upcoming";
+export type TaskOccurrenceStatus =
+  Exclude<OccurrenceStatus, "missed"> | "canceled";
+
+export const TASK_AGENDA_OCCURRENCE_STATUSES = [
+  "scheduled",
+  "triggered",
+  "delivering",
+  "postponed",
+  "delivery-failed",
+  "dismissed",
+  "completed",
+] as const satisfies readonly TaskOccurrenceStatus[];
 
 export interface StoredAgendaOccurrence {
   id: string;
@@ -37,7 +49,7 @@ export interface StoredTaskAgendaOccurrence {
   id: string;
   task_id: string;
   scheduled_at: string;
-  status: OccurrenceStatus;
+  status: TaskOccurrenceStatus;
   acted_at: string | null;
   snoozed_until: string | null;
   source?: "primary" | "overdue";
@@ -175,7 +187,11 @@ export function buildTaskAgendaItems(
   }
 
   const items: AgendaItem[] = occurrences.flatMap((occurrence) => {
-    if (occurrence.status === "dismissed" || occurrence.status === "completed")
+    if (
+      occurrence.status === "dismissed" ||
+      occurrence.status === "completed" ||
+      occurrence.status === "canceled"
+    )
       return [];
     if (
       Date.parse(occurrence.scheduled_at) <= now.getTime() &&

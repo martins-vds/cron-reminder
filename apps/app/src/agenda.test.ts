@@ -5,6 +5,7 @@ import {
   buildTaskAgendaItems,
   groupAgendaItems,
   groupAgendaItemsByReminder,
+  TASK_AGENDA_OCCURRENCE_STATUSES,
   type StoredAgendaOccurrence,
 } from "./agenda";
 
@@ -24,6 +25,19 @@ const reminder: Reminder = {
 };
 
 describe("agenda", () => {
+  it("queries only task occurrence statuses supported by the database", () => {
+    expect(TASK_AGENDA_OCCURRENCE_STATUSES).toEqual([
+      "scheduled",
+      "triggered",
+      "delivering",
+      "postponed",
+      "delivery-failed",
+      "dismissed",
+      "completed",
+    ]);
+    expect(TASK_AGENDA_OCCURRENCE_STATUSES).not.toContain("missed");
+  });
+
   it("merges recorded states with the next calculated occurrence", () => {
     const occurrences: StoredAgendaOccurrence[] = [
       {

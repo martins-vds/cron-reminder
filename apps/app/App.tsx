@@ -131,6 +131,7 @@ import {
   buildAgendaItems,
   buildTaskAgendaItems,
   groupAgendaItems,
+  TASK_AGENDA_OCCURRENCE_STATUSES,
   type AgendaGroupKey,
   type AgendaItem,
   type StoredAgendaOccurrence,
@@ -1410,16 +1411,7 @@ function AgendaScreen({
               "id,task_id,scheduled_at,status,acted_at,snoozed_until,source",
             )
             .eq("owner_id", ownerId)
-            .in("status", [
-              "scheduled",
-              "triggered",
-              "delivering",
-              "postponed",
-              "missed",
-              "delivery-failed",
-              "dismissed",
-              "completed",
-            ])
+            .in("status", [...TASK_AGENDA_OCCURRENCE_STATUSES])
             .order("scheduled_at", { ascending: false })
             .order("id", { ascending: false })
             .range(offset, offset + pageSize - 1);
