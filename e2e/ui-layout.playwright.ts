@@ -776,6 +776,26 @@ test.describe("responsive UI layout", () => {
 
     const tabs = page.getByRole("tablist", { name: "Categories" });
     const tabButtons = tabs.getByRole("tab");
+    const categoryHeading = page.getByText("Categories", { exact: true });
+    const manage = page.getByRole("button", {
+      name: "Manage categories",
+      exact: true,
+    });
+    await expect(categoryHeading).toBeVisible();
+    await expect(manage).toBeVisible();
+    const headerAlignment = await Promise.all([
+      categoryHeading.boundingBox(),
+      manage.boundingBox(),
+    ]);
+    expect(headerAlignment[0]).not.toBeNull();
+    expect(headerAlignment[1]).not.toBeNull();
+    expect(
+      Math.abs(
+        headerAlignment[0]!.y +
+          headerAlignment[0]!.height / 2 -
+          (headerAlignment[1]!.y + headerAlignment[1]!.height / 2),
+      ),
+    ).toBeLessThanOrEqual(1);
     await expect(tabButtons).toHaveCount(4);
     const initialLayout = await tabs.evaluate((element) => ({
       clientWidth: element.clientWidth,
@@ -816,6 +836,16 @@ test.describe("responsive UI layout", () => {
     expect(visibleBounds!.tabRight).toBeLessThanOrEqual(
       visibleBounds!.listRight,
     );
+
+    await manage.click();
+    const closeManager = page.getByRole("button", {
+      name: "Close category manager",
+      exact: true,
+    });
+    await expect(closeManager).toHaveAttribute("aria-expanded", "true");
+    await expect(closeManager).toContainText("Done");
+    await closeManager.click();
+    await expect(manage).toHaveAttribute("aria-expanded", "false");
   });
 
   for (const theme of ["light", "dark"] as const) {

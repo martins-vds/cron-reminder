@@ -1278,20 +1278,29 @@ function CategoryControls({ panelId }: { panelId: string }) {
   }
   return (
     <View style={styles.formStack}>
-      <CategoryTabs
-        options={options}
-        selected={selectedCategory}
-        onSelect={setSelectedCategory}
-        colors={colors}
-        label={t("categories")}
-        panelId={panelId}
-      />
-      <View style={styles.actions}>
+      <View style={styles.categoryHeader}>
+        <Text style={[styles.categoryHeading, { color: colors.text }]}>
+          {t("categories")}
+        </Text>
         <Button
-          label={t("manageCategories")}
+          label={
+            managing
+              ? copy(locale, "Done", "Concluir")
+              : copy(locale, "Manage", "Gerenciar")
+          }
+          accessibilityLabel={
+            managing
+              ? copy(
+                  locale,
+                  "Close category manager",
+                  "Fechar gerenciador de categorias",
+                )
+              : t("manageCategories")
+          }
           colors={colors}
-          variant="secondary"
+          variant="ghost"
           compact
+          narrow
           buttonRef={managerRef}
           expanded={managing}
           controls={`${panelId}-management`}
@@ -1301,6 +1310,14 @@ function CategoryControls({ panelId }: { panelId: string }) {
           }}
         />
       </View>
+      <CategoryTabs
+        options={options}
+        selected={selectedCategory}
+        onSelect={setSelectedCategory}
+        colors={colors}
+        label={t("categories")}
+        panelId={panelId}
+      />
       {categoryError ? (
         <Notice tone="warning" colors={colors} text={categoryError} />
       ) : null}
@@ -6130,6 +6147,18 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     gap: space.md,
+  },
+  categoryHeader: {
+    minHeight: size.controlSm,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: space.md,
+  },
+  categoryHeading: {
+    fontSize: type.label,
+    lineHeight: type.captionLine,
+    fontWeight: "700",
   },
   sectionCard: {
     borderWidth: 1,
