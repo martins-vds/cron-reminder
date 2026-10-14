@@ -2914,7 +2914,10 @@ function TaskList({
     <ScrollView
       key="task-list"
       style={styles.collectionScroll}
-      contentContainerStyle={styles.page}
+      contentContainerStyle={[
+        styles.page,
+        !isWide && styles.pageWithFloatingAction,
+      ]}
     >
       <PageHeader
         eyebrow={copy(locale, "Plan and finish", "Planeje e conclua")}
@@ -3191,7 +3194,7 @@ function TaskList({
         label={copy(locale, "Add task", "Adicionar tarefa")}
         onPress={() => setEditing("new")}
         colors={colors}
-        persistent
+        floating
       />
     ) : null,
   ];
@@ -3935,7 +3938,10 @@ function ReminderList({
     <ScrollView
       key="reminder-list"
       style={styles.collectionScroll}
-      contentContainerStyle={styles.page}
+      contentContainerStyle={[
+        styles.page,
+        !isWide && styles.pageWithFloatingAction,
+      ]}
     >
       <PageHeader
         eyebrow={copy(locale, "Workspace", "Área de trabalho")}
@@ -4268,7 +4274,7 @@ function ReminderList({
         label={t("addReminder")}
         onPress={() => setEditing("new")}
         colors={colors}
-        persistent
+        floating
       />
     ) : null,
   ];
@@ -5997,6 +6003,7 @@ function Button({
   variant,
   block = false,
   grow = false,
+  elevated = false,
   buttonRef,
   icon: Icon,
   iconOnly = false,
@@ -6017,6 +6024,7 @@ function Button({
   variant?: ButtonVariant;
   block?: boolean;
   grow?: boolean;
+  elevated?: boolean;
   buttonRef?: Ref<ElementRef<typeof Pressable>>;
   icon?: LucideIcon;
   iconOnly?: boolean;
@@ -6060,6 +6068,21 @@ function Button({
         : resolvedVariant === "ghost" || isNav
           ? "transparent"
           : colors.borderStrong;
+  const elevatedShadow =
+    Platform.OS === "web"
+      ? {
+          boxShadow: `0 ${space.xs}px ${space.sm}px ${colors.overlay}`,
+        }
+      : {
+          boxShadow: [
+            {
+              offsetX: 0,
+              offsetY: space.xs,
+              blurRadius: space.sm,
+              color: colors.overlay,
+            },
+          ],
+        };
 
   return (
     <Pressable
@@ -6091,6 +6114,7 @@ function Button({
         grow && styles.growButton,
         grow && isNav && styles.mobileNavButton,
         iconOnly && styles.iconButton,
+        elevated && elevatedShadow,
         {
           backgroundColor,
           borderColor: focused ? colors.focus : borderColor,
@@ -6241,12 +6265,12 @@ function DisclosureButton({
 function CollectionCreateAction({
   label,
   colors,
-  persistent = false,
+  floating = false,
   onPress,
 }: {
   label: string;
   colors: Colors;
-  persistent?: boolean;
+  floating?: boolean;
   onPress: () => void;
 }) {
   const action = (
@@ -6256,13 +6280,11 @@ function CollectionCreateAction({
       onPress={onPress}
       colors={colors}
       variant="primary"
+      elevated
     />
   );
-  return persistent ? (
-    <View
-      style={styles.persistentCreateAction}
-      testID="persistent-create-action"
-    >
+  return floating ? (
+    <View style={styles.floatingCreateAction} testID="floating-create-action">
       {action}
     </View>
   ) : (
@@ -6572,11 +6594,14 @@ const styles = StyleSheet.create({
     paddingVertical: space["3xl"],
     gap: space.xl,
   },
-  persistentCreateAction: {
+  pageWithFloatingAction: {
+    paddingBottom: size.controlMd + space["5xl"],
+  },
+  floatingCreateAction: {
+    position: "absolute",
+    right: space.lg,
+    bottom: space.lg,
     flexDirection: "row",
-    justifyContent: "flex-end",
-    paddingHorizontal: space.lg,
-    paddingBottom: space.lg,
     zIndex: 2,
   },
   editorScreen: {

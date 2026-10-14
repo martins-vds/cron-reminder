@@ -619,7 +619,9 @@ async function measureLayout(page: Page): Promise<LayoutReport> {
           !second ||
           first.contains(second) ||
           second.contains(first) ||
-          first.closest("button") === second.closest("button")
+          first.closest("button") === second.closest("button") ||
+          first.closest('[data-testid="floating-create-action"]') ||
+          second.closest('[data-testid="floating-create-action"]')
         ) {
           continue;
         }
@@ -2050,7 +2052,7 @@ test.describe("responsive UI layout", () => {
       duplicate: "Add first reminder",
     },
   ]) {
-    test(`${collection.heading} uses one persistent mobile creation action and a desktop header action`, async ({
+    test(`${collection.heading} uses one floating mobile creation action and a desktop header action`, async ({
       page,
     }) => {
       await mockSupabase(page);
@@ -2064,13 +2066,17 @@ test.describe("responsive UI layout", () => {
       });
       await expect(mobileAction).toHaveCount(1);
       await expect(mobileAction).toBeVisible();
+      await expectControlContrast(
+        mobileAction,
+        `${collection.heading} floating creation action`,
+      );
       await expect(
         page.getByRole("button", {
           name: collection.duplicate,
           exact: true,
         }),
       ).toHaveCount(0);
-      await expect(page.getByTestId("persistent-create-action")).toHaveCount(1);
+      await expect(page.getByTestId("floating-create-action")).toHaveCount(1);
 
       const navigation = page.getByRole("button", {
         name: "Today",
@@ -2106,6 +2112,43 @@ test.describe("responsive UI layout", () => {
       await expect
         .poll(async () => (await mobileAction.boundingBox())?.y)
         .toBeCloseTo(initialActionBox!.y, 0);
+      const bottomClearance = await page
+        .getByRole("heading", { name: collection.heading, exact: true })
+        .evaluate((heading) => {
+          let scroller = heading.parentElement;
+          while (
+            scroller &&
+            !(
+              /(auto|scroll)/.test(getComputedStyle(scroller).overflowY) &&
+              scroller.scrollHeight > scroller.clientHeight
+            )
+          ) {
+            scroller = scroller.parentElement;
+          }
+          const floatingAction = document.querySelector(
+            '[data-testid="floating-create-action"]',
+          );
+          if (!scroller || !floatingAction) return null;
+          const controls = Array.from(
+            scroller.querySelectorAll(
+              'button, a[href], input, select, textarea, [role="button"]',
+            ),
+          ).filter((element) => {
+            const rect = element.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0;
+          });
+          const lastControl = controls.at(-1);
+          return lastControl
+            ? {
+                lastControlBottom: lastControl.getBoundingClientRect().bottom,
+                actionTop: floatingAction.getBoundingClientRect().top,
+              }
+            : null;
+        });
+      expect(bottomClearance).not.toBeNull();
+      expect(bottomClearance!.lastControlBottom).toBeLessThanOrEqual(
+        bottomClearance!.actionTop,
+      );
 
       await page.setViewportSize({ width: 1120, height: 900 });
       await page.goto(collection.path);
@@ -2115,7 +2158,7 @@ test.describe("responsive UI layout", () => {
       });
       await expect(desktopAction).toHaveCount(1);
       await expect(desktopAction).toBeVisible();
-      await expect(page.getByTestId("persistent-create-action")).toHaveCount(0);
+      await expect(page.getByTestId("floating-create-action")).toHaveCount(0);
       const desktopActionBox = await desktopAction.boundingBox();
       const categoriesBox = await page
         .getByText("Categories", { exact: true })
