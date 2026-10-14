@@ -1,4 +1,5 @@
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { useEffect, useRef } from "react";
+import { Pressable, ScrollView, StyleSheet, Text } from "react-native";
 import { radius, size, space, type, type AppColors } from "./theme";
 
 export interface CategoryTabsProps {
@@ -18,11 +19,27 @@ export function CategoryTabs({
   label,
   panelId,
 }: CategoryTabsProps) {
+  const scroller = useRef<ScrollView>(null);
+  const positions = useRef(new Map<string, number>());
+  useEffect(() => {
+    const position = positions.current.get(selected);
+    if (position === undefined) return;
+    scroller.current?.scrollTo({
+      x: Math.max(0, position - space.lg),
+      animated: false,
+    });
+  }, [selected]);
   return (
-    <View
+    <ScrollView
+      ref={scroller}
+      horizontal
+      showsHorizontalScrollIndicator={false}
       accessibilityRole="tablist"
       accessibilityLabel={label}
-      style={styles.tabs}
+      contentContainerStyle={[
+        styles.tabs,
+        { borderBottomColor: colors.border },
+      ]}
     >
       {options.map((option) => (
         <Pressable
@@ -31,42 +48,59 @@ export function CategoryTabs({
           accessibilityRole="tab"
           accessibilityState={{ selected: selected === option.value }}
           onPress={() => onSelect(option.value)}
+          onLayout={(event) => {
+            const position = event.nativeEvent.layout.x;
+            positions.current.set(option.value, position);
+            if (selected === option.value)
+              scroller.current?.scrollTo({
+                x: Math.max(0, position - space.lg),
+                animated: false,
+              });
+          }}
           style={({ pressed }) => [
             styles.tab,
             {
-              borderColor:
-                selected === option.value ? colors.accent : colors.borderStrong,
-              backgroundColor: pressed
-                ? colors.surfaceMuted
-                : selected === option.value
-                  ? colors.accentSoft
-                  : colors.surface,
+              borderBottomColor:
+                selected === option.value ? colors.accent : "transparent",
+              backgroundColor: pressed ? colors.surfaceMuted : colors.surface,
             },
           ]}
         >
-          <Text style={[styles.text, { color: colors.text }]}>
+          <Text
+            style={[
+              styles.text,
+              {
+                color: colors.text,
+                fontWeight: selected === option.value ? "700" : "500",
+              },
+            ]}
+          >
             {option.label}
           </Text>
         </Pressable>
       ))}
-    </View>
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  tabs: { flexDirection: "row", flexWrap: "wrap", gap: space.sm },
+  tabs: {
+    flexDirection: "row",
+    alignItems: "stretch",
+    paddingRight: space["3xl"],
+    borderBottomWidth: 1,
+  },
   tab: {
     minHeight: size.controlMd,
-    borderWidth: 1,
-    borderRadius: radius.md,
-    paddingHorizontal: space.md,
+    flexShrink: 0,
+    borderBottomWidth: space.xxs,
+    borderTopLeftRadius: radius.sm,
+    borderTopRightRadius: radius.sm,
+    paddingHorizontal: space.lg,
     justifyContent: "center",
-    maxWidth: "100%",
   },
   text: {
     fontSize: type.label,
     lineHeight: type.captionLine,
-    fontWeight: "600",
-    flexShrink: 1,
   },
 });

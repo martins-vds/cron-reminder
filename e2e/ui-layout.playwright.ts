@@ -533,11 +533,25 @@ async function measureLayout(page: Page): Promise<LayoutReport> {
         "";
       return `${element.tagName.toLowerCase()} "${text.slice(0, 80)}"`;
     };
+    const isInsideHorizontalScroller = (element: Element) => {
+      let ancestor = element.parentElement;
+      while (ancestor) {
+        const style = getComputedStyle(ancestor);
+        if (
+          (style.overflowX === "auto" || style.overflowX === "scroll") &&
+          ancestor.scrollWidth > ancestor.clientWidth
+        )
+          return true;
+        ancestor = ancestor.parentElement;
+      }
+      return false;
+    };
     const visible = Array.from(document.querySelectorAll("*")).filter(
       isVisible,
     );
     const outsideViewport = visible
       .filter((element) => {
+        if (isInsideHorizontalScroller(element)) return false;
         const rect = element.getBoundingClientRect();
         return rect.left < -1 || rect.right > innerWidth + 1;
       })
@@ -752,6 +766,58 @@ async function saveRenderedSnapshot(page: Page, path: string): Promise<void> {
 }
 
 test.describe("responsive UI layout", () => {
+  test("category tabs stay on one horizontally scrollable row", async ({
+    page,
+  }) => {
+    await mockSupabase(page);
+    await authenticate(page);
+    await page.setViewportSize({ width: 280, height: 900 });
+    await page.goto("/");
+
+    const tabs = page.getByRole("tablist", { name: "Categories" });
+    const tabButtons = tabs.getByRole("tab");
+    await expect(tabButtons).toHaveCount(4);
+    const initialLayout = await tabs.evaluate((element) => ({
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+      scrollLeft: element.scrollLeft,
+    }));
+    expect(initialLayout.scrollWidth).toBeGreaterThan(
+      initialLayout.clientWidth,
+    );
+    const tabTops = await tabButtons.evaluateAll((elements) =>
+      elements.map((element) => element.getBoundingClientRect().top),
+    );
+    expect(Math.max(...tabTops) - Math.min(...tabTops)).toBeLessThanOrEqual(1);
+
+    await tabs.getByRole("tab", { name: "All", exact: true }).press("End");
+    const work = tabs.getByRole("tab", { name: "Work", exact: true });
+    await expect(work).toBeFocused();
+    await expect(work).toHaveAttribute("aria-selected", "true");
+    await expect
+      .poll(() => tabs.evaluate((element) => element.scrollLeft))
+      .toBeGreaterThan(initialLayout.scrollLeft);
+    const visibleBounds = await tabs.evaluate((element) => {
+      const list = element.getBoundingClientRect();
+      const selected = element.querySelector('[aria-selected="true"]');
+      if (!(selected instanceof HTMLElement)) return null;
+      const tab = selected.getBoundingClientRect();
+      return {
+        listLeft: list.left,
+        listRight: list.right,
+        tabLeft: tab.left,
+        tabRight: tab.right,
+      };
+    });
+    expect(visibleBounds).not.toBeNull();
+    expect(visibleBounds!.tabLeft).toBeGreaterThanOrEqual(
+      visibleBounds!.listLeft,
+    );
+    expect(visibleBounds!.tabRight).toBeLessThanOrEqual(
+      visibleBounds!.listRight,
+    );
+  });
+
   for (const theme of ["light", "dark"] as const) {
     test(`category tabs organize both pages and retain reminders after removal in ${theme}`, async ({
       page,
