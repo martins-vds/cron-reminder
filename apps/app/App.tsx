@@ -3051,7 +3051,14 @@ function TaskList({
               {visible.length} {copy(locale, "shown", "exibidas")}
             </Text>
           </View>
-          <View style={styles.chips}>
+          <StatusFilterRail
+            label={copy(
+              locale,
+              "Task status filters",
+              "Filtros de status das tarefas",
+            )}
+            testID="task-status-filters"
+          >
             {(["all", "open", "completed", "archived"] as const).map(
               (value) => (
                 <Button
@@ -3074,7 +3081,7 @@ function TaskList({
                 />
               ),
             )}
-          </View>
+          </StatusFilterRail>
         </View>
         {!visible.length ? (
           <EmptyState
@@ -4067,7 +4074,14 @@ function ReminderList({
               {visible.length} {copy(locale, "shown", "exibidos")}
             </Text>
           </View>
-          <View style={styles.chips}>
+          <StatusFilterRail
+            label={copy(
+              locale,
+              "Schedule status filters",
+              "Filtros de status das agendas",
+            )}
+            testID="schedule-status-filters"
+          >
             {(
               ["all", "active", "disabled", "completed", "archived"] as const
             ).map((item) => (
@@ -4088,7 +4102,7 @@ function ReminderList({
                 compact
               />
             ))}
-          </View>
+          </StatusFilterRail>
         </View>
         {visible.length === 0 && (
           <EmptyState
@@ -6292,6 +6306,30 @@ function CollectionCreateAction({
   );
 }
 
+function StatusFilterRail({
+  label,
+  testID,
+  children,
+}: {
+  label: string;
+  testID: string;
+  children: ReactNode;
+}) {
+  return (
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      accessibilityLabel={label}
+      role={Platform.OS === "web" ? "toolbar" : undefined}
+      testID={testID}
+      style={styles.statusFilterScroller}
+      contentContainerStyle={styles.statusFilterRail}
+    >
+      {children}
+    </ScrollView>
+  );
+}
+
 function SectionCard({
   title,
   description,
@@ -6890,6 +6928,14 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   chips: { flexDirection: "row", flexWrap: "wrap", gap: space.sm },
+  statusFilterScroller: {
+    maxWidth: "100%",
+  },
+  statusFilterRail: {
+    flexDirection: "row",
+    gap: space.sm,
+    paddingRight: space["3xl"],
+  },
   actions: { flexDirection: "row", flexWrap: "wrap", gap: space.sm },
   accountActions: {
     flexDirection: "row",

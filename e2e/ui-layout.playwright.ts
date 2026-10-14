@@ -864,6 +864,52 @@ test.describe("responsive UI layout", () => {
     await expect(dialog).toHaveCount(0);
   });
 
+  test("status filters stay on one horizontally scrollable row", async ({
+    page,
+  }) => {
+    await mockSupabase(page);
+    await authenticate(page);
+    await page.setViewportSize({ width: 280, height: 900 });
+
+    for (const collection of [
+      {
+        path: "/tasks",
+        testID: "task-status-filters",
+        count: 4,
+      },
+      {
+        path: "/reminders",
+        testID: "schedule-status-filters",
+        count: 5,
+      },
+    ]) {
+      await page.goto(collection.path);
+      const filters = page.getByTestId(collection.testID);
+      const buttons = filters.getByRole("button");
+      await expect(buttons).toHaveCount(collection.count);
+      const layout = await filters.evaluate((element) => ({
+        clientWidth: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+        scrollLeft: element.scrollLeft,
+      }));
+      expect(layout.scrollWidth).toBeGreaterThan(layout.clientWidth);
+      const tops = await buttons.evaluateAll((elements) =>
+        elements.map((element) => element.getBoundingClientRect().top),
+      );
+      expect(Math.max(...tops) - Math.min(...tops)).toBeLessThanOrEqual(1);
+
+      const archived = filters.getByRole("button", {
+        name: "Archived",
+        exact: true,
+      });
+      await archived.click();
+      await expect(archived).toHaveAttribute("aria-pressed", "true");
+      await expect
+        .poll(() => filters.evaluate((element) => element.scrollLeft))
+        .toBeGreaterThan(layout.scrollLeft);
+    }
+  });
+
   test("category manager stays usable with ten categories in a short viewport", async ({
     page,
   }) => {
