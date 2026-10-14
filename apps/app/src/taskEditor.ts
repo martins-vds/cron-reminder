@@ -1,58 +1,53 @@
 import {
   validateTaskReminderPolicy,
+  type Schedule,
   type TaskReminderPolicy,
 } from "@cron-reminder/domain";
 
-export type TaskPolicyKind = "once" | "recurring";
-
 export function buildTaskReminderPolicy({
-  kind,
-  firstReminderAt,
+  primary,
+  overdue,
   dueAt,
-  cadenceMinutes,
   timezone,
   from,
 }: {
-  kind: TaskPolicyKind;
-  firstReminderAt: string;
+  primary: Schedule;
+  overdue?: Schedule;
   dueAt: string;
-  cadenceMinutes: number;
   timezone: string;
   from: string;
 }): TaskReminderPolicy {
-  if (
-    !Number.isSafeInteger(cadenceMinutes) ||
-    cadenceMinutes < 1 ||
-    cadenceMinutes > 59
-  ) {
-    throw new Error("Reminder cadence must be from 1 to 59 minutes.");
-  }
-  if (Date.parse(firstReminderAt) > Date.parse(dueAt)) {
-    throw new Error(
-      "The first task reminder must be on or before its due date.",
-    );
-  }
-
-  const recurring = {
-    kind: "cron" as const,
-    expression: `*/${cadenceMinutes} * * * *`,
-  };
   const policy: TaskReminderPolicy =
-    kind === "once"
+    primary.kind === "once"
       ? {
-          primary: { kind: "once", at: firstReminderAt },
-          overdue: { ...recurring, startAt: dueAt },
+          primary,
+          overdue: requireRecurringSchedule(overdue),
         }
       : {
-          primary: { ...recurring, startAt: firstReminderAt },
+          primary: withoutEnding(primary),
         };
   validateTaskReminderPolicy(policy, timezone, dueAt, from);
   return policy;
 }
 
-export function taskCadenceMinutes(policy: TaskReminderPolicy): string | null {
-  const schedule =
-    policy.primary.kind === "once" ? policy.overdue : policy.primary;
-  if (!schedule || schedule.kind !== "cron") return null;
-  return schedule.expression.match(/^\*\/(\d+) \* \* \* \*$/)?.[1] ?? null;
+function requireRecurringSchedule(
+  schedule: Schedule | undefined,
+): Exclude<Schedule, { kind: "once" }> {
+  if (!schedule || schedule.kind === "once") {
+    throw new Error(
+      "A one-time task reminder requires a recurring overdue schedule.",
+    );
+  }
+  const recurring = withoutEnding(schedule);
+  delete recurring.startAt;
+  return recurring;
+}
+
+function withoutEnding<T extends Exclude<Schedule, { kind: "once" }>>(
+  schedule: T,
+): T {
+  const recurring = { ...schedule };
+  delete recurring.endAt;
+  delete recurring.occurrenceLimit;
+  return recurring;
 }

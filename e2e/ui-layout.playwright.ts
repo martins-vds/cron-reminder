@@ -2465,4 +2465,60 @@ test.describe("responsive UI layout", () => {
       page.getByRole("spinbutton", { name: "Day", exact: true }),
     ).toHaveAttribute("max", "31");
   });
+
+  test("task reminder policies expose every reminder frequency", async ({
+    page,
+  }) => {
+    await mockSupabase(page);
+    await authenticate(page);
+    await page.setViewportSize({ width: 390, height: 900 });
+    await page.goto("/tasks");
+    await page.getByRole("button", { name: "Add task" }).click();
+
+    const primaryFrequency = page
+      .getByRole("combobox", { name: "Frequency" })
+      .first();
+    await expect(primaryFrequency.locator("option")).toHaveText([
+      "Once",
+      "Every few minutes",
+      "Daily",
+      "Weekdays",
+      "Monthly",
+      "Yearly",
+      "Custom schedule",
+    ]);
+
+    await primaryFrequency.selectOption("weekdays");
+    await expect(
+      page.getByRole("textbox", { name: "Time", exact: true }),
+    ).toBeVisible();
+
+    await primaryFrequency.selectOption("monthly");
+    await expect(
+      page.getByRole("spinbutton", { name: "Day of month" }),
+    ).toHaveAttribute("max", "31");
+
+    await primaryFrequency.selectOption("yearly");
+    await expect(
+      page.getByRole("spinbutton", { name: "Month", exact: true }),
+    ).toHaveAttribute("max", "12");
+
+    await primaryFrequency.selectOption("advanced");
+    await expect(
+      page.getByRole("textbox", { name: "Advanced cron" }),
+    ).toBeVisible();
+
+    await primaryFrequency.selectOption("once");
+    const overdueFrequency = page
+      .getByRole("combobox", { name: "Frequency" })
+      .nth(1);
+    await expect(overdueFrequency.locator("option")).toHaveText([
+      "Every few minutes",
+      "Daily",
+      "Weekdays",
+      "Monthly",
+      "Yearly",
+      "Custom schedule",
+    ]);
+  });
 });

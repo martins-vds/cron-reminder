@@ -147,7 +147,7 @@ import {
   type ScheduleEditorState,
 } from "./src/scheduleEditor";
 import { synchronizationFailureMessage } from "./src/syncStatus";
-import { buildTaskReminderPolicy, taskCadenceMinutes } from "./src/taskEditor";
+import { buildTaskReminderPolicy } from "./src/taskEditor";
 
 type ThemePreference = "system" | "light" | "dark";
 type NotificationRegistrationStatus =
@@ -2811,6 +2811,11 @@ function TaskList({
               !tasks.length ? (
                 <Button
                   label={copy(locale, "Add task", "Adicionar tarefa")}
+                  accessibilityLabel={copy(
+                    locale,
+                    "Add first task",
+                    "Adicionar primeira tarefa",
+                  )}
                   onPress={() => setEditing("new")}
                   colors={colors}
                   variant="primary"
@@ -2935,24 +2940,59 @@ function TaskEditor({
     () => new Date(now.getTime() + 86_400_000).toISOString(),
     [now],
   );
-  const defaultFirst = useMemo(
-    () => new Date(now.getTime() + 3_600_000).toISOString(),
-    [now],
-  );
   const primary = task?.reminderPolicy.primary;
-  const existingCadence = task ? taskCadenceMinutes(task.reminderPolicy) : null;
   const [title, setTitle] = useState(task?.title ?? "");
   const [notes, setNotes] = useState(task?.notes ?? "");
   const [tags, setTags] = useState(task?.tags.join(", ") ?? "");
   const [dueAt, setDueAt] = useState(task?.dueAt ?? defaultDue);
-  const [firstReminderAt, setFirstReminderAt] = useState(
-    primary?.kind === "once" ? primary.at : (primary?.startAt ?? defaultFirst),
+  const [primaryScheduleEditor, setPrimaryScheduleEditor] =
+    useState<ScheduleEditorState>(() =>
+      createScheduleEditorState(primary, now),
+    );
+  const [overdueScheduleEditor, setOverdueScheduleEditor] =
+    useState<ScheduleEditorState>(() =>
+      createScheduleEditorState(
+        primary?.kind === "once"
+          ? task?.reminderPolicy.overdue
+          : { kind: "cron", expression: "*/30 * * * *" },
+        now,
+      ),
+    );
+  const primarySchedule = buildSchedule({
+    ...primaryScheduleEditor,
+    ends: "never",
+  });
+  const overdueSchedule = buildSchedule({
+    ...overdueScheduleEditor,
+    ends: "never",
+  });
+  const primaryScheduleValid = hasValidScheduleEditorValues(
+    primaryScheduleEditor,
   );
-  const [policyKind, setPolicyKind] = useState<"once" | "recurring">(
-    primary?.kind === "once" || !primary ? "once" : "recurring",
-  );
-  const [cadenceMinutes, setCadenceMinutes] = useState(existingCadence ?? "30");
-  const [policyDirty, setPolicyDirty] = useState(false);
+  const overdueScheduleValid =
+    primarySchedule.kind !== "once" ||
+    (overdueSchedule.kind !== "once" &&
+      hasValidScheduleEditorValues(overdueScheduleEditor));
+  let reminderPolicy: TaskReminderPolicy | null = null;
+  let policyValidationError = "";
+  if (primaryScheduleValid && overdueScheduleValid) {
+    try {
+      reminderPolicy = buildTaskReminderPolicy({
+        primary: primarySchedule,
+        ...(primarySchedule.kind === "once"
+          ? { overdue: overdueSchedule }
+          : {}),
+        dueAt,
+        timezone:
+          task?.timezone ??
+          (Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"),
+        from: task?.createdAt ?? now.toISOString(),
+      });
+    } catch (reason) {
+      policyValidationError =
+        reason instanceof Error ? reason.message : "Invalid reminder policy.";
+    }
+  }
   const [categoryId, setCategoryId] = useState(
     task?.categoryId ??
       (selectedCategory === "all" || selectedCategory === "uncategorized"
@@ -2967,46 +3007,16 @@ function TaskEditor({
   const validCategoryId = liveCategories.some(({ id }) => id === categoryId)
     ? categoryId
     : "";
-  const cadence = Number(cadenceMinutes);
-  const cadenceValid =
-    Number.isSafeInteger(cadence) && cadence >= 1 && cadence <= 59;
-  const dateOrderValid =
-    Number.isFinite(Date.parse(firstReminderAt)) &&
-    Number.isFinite(Date.parse(dueAt)) &&
-    Date.parse(firstReminderAt) <= Date.parse(dueAt);
-
-  let reminderPolicy: TaskReminderPolicy | null = null;
-  if (cadenceValid && dateOrderValid) {
-    try {
-      reminderPolicy = buildTaskReminderPolicy({
-        kind: policyKind,
-        firstReminderAt,
-        dueAt,
-        cadenceMinutes: cadence,
-        timezone,
-        from: now.toISOString(),
-      });
-    } catch {
-      reminderPolicy = null;
-    }
-  }
-  const effectiveReminderPolicy =
-    task && !policyDirty ? task.reminderPolicy : reminderPolicy;
 
   async function save() {
-    if (!effectiveReminderPolicy) {
+    if (!reminderPolicy) {
       setError(
-        !dateOrderValid
-          ? copy(
-              locale,
-              "The first reminder must be on or before the due date.",
-              "O primeiro lembrete deve ocorrer até o prazo.",
-            )
-          : copy(
-              locale,
-              "Enter a cadence from 1 to 59 minutes.",
-              "Insira uma frequência de 1 a 59 minutos.",
-            ),
+        policyValidationError ||
+          copy(
+            locale,
+            "Choose a valid schedule whose first reminder occurs on or before the due date.",
+            "Escolha uma agenda válida cujo primeiro lembrete ocorra até o prazo.",
+          ),
       );
       return;
     }
@@ -3021,7 +3031,7 @@ function TaskEditor({
           .filter(Boolean),
         categoryId: validCategoryId || null,
         dueAt,
-        reminderPolicy: effectiveReminderPolicy,
+        reminderPolicy,
         timezone,
       };
       await runTaskMutation(() =>
@@ -3144,96 +3154,51 @@ function TaskEditor({
           colors={colors}
         >
           <View style={styles.formStack}>
-            <OptionPicker
-              label={copy(locale, "Policy", "Política")}
-              value={policyKind}
-              onChange={(value) => {
-                setPolicyDirty(true);
-                setPolicyKind(value === "recurring" ? "recurring" : "once");
-              }}
-              colors={colors}
-              options={[
-                {
-                  value: "once",
-                  label: copy(
-                    locale,
-                    "One first reminder, then overdue cadence",
-                    "Um primeiro lembrete e frequência após o prazo",
-                  ),
-                },
-                {
-                  value: "recurring",
-                  label: copy(
-                    locale,
-                    "Recurring until complete",
-                    "Recorrente até a conclusão",
-                  ),
-                },
-              ]}
-              cancelLabel={copy(locale, "Cancel", "Cancelar")}
-              changeLabel={copy(locale, "Change", "Alterar")}
-              selectedLabel={copy(locale, "Selected", "Selecionada")}
-            />
-            <DateTimeField
-              label={copy(locale, "First reminder", "Primeiro lembrete")}
-              value={firstReminderAt}
-              onChange={(value) => {
-                setPolicyDirty(true);
-                setFirstReminderAt(value);
-              }}
-              colors={colors}
+            <TaskScheduleFields
+              editor={primaryScheduleEditor}
+              onChange={setPrimaryScheduleEditor}
               locale={locale}
-              hint={copy(
-                locale,
-                "Must occur on or before the due date.",
-                "Deve ocorrer até o prazo.",
-              )}
-            />
-            <NumberField
-              label={
-                policyKind === "once"
-                  ? copy(
-                      locale,
-                      "Overdue reminder cadence (minutes)",
-                      "Frequência após o prazo (minutos)",
-                    )
-                  : copy(
-                      locale,
-                      "Recurring cadence (minutes)",
-                      "Frequência recorrente (minutos)",
-                    )
-              }
-              value={cadenceMinutes}
-              onChange={(value) => {
-                setPolicyDirty(true);
-                setCadenceMinutes(value);
-              }}
               colors={colors}
-              minimum={1}
-              maximum={59}
-              hint={
-                policyKind === "once"
-                  ? copy(
-                      locale,
-                      "Required. Starts after the due date while the task remains open.",
-                      "Obrigatória. Começa após o prazo enquanto a tarefa estiver aberta.",
-                    )
-                  : copy(
-                      locale,
-                      "The primary cadence continues after the due date.",
-                      "A frequência principal continua após o prazo.",
-                    )
-              }
+              timezone={timezone}
+              allowOnce
             />
-            {!dateOrderValid ? (
+            {primarySchedule.kind === "once" ? (
+              <View style={styles.formStack}>
+                <Text style={[styles.sectionLabel, { color: colors.subtle }]}>
+                  {copy(locale, "Overdue reminders", "Lembretes após o prazo")}
+                </Text>
+                <Text style={[styles.body, { color: colors.muted }]}>
+                  {copy(
+                    locale,
+                    "Choose how often to remind you after the due date while the task remains open.",
+                    "Escolha quando lembrar após o prazo enquanto a tarefa estiver aberta.",
+                  )}
+                </Text>
+                <TaskScheduleFields
+                  editor={overdueScheduleEditor}
+                  onChange={setOverdueScheduleEditor}
+                  locale={locale}
+                  colors={colors}
+                  timezone={timezone}
+                  allowOnce={false}
+                />
+              </View>
+            ) : null}
+            {!primaryScheduleValid || !overdueScheduleValid ? (
               <Notice
                 tone="danger"
                 colors={colors}
                 text={copy(
                   locale,
-                  "The first reminder must be on or before the due date.",
-                  "O primeiro lembrete deve ocorrer até o prazo.",
+                  "Check the schedule values. Times use HH:MM.",
+                  "Revise os valores da agenda. Use HH:MM para horários.",
                 )}
+              />
+            ) : !reminderPolicy && policyValidationError ? (
+              <Notice
+                tone="danger"
+                colors={colors}
+                text={policyValidationError}
               />
             ) : null}
           </View>
@@ -3251,10 +3216,238 @@ function TaskEditor({
           onPress={() => void save()}
           colors={colors}
           variant="primary"
-          disabled={!title.trim() || !effectiveReminderPolicy}
+          disabled={!title.trim() || !reminderPolicy}
         />
       </View>
     </ScrollView>
+  );
+}
+
+function TaskScheduleFields({
+  editor,
+  onChange,
+  locale,
+  colors,
+  timezone,
+  allowOnce,
+}: {
+  editor: ScheduleEditorState;
+  onChange: (editor: ScheduleEditorState) => void;
+  locale: Locale;
+  colors: Colors;
+  timezone: string;
+  allowOnce: boolean;
+}) {
+  const t = createTranslator(locale);
+  const frequencyOptions = [
+    ...(allowOnce ? [{ value: "once", label: t("once") }] : []),
+    {
+      value: "interval",
+      label: copy(locale, "Every few minutes", "A cada poucos minutos"),
+    },
+    { value: "daily", label: t("daily") },
+    { value: "weekdays", label: t("weekdays") },
+    { value: "monthly", label: t("monthly") },
+    { value: "yearly", label: t("yearly") },
+    {
+      value: "advanced",
+      label: copy(locale, "Custom schedule", "Agenda personalizada"),
+    },
+  ] as const;
+  const update = (changes: Partial<ScheduleEditorState>) =>
+    onChange({ ...editor, ...changes });
+  const updateDailyTime = (index: number, value: string) =>
+    update({
+      dailyTimes: editor.dailyTimes.map((time, timeIndex) =>
+        timeIndex === index ? value : time,
+      ),
+    });
+
+  return (
+    <View style={styles.formStack}>
+      <OptionPicker
+        label={copy(locale, "Frequency", "Frequência")}
+        value={editor.kind}
+        options={frequencyOptions}
+        onChange={(value) => update({ kind: value as ScheduleEditorKind })}
+        colors={colors}
+        cancelLabel={t("cancel")}
+        changeLabel={copy(locale, "Change", "Alterar")}
+        selectedLabel={copy(locale, "Selected", "Selecionado")}
+      />
+      <View key={editor.kind} style={styles.scheduleConfiguration}>
+        {editor.kind === "once" ? (
+          <DateTimeField
+            label={copy(locale, "Date and time", "Data e hora")}
+            value={editor.onceAt}
+            onChange={(onceAt) => update({ onceAt })}
+            colors={colors}
+            locale={locale}
+            hint={copy(
+              locale,
+              `Must occur on or before the due date. Uses ${timezone}.`,
+              `Deve ocorrer até o prazo. Usa ${timezone}.`,
+            )}
+          />
+        ) : editor.kind === "daily" ? (
+          <View style={styles.formStack}>
+            <Text style={[styles.body, { color: colors.muted }]}>
+              {copy(
+                locale,
+                "Choose one or more times.",
+                "Escolha um ou mais horários.",
+              )}
+            </Text>
+            {editor.dailyTimes.map((time, index) => (
+              <View key={index} style={styles.dailyTimeRow}>
+                <View style={styles.dailyTimeField}>
+                  <TimeField
+                    label={copy(
+                      locale,
+                      `Time ${index + 1}`,
+                      `Horário ${index + 1}`,
+                    )}
+                    value={time}
+                    onChange={(value) => updateDailyTime(index, value)}
+                    colors={colors}
+                    locale={locale}
+                  />
+                </View>
+                {index > 0 ? (
+                  <Button
+                    label={copy(locale, "Remove", "Remover")}
+                    accessibilityLabel={copy(
+                      locale,
+                      `Remove time ${index + 1}`,
+                      `Remover horário ${index + 1}`,
+                    )}
+                    onPress={() =>
+                      update({
+                        dailyTimes: editor.dailyTimes.filter(
+                          (_time, timeIndex) => timeIndex !== index,
+                        ),
+                      })
+                    }
+                    colors={colors}
+                    variant="danger"
+                    narrow
+                  />
+                ) : null}
+              </View>
+            ))}
+            <Button
+              label={copy(
+                locale,
+                "Add another time",
+                "Adicionar outro horário",
+              )}
+              onPress={() => update({ dailyTimes: [...editor.dailyTimes, ""] })}
+              colors={colors}
+              variant="secondary"
+              compact
+              disabled={editor.dailyTimes.length >= MAX_DAILY_TIMES}
+            />
+          </View>
+        ) : editor.kind === "advanced" ? (
+          <Field
+            label={copy(locale, "Advanced cron", "Cron avançado")}
+            value={editor.advancedCron}
+            onChangeText={(advancedCron) => update({ advancedCron })}
+            colors={colors}
+            autoCapitalize="none"
+            autoCorrect={false}
+            hint={copy(
+              locale,
+              "Five fields: minute, hour, day, month, weekday.",
+              "Cinco campos: minuto, hora, dia, mês e dia da semana.",
+            )}
+          />
+        ) : (
+          <View style={styles.formStack}>
+            {editor.kind === "interval" ? (
+              <NumberField
+                label={copy(
+                  locale,
+                  "Repeat every (minutes)",
+                  "Repetir a cada (minutos)",
+                )}
+                value={editor.intervalMinutes}
+                onChange={(intervalMinutes) => update({ intervalMinutes })}
+                colors={colors}
+                minimum={1}
+                maximum={59}
+              />
+            ) : null}
+            {editor.kind === "weekdays" ? (
+              <TimeField
+                label={copy(locale, "Time", "Horário")}
+                value={editor.time}
+                onChange={(time) => update({ time })}
+                colors={colors}
+                locale={locale}
+                hint={timezone}
+              />
+            ) : null}
+            {editor.kind === "monthly" ? (
+              <View style={styles.scheduleFieldsRow}>
+                <View style={styles.scheduleField}>
+                  <NumberField
+                    label={copy(locale, "Day of month", "Dia do mês")}
+                    value={editor.monthDay}
+                    onChange={(monthDay) => update({ monthDay })}
+                    colors={colors}
+                    minimum={1}
+                    maximum={31}
+                  />
+                </View>
+                <View style={styles.scheduleField}>
+                  <TimeField
+                    label={copy(locale, "Time", "Horário")}
+                    value={editor.time}
+                    onChange={(time) => update({ time })}
+                    colors={colors}
+                    locale={locale}
+                  />
+                </View>
+              </View>
+            ) : null}
+            {editor.kind === "yearly" ? (
+              <View style={styles.scheduleFieldsRow}>
+                <View style={styles.scheduleField}>
+                  <NumberField
+                    label={copy(locale, "Month", "Mês")}
+                    value={editor.yearMonth}
+                    onChange={(yearMonth) => update({ yearMonth })}
+                    colors={colors}
+                    minimum={1}
+                    maximum={12}
+                  />
+                </View>
+                <View style={styles.scheduleField}>
+                  <NumberField
+                    label={copy(locale, "Day", "Dia")}
+                    value={editor.yearDay}
+                    onChange={(yearDay) => update({ yearDay })}
+                    colors={colors}
+                    minimum={1}
+                    maximum={31}
+                  />
+                </View>
+                <View style={styles.scheduleField}>
+                  <TimeField
+                    label={copy(locale, "Time", "Horário")}
+                    value={editor.time}
+                    onChange={(time) => update({ time })}
+                    colors={colors}
+                    locale={locale}
+                  />
+                </View>
+              </View>
+            ) : null}
+          </View>
+        )}
+      </View>
+    </View>
   );
 }
 
