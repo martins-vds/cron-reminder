@@ -2910,299 +2910,291 @@ function TaskList({
     );
   }
 
-  return (
-    <View style={styles.collectionScreen}>
-      <ScrollView
-        style={styles.collectionScroll}
-        contentContainerStyle={styles.page}
-      >
-        <PageHeader
-          eyebrow={copy(locale, "Plan and finish", "Planeje e conclua")}
-          title={copy(locale, "Tasks", "Tarefas")}
-          description={copy(
-            locale,
-            "Track work by due date and keep reminders repeating until the work is done.",
-            "Acompanhe o trabalho pelo prazo e repita os lembretes até a conclusão.",
-          )}
-          colors={colors}
-          action={
-            isWide ? (
-              <CollectionCreateAction
-                label={copy(locale, "Add task", "Adicionar tarefa")}
-                onPress={() => setEditing("new")}
-                colors={colors}
-              />
-            ) : undefined
-          }
-        />
-        {syncMessage ? (
-          <Notice tone="warning" colors={colors} text={syncMessage}>
-            <View style={styles.noticeActions}>
-              <Button
-                label={copy(locale, "Retry sync", "Tentar sincronizar")}
-                onPress={() => {
-                  setSyncing(true);
-                  void synchronize().finally(() => setSyncing(false));
-                }}
-                colors={colors}
-                variant="secondary"
-                compact
-                loading={syncing}
-              />
-            </View>
-          </Notice>
-        ) : null}
-        <CategoryControls panelId="tasks-category-panel" />
-        <View
-          nativeID="tasks-category-panel"
-          role={Platform.OS === "web" ? "tabpanel" : undefined}
-          aria-labelledby={`tasks-category-panel-${selectedCategory}`}
-          style={styles.formStack}
-        >
-          {activeConflicts.length ? (
-            <Notice
-              tone="warning"
+  return [
+    <ScrollView
+      key="task-list"
+      style={styles.collectionScroll}
+      contentContainerStyle={styles.page}
+    >
+      <PageHeader
+        eyebrow={copy(locale, "Plan and finish", "Planeje e conclua")}
+        title={copy(locale, "Tasks", "Tarefas")}
+        description={copy(
+          locale,
+          "Track work by due date and keep reminders repeating until the work is done.",
+          "Acompanhe o trabalho pelo prazo e repita os lembretes até a conclusão.",
+        )}
+        colors={colors}
+        action={
+          isWide ? (
+            <CollectionCreateAction
+              label={copy(locale, "Add task", "Adicionar tarefa")}
+              onPress={() => setEditing("new")}
               colors={colors}
-              text={copy(
-                locale,
-                `${activeConflicts.length} task edit(s) need manual resolution.`,
-                `${activeConflicts.length} edição(ões) de tarefa precisam de resolução manual.`,
-              )}
             />
-          ) : null}
-          {activeConflicts.map((conflict) => (
-            <View
-              key={conflict.id}
-              style={[
-                styles.conflictCard,
-                {
-                  backgroundColor: colors.warningSoft,
-                  borderColor: colors.warning,
-                },
-              ]}
-            >
-              <View style={styles.flex}>
-                <Text style={[styles.cardTitle, { color: colors.text }]}>
-                  {copy(
-                    locale,
-                    "Resolve task edit",
-                    "Resolver edição da tarefa",
-                  )}
-                </Text>
-                <Text style={[styles.body, { color: colors.muted }]}>
-                  {copy(locale, "Local", "Local")}: {conflict.local.title}.{" "}
-                  {copy(locale, "Remote", "Remota")}: {conflict.remote.title}.
-                </Text>
-              </View>
-              <View style={styles.actions}>
-                {(["local", "remote"] as const).map((choice) => (
-                  <Button
-                    key={choice}
-                    label={
-                      choice === "local"
-                        ? copy(locale, "Keep local", "Manter local")
-                        : copy(locale, "Keep remote", "Manter remota")
-                    }
-                    colors={colors}
-                    variant="secondary"
-                    onPress={() =>
-                      void resolveTaskSynchronizationConflict(
-                        conflict,
-                        conflict[choice],
-                      ).then(() => {
-                        setConflicts((items) =>
-                          items.filter(({ id }) => id !== conflict.id),
-                        );
-                        refresh();
-                      })
-                    }
-                  />
-                ))}
-              </View>
-            </View>
-          ))}
+          ) : undefined
+        }
+      />
+      {syncMessage ? (
+        <Notice tone="warning" colors={colors} text={syncMessage}>
+          <View style={styles.noticeActions}>
+            <Button
+              label={copy(locale, "Retry sync", "Tentar sincronizar")}
+              onPress={() => {
+                setSyncing(true);
+                void synchronize().finally(() => setSyncing(false));
+              }}
+              colors={colors}
+              variant="secondary"
+              compact
+              loading={syncing}
+            />
+          </View>
+        </Notice>
+      ) : null}
+      <CategoryControls panelId="tasks-category-panel" />
+      <View
+        nativeID="tasks-category-panel"
+        role={Platform.OS === "web" ? "tabpanel" : undefined}
+        aria-labelledby={`tasks-category-panel-${selectedCategory}`}
+        style={styles.formStack}
+      >
+        {activeConflicts.length ? (
+          <Notice
+            tone="warning"
+            colors={colors}
+            text={copy(
+              locale,
+              `${activeConflicts.length} task edit(s) need manual resolution.`,
+              `${activeConflicts.length} edição(ões) de tarefa precisam de resolução manual.`,
+            )}
+          />
+        ) : null}
+        {activeConflicts.map((conflict) => (
           <View
+            key={conflict.id}
             style={[
-              styles.controlPanel,
+              styles.conflictCard,
+              {
+                backgroundColor: colors.warningSoft,
+                borderColor: colors.warning,
+              },
+            ]}
+          >
+            <View style={styles.flex}>
+              <Text style={[styles.cardTitle, { color: colors.text }]}>
+                {copy(locale, "Resolve task edit", "Resolver edição da tarefa")}
+              </Text>
+              <Text style={[styles.body, { color: colors.muted }]}>
+                {copy(locale, "Local", "Local")}: {conflict.local.title}.{" "}
+                {copy(locale, "Remote", "Remota")}: {conflict.remote.title}.
+              </Text>
+            </View>
+            <View style={styles.actions}>
+              {(["local", "remote"] as const).map((choice) => (
+                <Button
+                  key={choice}
+                  label={
+                    choice === "local"
+                      ? copy(locale, "Keep local", "Manter local")
+                      : copy(locale, "Keep remote", "Manter remota")
+                  }
+                  colors={colors}
+                  variant="secondary"
+                  onPress={() =>
+                    void resolveTaskSynchronizationConflict(
+                      conflict,
+                      conflict[choice],
+                    ).then(() => {
+                      setConflicts((items) =>
+                        items.filter(({ id }) => id !== conflict.id),
+                      );
+                      refresh();
+                    })
+                  }
+                />
+              ))}
+            </View>
+          </View>
+        ))}
+        <View
+          style={[
+            styles.controlPanel,
+            { backgroundColor: colors.surface, borderColor: colors.border },
+          ]}
+        >
+          <Field
+            label={copy(locale, "Search tasks", "Buscar tarefas")}
+            placeholder={copy(
+              locale,
+              "Search by title, notes, or tag",
+              "Busque por título, notas ou etiqueta",
+            )}
+            value={query}
+            onChangeText={setQuery}
+            colors={colors}
+          />
+        </View>
+        <View style={styles.filterGroup}>
+          <View style={styles.sectionHeadingRow}>
+            <Text
+              accessibilityRole="header"
+              aria-level={2}
+              style={[styles.sectionLabel, { color: colors.subtle }]}
+            >
+              {copy(locale, "Your tasks", "Suas tarefas")}
+            </Text>
+            <Text style={[styles.caption, { color: colors.subtle }]}>
+              {visible.length} {copy(locale, "shown", "exibidas")}
+            </Text>
+          </View>
+          <View style={styles.chips}>
+            {(["all", "open", "completed", "archived"] as const).map(
+              (value) => (
+                <Button
+                  key={value}
+                  label={
+                    value === "all"
+                      ? copy(locale, "All", "Todas")
+                      : value === "open"
+                        ? copy(locale, "Open", "Abertas")
+                        : value === "completed"
+                          ? copy(locale, "Completed", "Concluídas")
+                          : copy(locale, "Archived", "Arquivadas")
+                  }
+                  onPress={() => setStatus(value)}
+                  active={status === value}
+                  selected={status === value}
+                  colors={colors}
+                  variant="chip"
+                  compact
+                />
+              ),
+            )}
+          </View>
+        </View>
+        {!visible.length ? (
+          <EmptyState
+            title={
+              tasks.length
+                ? copy(locale, "No matching tasks", "Nenhuma tarefa encontrada")
+                : copy(locale, "No tasks yet", "Nenhuma tarefa ainda")
+            }
+            message={
+              tasks.length
+                ? copy(
+                    locale,
+                    "Try a different search or status filter.",
+                    "Tente outra busca ou filtro de status.",
+                  )
+                : copy(
+                    locale,
+                    "Add work with a due date and reminders that continue until it is complete.",
+                    "Adicione um trabalho com prazo e lembretes que continuam até a conclusão.",
+                  )
+            }
+            colors={colors}
+          />
+        ) : null}
+        {visible.map((task) => (
+          <View
+            key={task.id}
+            style={[
+              styles.reminderCard,
               { backgroundColor: colors.surface, borderColor: colors.border },
             ]}
           >
-            <Field
-              label={copy(locale, "Search tasks", "Buscar tarefas")}
-              placeholder={copy(
-                locale,
-                "Search by title, notes, or tag",
-                "Busque por título, notas ou etiqueta",
-              )}
-              value={query}
-              onChangeText={setQuery}
-              colors={colors}
-            />
-          </View>
-          <View style={styles.filterGroup}>
-            <View style={styles.sectionHeadingRow}>
-              <Text
-                accessibilityRole="header"
-                aria-level={2}
-                style={[styles.sectionLabel, { color: colors.subtle }]}
-              >
-                {copy(locale, "Your tasks", "Suas tarefas")}
-              </Text>
-              <Text style={[styles.caption, { color: colors.subtle }]}>
-                {visible.length} {copy(locale, "shown", "exibidas")}
-              </Text>
-            </View>
-            <View style={styles.chips}>
-              {(["all", "open", "completed", "archived"] as const).map(
-                (value) => (
-                  <Button
-                    key={value}
+            <View style={styles.titleRow}>
+              <View style={styles.flex}>
+                <View style={styles.reminderTitleRow}>
+                  <Text style={[styles.cardTitle, { color: colors.text }]}>
+                    {task.title}
+                  </Text>
+                  <StatusBadge
                     label={
-                      value === "all"
-                        ? copy(locale, "All", "Todas")
-                        : value === "open"
-                          ? copy(locale, "Open", "Abertas")
-                          : value === "completed"
-                            ? copy(locale, "Completed", "Concluídas")
-                            : copy(locale, "Archived", "Arquivadas")
+                      task.status === "open"
+                        ? copy(locale, "Open", "Aberta")
+                        : task.status === "completed"
+                          ? copy(locale, "Completed", "Concluída")
+                          : copy(locale, "Archived", "Arquivada")
                     }
-                    onPress={() => setStatus(value)}
-                    active={status === value}
-                    selected={status === value}
+                    tone={task.status === "open" ? "success" : "neutral"}
                     colors={colors}
-                    variant="chip"
-                    compact
                   />
-                ),
-              )}
-            </View>
-          </View>
-          {!visible.length ? (
-            <EmptyState
-              title={
-                tasks.length
-                  ? copy(
-                      locale,
-                      "No matching tasks",
-                      "Nenhuma tarefa encontrada",
-                    )
-                  : copy(locale, "No tasks yet", "Nenhuma tarefa ainda")
-              }
-              message={
-                tasks.length
-                  ? copy(
-                      locale,
-                      "Try a different search or status filter.",
-                      "Tente outra busca ou filtro de status.",
-                    )
-                  : copy(
-                      locale,
-                      "Add work with a due date and reminders that continue until it is complete.",
-                      "Adicione um trabalho com prazo e lembretes que continuam até a conclusão.",
-                    )
-              }
-              colors={colors}
-            />
-          ) : null}
-          {visible.map((task) => (
-            <View
-              key={task.id}
-              style={[
-                styles.reminderCard,
-                { backgroundColor: colors.surface, borderColor: colors.border },
-              ]}
-            >
-              <View style={styles.titleRow}>
-                <View style={styles.flex}>
-                  <View style={styles.reminderTitleRow}>
-                    <Text style={[styles.cardTitle, { color: colors.text }]}>
-                      {task.title}
-                    </Text>
-                    <StatusBadge
-                      label={
-                        task.status === "open"
-                          ? copy(locale, "Open", "Aberta")
-                          : task.status === "completed"
-                            ? copy(locale, "Completed", "Concluída")
-                            : copy(locale, "Archived", "Arquivada")
-                      }
-                      tone={task.status === "open" ? "success" : "neutral"}
-                      colors={colors}
-                    />
-                  </View>
-                  <Text style={[styles.body, { color: colors.muted }]}>
-                    {copy(locale, "Due", "Prazo")}:{" "}
-                    {new Date(task.dueAt).toLocaleString(locale, {
-                      timeZone: task.timezone,
-                    })}
-                  </Text>
-                  <Text style={[styles.caption, { color: colors.subtle }]}>
-                    {taskPolicyDescription(task, locale)}
-                  </Text>
                 </View>
+                <Text style={[styles.body, { color: colors.muted }]}>
+                  {copy(locale, "Due", "Prazo")}:{" "}
+                  {new Date(task.dueAt).toLocaleString(locale, {
+                    timeZone: task.timezone,
+                  })}
+                </Text>
+                <Text style={[styles.caption, { color: colors.subtle }]}>
+                  {taskPolicyDescription(task, locale)}
+                </Text>
               </View>
-              <View style={styles.actions}>
-                {task.status === "open" ? (
-                  <Button
-                    label={copy(locale, "Complete task", "Concluir tarefa")}
-                    onPress={() =>
-                      void mutate(() => taskService.complete(ownerId, task.id))
-                    }
-                    colors={colors}
-                    variant="primary"
-                    compact
-                  />
-                ) : (
-                  <Button
-                    label={copy(locale, "Restore task", "Restaurar tarefa")}
-                    onPress={() =>
-                      void mutate(() => taskService.restore(ownerId, task.id))
-                    }
-                    colors={colors}
-                    variant="secondary"
-                    compact
-                  />
-                )}
+            </View>
+            <View style={styles.actions}>
+              {task.status === "open" ? (
                 <Button
-                  label={copy(locale, "Edit", "Editar")}
-                  onPress={() => setEditing(task)}
+                  label={copy(locale, "Complete task", "Concluir tarefa")}
+                  onPress={() =>
+                    void mutate(() => taskService.complete(ownerId, task.id))
+                  }
+                  colors={colors}
+                  variant="primary"
+                  compact
+                />
+              ) : (
+                <Button
+                  label={copy(locale, "Restore task", "Restaurar tarefa")}
+                  onPress={() =>
+                    void mutate(() => taskService.restore(ownerId, task.id))
+                  }
                   colors={colors}
                   variant="secondary"
                   compact
                 />
-                {task.status !== "archived" ? (
-                  <Button
-                    label={copy(locale, "Archive", "Arquivar")}
-                    onPress={() =>
-                      void mutate(() => taskService.archive(ownerId, task.id))
-                    }
-                    colors={colors}
-                    variant="ghost"
-                    compact
-                  />
-                ) : null}
+              )}
+              <Button
+                label={copy(locale, "Edit", "Editar")}
+                onPress={() => setEditing(task)}
+                colors={colors}
+                variant="secondary"
+                compact
+              />
+              {task.status !== "archived" ? (
                 <Button
-                  label={copy(locale, "Delete task", "Excluir tarefa")}
-                  onPress={() => remove(task)}
+                  label={copy(locale, "Archive", "Arquivar")}
+                  onPress={() =>
+                    void mutate(() => taskService.archive(ownerId, task.id))
+                  }
                   colors={colors}
-                  variant="danger"
+                  variant="ghost"
                   compact
                 />
-              </View>
+              ) : null}
+              <Button
+                label={copy(locale, "Delete task", "Excluir tarefa")}
+                onPress={() => remove(task)}
+                colors={colors}
+                variant="danger"
+                compact
+              />
             </View>
-          ))}
-        </View>
-      </ScrollView>
-      {!isWide ? (
-        <CollectionCreateAction
-          label={copy(locale, "Add task", "Adicionar tarefa")}
-          onPress={() => setEditing("new")}
-          colors={colors}
-          persistent
-        />
-      ) : null}
-    </View>
-  );
+          </View>
+        ))}
+      </View>
+    </ScrollView>,
+    !isWide ? (
+      <CollectionCreateAction
+        key="task-create-action"
+        label={copy(locale, "Add task", "Adicionar tarefa")}
+        onPress={() => setEditing("new")}
+        colors={colors}
+        persistent
+      />
+    ) : null,
+  ];
 }
 
 function TaskEditor({
@@ -3939,348 +3931,347 @@ function ReminderList({
     );
   }
 
-  return (
-    <View style={styles.collectionScreen}>
-      <ScrollView
-        style={styles.collectionScroll}
-        contentContainerStyle={styles.page}
-      >
-        <PageHeader
-          eyebrow={copy(locale, "Workspace", "Área de trabalho")}
-          title={t("reminders")}
-          description={copy(
-            locale,
-            "Create precise schedules and keep every important follow-up visible.",
-            "Crie agendas precisas e mantenha cada acompanhamento importante visível.",
-          )}
-          colors={colors}
-          action={
-            isWide ? (
-              <CollectionCreateAction
-                label={t("addReminder")}
-                onPress={() => setEditing("new")}
-                colors={colors}
-              />
-            ) : undefined
-          }
-        />
-        {syncMessage ? (
-          <Notice tone="warning" colors={colors} text={syncMessage}>
-            <View style={styles.noticeActions}>
-              <Button
-                label={copy(locale, "Retry sync", "Tentar sincronizar")}
-                onPress={() => void retrySynchronization()}
-                colors={colors}
-                variant="secondary"
-                compact
-                loading={syncing}
-              />
-            </View>
-          </Notice>
-        ) : null}
-        <CategoryControls panelId="reminders-category-panel" />
-        <View
-          nativeID="reminders-category-panel"
-          role={Platform.OS === "web" ? "tabpanel" : undefined}
-          aria-labelledby={`reminders-category-panel-${selectedCategory}`}
-          style={styles.formStack}
-        >
-          {activeSyncConflicts.length > 0 && (
-            <Notice
-              tone="warning"
+  return [
+    <ScrollView
+      key="reminder-list"
+      style={styles.collectionScroll}
+      contentContainerStyle={styles.page}
+    >
+      <PageHeader
+        eyebrow={copy(locale, "Workspace", "Área de trabalho")}
+        title={t("reminders")}
+        description={copy(
+          locale,
+          "Create precise schedules and keep every important follow-up visible.",
+          "Crie agendas precisas e mantenha cada acompanhamento importante visível.",
+        )}
+        colors={colors}
+        action={
+          isWide ? (
+            <CollectionCreateAction
+              label={t("addReminder")}
+              onPress={() => setEditing("new")}
               colors={colors}
-              text={`${activeSyncConflicts.length} concurrent edit(s) need manual resolution. Local versions are preserved.`}
             />
-          )}
-          {activeSyncConflicts.map((conflict) => (
-            <View
-              key={conflict.id}
-              style={[
-                styles.conflictCard,
-                {
-                  backgroundColor: colors.warningSoft,
-                  borderColor: colors.warning,
-                },
-              ]}
-            >
-              <View style={styles.flex}>
-                <Text style={[styles.cardTitle, { color: colors.text }]}>
-                  Resolve concurrent edit
-                </Text>
-                <Text style={[styles.body, { color: colors.muted }]}>
-                  Local: {conflict.local.title}. Remote: {conflict.remote.title}
-                  .
-                </Text>
-              </View>
-              <View style={styles.actions}>
-                {(["local", "remote"] as const).map((choice) => (
-                  <Button
-                    key={choice}
-                    label={`Keep ${choice}`}
-                    colors={colors}
-                    variant="secondary"
-                    onPress={() =>
-                      void resolveSynchronizationConflict(
-                        conflict,
-                        conflict[choice],
-                      ).then(() => {
-                        setSyncConflicts((items) =>
-                          items.filter(({ id }) => id !== conflict.id),
-                        );
-                        refresh();
-                      })
-                    }
-                  />
-                ))}
-              </View>
-            </View>
-          ))}
+          ) : undefined
+        }
+      />
+      {syncMessage ? (
+        <Notice tone="warning" colors={colors} text={syncMessage}>
+          <View style={styles.noticeActions}>
+            <Button
+              label={copy(locale, "Retry sync", "Tentar sincronizar")}
+              onPress={() => void retrySynchronization()}
+              colors={colors}
+              variant="secondary"
+              compact
+              loading={syncing}
+            />
+          </View>
+        </Notice>
+      ) : null}
+      <CategoryControls panelId="reminders-category-panel" />
+      <View
+        nativeID="reminders-category-panel"
+        role={Platform.OS === "web" ? "tabpanel" : undefined}
+        aria-labelledby={`reminders-category-panel-${selectedCategory}`}
+        style={styles.formStack}
+      >
+        {activeSyncConflicts.length > 0 && (
+          <Notice
+            tone="warning"
+            colors={colors}
+            text={`${activeSyncConflicts.length} concurrent edit(s) need manual resolution. Local versions are preserved.`}
+          />
+        )}
+        {activeSyncConflicts.map((conflict) => (
           <View
+            key={conflict.id}
             style={[
-              styles.controlPanel,
+              styles.conflictCard,
+              {
+                backgroundColor: colors.warningSoft,
+                borderColor: colors.warning,
+              },
+            ]}
+          >
+            <View style={styles.flex}>
+              <Text style={[styles.cardTitle, { color: colors.text }]}>
+                Resolve concurrent edit
+              </Text>
+              <Text style={[styles.body, { color: colors.muted }]}>
+                Local: {conflict.local.title}. Remote: {conflict.remote.title}.
+              </Text>
+            </View>
+            <View style={styles.actions}>
+              {(["local", "remote"] as const).map((choice) => (
+                <Button
+                  key={choice}
+                  label={`Keep ${choice}`}
+                  colors={colors}
+                  variant="secondary"
+                  onPress={() =>
+                    void resolveSynchronizationConflict(
+                      conflict,
+                      conflict[choice],
+                    ).then(() => {
+                      setSyncConflicts((items) =>
+                        items.filter(({ id }) => id !== conflict.id),
+                      );
+                      refresh();
+                    })
+                  }
+                />
+              ))}
+            </View>
+          </View>
+        ))}
+        <View
+          style={[
+            styles.controlPanel,
+            {
+              backgroundColor: colors.surface,
+              borderColor: colors.border,
+            },
+          ]}
+          testID="reminder-search-panel"
+        >
+          <Field
+            label={t("search")}
+            placeholder={copy(
+              locale,
+              "Search by title, schedule, or tag",
+              "Busque por título, agenda ou etiqueta",
+            )}
+            value={query}
+            onChangeText={setQuery}
+            colors={colors}
+          />
+        </View>
+        <View style={styles.filterGroup} testID="schedule-filters">
+          <View style={styles.sectionHeadingRow}>
+            <Text
+              accessibilityRole="header"
+              aria-level={2}
+              style={[styles.sectionLabel, { color: colors.subtle }]}
+            >
+              {copy(locale, "Your schedules", "Suas agendas")}
+            </Text>
+            <Text style={[styles.caption, { color: colors.subtle }]}>
+              {visible.length} {copy(locale, "shown", "exibidos")}
+            </Text>
+          </View>
+          <View style={styles.chips}>
+            {(
+              ["all", "active", "disabled", "completed", "archived"] as const
+            ).map((item) => (
+              <Button
+                key={item}
+                label={
+                  item === "all"
+                    ? copy(locale, "All", "Todos")
+                    : item === "active"
+                      ? t("enabled")
+                      : t(item)
+                }
+                onPress={() => setStatus(item)}
+                active={status === item}
+                selected={status === item}
+                colors={colors}
+                variant="chip"
+                compact
+              />
+            ))}
+          </View>
+        </View>
+        {visible.length === 0 && (
+          <EmptyState
+            title={
+              reminders.length === 0
+                ? t("empty")
+                : copy(
+                    locale,
+                    "No matching reminders",
+                    "Nenhum lembrete encontrado",
+                  )
+            }
+            message={
+              reminders.length === 0
+                ? copy(
+                    locale,
+                    "Start with the next thing you cannot afford to miss.",
+                    "Comece pela próxima coisa que você não pode esquecer.",
+                  )
+                : copy(
+                    locale,
+                    "Try a different search or status filter.",
+                    "Tente outra busca ou filtro de status.",
+                  )
+            }
+            colors={colors}
+          />
+        )}
+        {visible.map((reminder) => (
+          <View
+            key={reminder.id}
+            style={[
+              styles.reminderCard,
               {
                 backgroundColor: colors.surface,
                 borderColor: colors.border,
               },
             ]}
-            testID="reminder-search-panel"
           >
-            <Field
-              label={t("search")}
-              placeholder={copy(
-                locale,
-                "Search by title, schedule, or tag",
-                "Busque por título, agenda ou etiqueta",
-              )}
-              value={query}
-              onChangeText={setQuery}
-              colors={colors}
-            />
-          </View>
-          <View style={styles.filterGroup} testID="schedule-filters">
-            <View style={styles.sectionHeadingRow}>
-              <Text
-                accessibilityRole="header"
-                aria-level={2}
-                style={[styles.sectionLabel, { color: colors.subtle }]}
-              >
-                {copy(locale, "Your schedules", "Suas agendas")}
-              </Text>
-              <Text style={[styles.caption, { color: colors.subtle }]}>
-                {visible.length} {copy(locale, "shown", "exibidos")}
-              </Text>
-            </View>
-            <View style={styles.chips}>
-              {(
-                ["all", "active", "disabled", "completed", "archived"] as const
-              ).map((item) => (
-                <Button
-                  key={item}
-                  label={
-                    item === "all"
-                      ? copy(locale, "All", "Todos")
-                      : item === "active"
-                        ? t("enabled")
-                        : t(item)
-                  }
-                  onPress={() => setStatus(item)}
-                  active={status === item}
-                  selected={status === item}
-                  colors={colors}
-                  variant="chip"
-                  compact
-                />
-              ))}
-            </View>
-          </View>
-          {visible.length === 0 && (
-            <EmptyState
-              title={
-                reminders.length === 0
-                  ? t("empty")
-                  : copy(
-                      locale,
-                      "No matching reminders",
-                      "Nenhum lembrete encontrado",
-                    )
-              }
-              message={
-                reminders.length === 0
-                  ? copy(
-                      locale,
-                      "Start with the next thing you cannot afford to miss.",
-                      "Comece pela próxima coisa que você não pode esquecer.",
-                    )
-                  : copy(
-                      locale,
-                      "Try a different search or status filter.",
-                      "Tente outra busca ou filtro de status.",
-                    )
-              }
-              colors={colors}
-            />
-          )}
-          {visible.map((reminder) => (
-            <View
-              key={reminder.id}
-              style={[
-                styles.reminderCard,
-                {
-                  backgroundColor: colors.surface,
-                  borderColor: colors.border,
-                },
-              ]}
-            >
-              <View style={styles.titleRow}>
-                <View style={styles.flex}>
-                  <View style={styles.reminderTitleRow}>
-                    <Text style={[styles.cardTitle, { color: colors.text }]}>
-                      {reminder.title}
-                    </Text>
-                    <StatusBadge
-                      label={
-                        reminder.status === "active"
-                          ? t("enabled")
-                          : t(reminder.status)
-                      }
-                      tone={
-                        reminder.status === "active"
-                          ? "success"
-                          : reminder.status === "archived" ||
-                              reminder.status === "completed"
-                            ? "neutral"
-                            : "warning"
-                      }
-                      colors={colors}
-                    />
-                  </View>
-                  <Text style={[styles.body, { color: colors.muted }]}>
-                    {describeSchedule(
-                      reminder.schedule,
-                      locale,
-                      reminder.timezone,
-                    )}
+            <View style={styles.titleRow}>
+              <View style={styles.flex}>
+                <View style={styles.reminderTitleRow}>
+                  <Text style={[styles.cardTitle, { color: colors.text }]}>
+                    {reminder.title}
                   </Text>
-                  {reminder.tags.length > 0 && (
-                    <View style={styles.tagRow}>
-                      {reminder.tags.map((tag) => (
-                        <Text
-                          key={tag}
-                          style={[
-                            styles.tag,
-                            {
-                              color: colors.accent,
-                              backgroundColor: colors.accentSoft,
-                            },
-                          ]}
-                        >
-                          {tag}
-                        </Text>
-                      ))}
-                    </View>
-                  )}
-                </View>
-                {(reminder.status === "active" ||
-                  reminder.status === "disabled") && (
-                  <Switch
-                    style={styles.reminderSwitch}
-                    accessibilityLabel={`${reminder.title}: ${t("enabled")}`}
-                    value={reminder.status === "active"}
-                    trackColor={{
-                      false: colors.surfaceMuted,
-                      true: colors.accentSoft,
-                    }}
-                    thumbColor={
+                  <StatusBadge
+                    label={
                       reminder.status === "active"
-                        ? colors.accent
-                        : colors.borderStrong
+                        ? t("enabled")
+                        : t(reminder.status)
                     }
-                    onValueChange={(value) =>
-                      void mutate(() =>
-                        service.setEnabled(ownerId, reminder.id, value),
-                      )
+                    tone={
+                      reminder.status === "active"
+                        ? "success"
+                        : reminder.status === "archived" ||
+                            reminder.status === "completed"
+                          ? "neutral"
+                          : "warning"
                     }
+                    colors={colors}
                   />
+                </View>
+                <Text style={[styles.body, { color: colors.muted }]}>
+                  {describeSchedule(
+                    reminder.schedule,
+                    locale,
+                    reminder.timezone,
+                  )}
+                </Text>
+                {reminder.tags.length > 0 && (
+                  <View style={styles.tagRow}>
+                    {reminder.tags.map((tag) => (
+                      <Text
+                        key={tag}
+                        style={[
+                          styles.tag,
+                          {
+                            color: colors.accent,
+                            backgroundColor: colors.accentSoft,
+                          },
+                        ]}
+                      >
+                        {tag}
+                      </Text>
+                    ))}
+                  </View>
                 )}
               </View>
-              <View style={styles.actions}>
-                {(reminder.status === "active" ||
-                  reminder.status === "disabled") && (
-                  <Button
-                    label={t("completeReminder")}
-                    onPress={() =>
-                      void mutate(() => service.complete(ownerId, reminder.id))
-                    }
-                    colors={colors}
-                    variant="secondary"
-                    compact
-                  />
-                )}
-                {reminder.status === "completed" && (
-                  <Button
-                    label={t("reopen")}
-                    onPress={() =>
-                      void mutate(() => service.restore(ownerId, reminder.id))
-                    }
-                    colors={colors}
-                    variant="secondary"
-                    compact
-                  />
-                )}
+              {(reminder.status === "active" ||
+                reminder.status === "disabled") && (
+                <Switch
+                  style={styles.reminderSwitch}
+                  accessibilityLabel={`${reminder.title}: ${t("enabled")}`}
+                  value={reminder.status === "active"}
+                  trackColor={{
+                    false: colors.surfaceMuted,
+                    true: colors.accentSoft,
+                  }}
+                  thumbColor={
+                    reminder.status === "active"
+                      ? colors.accent
+                      : colors.borderStrong
+                  }
+                  onValueChange={(value) =>
+                    void mutate(() =>
+                      service.setEnabled(ownerId, reminder.id, value),
+                    )
+                  }
+                />
+              )}
+            </View>
+            <View style={styles.actions}>
+              {(reminder.status === "active" ||
+                reminder.status === "disabled") && (
                 <Button
-                  label={t("edit")}
-                  onPress={() => setEditing(reminder)}
+                  label={t("completeReminder")}
+                  onPress={() =>
+                    void mutate(() => service.complete(ownerId, reminder.id))
+                  }
                   colors={colors}
                   variant="secondary"
                   compact
                 />
+              )}
+              {reminder.status === "completed" && (
                 <Button
-                  label={t("duplicate")}
+                  label={t("reopen")}
                   onPress={() =>
-                    void mutate(() => service.duplicate(ownerId, reminder.id))
+                    void mutate(() => service.restore(ownerId, reminder.id))
                   }
                   colors={colors}
-                  variant="ghost"
+                  variant="secondary"
                   compact
                 />
-                <Button
-                  label={
-                    reminder.status === "archived" ? t("restore") : t("archive")
-                  }
-                  onPress={() =>
-                    void mutate(() =>
-                      reminder.status === "archived"
-                        ? service.restore(ownerId, reminder.id)
-                        : service.archive(ownerId, reminder.id),
-                    )
-                  }
-                  colors={colors}
-                  variant="ghost"
-                  compact
-                />
-                <Button
-                  label={t("delete")}
-                  onPress={() => remove(reminder)}
-                  colors={colors}
-                  danger
-                  variant="danger"
-                  compact
-                />
-              </View>
+              )}
+              <Button
+                label={t("edit")}
+                onPress={() => setEditing(reminder)}
+                colors={colors}
+                variant="secondary"
+                compact
+              />
+              <Button
+                label={t("duplicate")}
+                onPress={() =>
+                  void mutate(() => service.duplicate(ownerId, reminder.id))
+                }
+                colors={colors}
+                variant="ghost"
+                compact
+              />
+              <Button
+                label={
+                  reminder.status === "archived" ? t("restore") : t("archive")
+                }
+                onPress={() =>
+                  void mutate(() =>
+                    reminder.status === "archived"
+                      ? service.restore(ownerId, reminder.id)
+                      : service.archive(ownerId, reminder.id),
+                  )
+                }
+                colors={colors}
+                variant="ghost"
+                compact
+              />
+              <Button
+                label={t("delete")}
+                onPress={() => remove(reminder)}
+                colors={colors}
+                danger
+                variant="danger"
+                compact
+              />
             </View>
-          ))}
-        </View>
-      </ScrollView>
-      {!isWide ? (
-        <CollectionCreateAction
-          label={t("addReminder")}
-          onPress={() => setEditing("new")}
-          colors={colors}
-          persistent
-        />
-      ) : null}
-    </View>
-  );
+          </View>
+        ))}
+      </View>
+    </ScrollView>,
+    !isWide ? (
+      <CollectionCreateAction
+        key="reminder-create-action"
+        label={t("addReminder")}
+        onPress={() => setEditing("new")}
+        colors={colors}
+        persistent
+      />
+    ) : null,
+  ];
 }
 
 function ReminderEditor({
@@ -6569,11 +6560,6 @@ const styles = StyleSheet.create({
     flexWrap: "nowrap",
   },
   content: { flex: 1, minWidth: 0, minHeight: 0 },
-  collectionScreen: {
-    flex: 1,
-    minHeight: 0,
-    position: "relative",
-  },
   collectionScroll: {
     flex: 1,
     minHeight: 0,
