@@ -66,6 +66,30 @@ choice; use **Enable notifications on this device** to opt back in.
 Opting back in reuses the retained browser subscription rather than deleting it.
 Provider-rejected registrations are repaired separately.
 
+## Tasks and reminder policies
+
+Tasks are separate from recurring reminders and habits. A task has its own due
+date and an independent reminder policy, so it can be added to the task list
+immediately even when work and notifications start later.
+
+A task's first reminder must occur on or before its due date. Recurring reminder
+policies keep their existing frequency after the task becomes overdue and stop
+only when the task is completed or archived. A one-time first reminder therefore
+also requires an overdue repeat frequency; that cadence starts after the due
+date if the task is still open.
+
+Task notification actions have task-specific meaning. **Dismiss** skips only the
+current notification, **Postpone** delays only that occurrence, and **Complete**
+completes the whole task and cancels its pending and future notifications.
+Archiving a task also stops notification delivery. Restoring a task resumes from
+the next valid future occurrence without reviving canceled occurrences.
+
+Tasks use the same offline-first synchronization and manual conflict-resolution
+approach as reminders. Version-3 backups include tasks while version-1 and
+version-2 reminder backups remain importable. Task actions are not included in
+habit analytics; the analytics dashboard continues to describe reminder
+occurrences only.
+
 ## Categories
 
 Today and Reminders share category tabs: **All**, **Uncategorized**, and your

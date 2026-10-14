@@ -42,9 +42,13 @@ import {
 } from "react-native";
 import {
   ReminderService,
+  TaskService,
   filterReminders,
+  filterTasks,
   sameReminder,
+  sameTask,
   type SyncConflict,
+  type TaskSyncConflict,
 } from "@cron-reminder/application";
 import { exportBackup, importBackup } from "@cron-reminder/infrastructure";
 import {
@@ -57,6 +61,8 @@ import {
   type NotificationAction,
   type Postponement,
   type Reminder,
+  type Task,
+  type TaskReminderPolicy,
   type ReminderSound,
   type ReminderCategory,
   type AnalyticsSnapshot,
@@ -96,6 +102,11 @@ import {
   subscribeToDataChanges,
   loadAnalytics,
   cachedAnalytics,
+  deleteTask,
+  resolveTaskSynchronizationConflict,
+  runTaskMutation,
+  synchronizeTasks,
+  taskRepository,
 } from "./src/services";
 import {
   DeviceNotificationAdapter,
@@ -118,10 +129,12 @@ import {
 } from "./src/theme";
 import {
   buildAgendaItems,
+  buildTaskAgendaItems,
   groupAgendaItems,
   type AgendaGroupKey,
   type AgendaItem,
   type StoredAgendaOccurrence,
+  type StoredTaskAgendaOccurrence,
 } from "./src/agenda";
 import { startAgendaAutoRefresh } from "./src/agendaAutoRefresh";
 import {
@@ -133,6 +146,7 @@ import {
   type ScheduleEditorState,
 } from "./src/scheduleEditor";
 import { synchronizationFailureMessage } from "./src/syncStatus";
+import { buildTaskReminderPolicy, taskCadenceMinutes } from "./src/taskEditor";
 
 type ThemePreference = "system" | "light" | "dark";
 type NotificationRegistrationStatus =
@@ -142,6 +156,11 @@ const service = new ReminderService(
   localRepository,
   { now: () => new Date() },
   () => `reminder-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+);
+const taskService = new TaskService(
+  taskRepository,
+  { now: () => new Date() },
+  () => `task-${Date.now()}-${Math.random().toString(36).slice(2)}`,
 );
 
 interface AppContextValue {
@@ -155,6 +174,8 @@ interface AppContextValue {
   colors: Colors;
   requestedPostponeId: string;
   setRequestedPostponeId: (id: string) => void;
+  requestedPostponeEntityType: "reminder" | "task";
+  setRequestedPostponeEntityType: (type: "reminder" | "task") => void;
   categories: readonly ReminderCategory[];
   selectedCategory: string;
   setSelectedCategory: (id: string) => void;
@@ -164,6 +185,7 @@ interface AppContextValue {
 const AppContext = createContext<AppContextValue | null>(null);
 const navigationItems = [
   { key: "agenda", path: "/" },
+  { key: "tasks", path: "/tasks" },
   { key: "reminders", path: "/reminders" },
   { key: "history", path: "/history" },
   { key: "analytics", path: "/analytics" },
@@ -201,6 +223,8 @@ export function RootNavigator() {
   const [categoryError, setCategoryError] = useState("");
   const [syncRevision, setSyncRevision] = useState(0);
   const [requestedPostponeId, setRequestedPostponeId] = useState("");
+  const [requestedPostponeEntityType, setRequestedPostponeEntityType] =
+    useState<"reminder" | "task">("reminder");
   const [backgroundSyncConflicts, setBackgroundSyncConflicts] = useState<
     readonly SyncConflict[]
   >([]);
@@ -310,6 +334,9 @@ export function RootNavigator() {
           setSyncRevision((revision) => revision + 1);
         })
         .catch(() => {});
+      void synchronizeTasks(ownerId)
+        .then(() => setSyncRevision((revision) => revision + 1))
+        .catch(() => {});
       void flushNotificationActions(ownerId).catch(() => {});
     };
     retry();
@@ -347,6 +374,7 @@ export function RootNavigator() {
     if (Platform.OS === "web") {
       const submitWebAction = async (data: Record<string, unknown>) => {
         if (data.ownerId !== ownerId) return;
+        const entityType = data.entityType === "task" ? "task" : "reminder";
         let queued = data.action === "open";
         if (
           data.type === "notification-action" &&
@@ -357,8 +385,18 @@ export function RootNavigator() {
         ) {
           if (data.action === "snooze") {
             setRequestedPostponeId(data.occurrenceId);
+            setRequestedPostponeEntityType(entityType);
             router.navigate("/");
           } else {
+            if (
+              entityType === "task" &&
+              data.action === "complete" &&
+              typeof data.taskId === "string"
+            ) {
+              await runTaskMutation(() =>
+                taskService.complete(ownerId, data.taskId as string),
+              ).catch(() => {});
+            }
             await submitNotificationAction(
               data.occurrenceId,
               data.action,
@@ -369,6 +407,7 @@ export function RootNavigator() {
                 : typeof data.cacheKey === "string"
                   ? data.cacheKey
                   : undefined,
+              entityType,
             );
           }
           setSyncRevision((revision) => revision + 1);
@@ -424,7 +463,12 @@ export function RootNavigator() {
           response.notification.request.content.data?.occurrenceId;
         const notificationOwnerId =
           response.notification.request.content.data?.ownerId;
+        const taskId = response.notification.request.content.data?.taskId;
         const action = response.actionIdentifier;
+        const entityType =
+          response.notification.request.content.data?.entityType === "task"
+            ? "task"
+            : "reminder";
         if (
           notificationOwnerId === ownerId &&
           typeof occurrenceId === "string" &&
@@ -432,14 +476,25 @@ export function RootNavigator() {
         ) {
           if (action === "snooze") {
             setRequestedPostponeId(occurrenceId);
+            setRequestedPostponeEntityType(entityType);
             router.navigate("/");
           } else {
+            if (
+              entityType === "task" &&
+              action === "complete" &&
+              typeof taskId === "string"
+            ) {
+              await runTaskMutation(() =>
+                taskService.complete(ownerId, taskId),
+              ).catch(() => {});
+            }
             await submitNotificationAction(
               occurrenceId,
               action,
               ownerId,
               undefined,
               `native-${response.notification.request.identifier}-${action}`,
+              entityType,
             );
           }
           setSyncRevision((revision) => revision + 1);
@@ -490,6 +545,8 @@ export function RootNavigator() {
     colors,
     requestedPostponeId,
     setRequestedPostponeId,
+    requestedPostponeEntityType,
+    setRequestedPostponeEntityType,
     categories: categoryOwner === ownerId ? categories : [],
     selectedCategory,
     setSelectedCategory,
@@ -500,7 +557,11 @@ export function RootNavigator() {
       {navigationItems.map((item) => (
         <Button
           key={item.key}
-          label={t(item.key)}
+          label={
+            item.key === "tasks"
+              ? copy(locale, "Tasks", "Tarefas")
+              : t(item.key)
+          }
           onPress={() => router.navigate(item.path)}
           active={pathname === item.path}
           selected={pathname === item.path}
@@ -589,6 +650,18 @@ export function RemindersRoute() {
   );
 }
 
+export function TasksRoute() {
+  const { ownerId, syncRevision, locale, colors } = useAppContext();
+  return (
+    <TaskList
+      ownerId={ownerId}
+      syncRevision={syncRevision}
+      locale={locale}
+      colors={colors}
+    />
+  );
+}
+
 export function AgendaRoute() {
   const {
     ownerId,
@@ -596,6 +669,7 @@ export function AgendaRoute() {
     locale,
     colors,
     requestedPostponeId,
+    requestedPostponeEntityType,
     setRequestedPostponeId,
   } = useAppContext();
   return (
@@ -605,6 +679,7 @@ export function AgendaRoute() {
       locale={locale}
       colors={colors}
       requestedPostponeId={requestedPostponeId}
+      requestedPostponeEntityType={requestedPostponeEntityType}
       onPostponeRequestHandled={() => setRequestedPostponeId("")}
     />
   );
@@ -1249,6 +1324,7 @@ function AgendaScreen({
   locale,
   colors,
   requestedPostponeId,
+  requestedPostponeEntityType,
   onPostponeRequestHandled,
 }: {
   ownerId: string;
@@ -1256,11 +1332,13 @@ function AgendaScreen({
   locale: Locale;
   colors: Colors;
   requestedPostponeId: string;
+  requestedPostponeEntityType: "reminder" | "task";
   onPostponeRequestHandled: () => void;
 }) {
   const t = createTranslator(locale);
   const { selectedCategory, setSelectedCategory } = useAppContext();
   const [agendaReminders, setAgendaReminders] = useState<Reminder[]>([]);
+  const [agendaTasks, setAgendaTasks] = useState<Task[]>([]);
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
   const [items, setItems] = useState<AgendaItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1274,8 +1352,11 @@ function AgendaScreen({
     try {
       const now = new Date();
       const reminders = await localRepository.list(ownerId);
+      const tasks = await taskRepository.list(ownerId);
       setAgendaReminders(reminders);
+      setAgendaTasks(tasks);
       const occurrences: StoredAgendaOccurrence[] = [];
+      const taskOccurrences: StoredTaskAgendaOccurrence[] = [];
       const occurrenceCounts = new Map<string, number>();
       if (supabase) {
         const cutoff = new Date(now.getTime() - 30 * 86_400_000).toISOString();
@@ -1322,10 +1403,37 @@ function AgendaScreen({
           }
           if ((data?.length ?? 0) < pageSize) break;
         }
+        for (let offset = 0; ; offset += pageSize) {
+          const { data, error: taskOccurrenceError } = await supabase
+            .from("task_occurrences")
+            .select(
+              "id,task_id,scheduled_at,status,acted_at,snoozed_until,source",
+            )
+            .eq("owner_id", ownerId)
+            .in("status", [
+              "scheduled",
+              "triggered",
+              "delivering",
+              "postponed",
+              "missed",
+              "delivery-failed",
+              "dismissed",
+              "completed",
+            ])
+            .order("scheduled_at", { ascending: false })
+            .order("id", { ascending: false })
+            .range(offset, offset + pageSize - 1);
+          if (taskOccurrenceError) throw taskOccurrenceError;
+          const page = (data ?? []) as StoredTaskAgendaOccurrence[];
+          taskOccurrences.push(...page);
+          if (page.length < pageSize) break;
+        }
       }
       const pending = await getPendingNotificationActions(ownerId);
       for (const action of pending) {
-        const occurrence = occurrences.find(
+        const collection =
+          action.entityType === "task" ? taskOccurrences : occurrences;
+        const occurrence = collection.find(
           ({ id }) => id === action.occurrenceId,
         );
         if (!occurrence) continue;
@@ -1342,15 +1450,32 @@ function AgendaScreen({
                 Date.parse(action.queuedAt ?? now.toISOString()) + 10 * 60_000,
               ).toISOString())
             : null;
-        occurrence.postponed_to_next = action.mergeIntoNext ?? false;
+        if (action.entityType === "reminder") {
+          (occurrence as StoredAgendaOccurrence).postponed_to_next =
+            action.mergeIntoNext ?? false;
+        }
       }
-      setItems(buildAgendaItems(reminders, occurrences, now, occurrenceCounts));
+      setItems([
+        ...buildAgendaItems(reminders, occurrences, now, occurrenceCounts),
+        ...buildTaskAgendaItems(tasks, taskOccurrences, now),
+      ]);
+      const pendingEntityTypes = new Set(
+        pending.map(({ entityType }) => entityType),
+      );
       setError(
         pending.length > 0
           ? copy(
               locale,
-              "Your reminder action is saved on this device and waiting to sync. Check your connection; it will retry automatically.",
-              "Sua ação foi salva neste dispositivo e aguarda sincronização. Verifique sua conexão; uma nova tentativa será feita automaticamente.",
+              pendingEntityTypes.size > 1
+                ? "Your actions are saved on this device and waiting to sync. Check your connection; they will retry automatically."
+                : pendingEntityTypes.has("task")
+                  ? "Your task action is saved on this device and waiting to sync. Check your connection; it will retry automatically."
+                  : "Your reminder action is saved on this device and waiting to sync. Check your connection; it will retry automatically.",
+              pendingEntityTypes.size > 1
+                ? "Suas ações foram salvas neste dispositivo e aguardam sincronização. Verifique sua conexão; novas tentativas serão feitas automaticamente."
+                : pendingEntityTypes.has("task")
+                  ? "Sua ação da tarefa foi salva neste dispositivo e aguarda sincronização. Verifique sua conexão; uma nova tentativa será feita automaticamente."
+                  : "Sua ação do lembrete foi salva neste dispositivo e aguarda sincronização. Verifique sua conexão; uma nova tentativa será feita automaticamente.",
             )
           : "",
       );
@@ -1378,7 +1503,12 @@ function AgendaScreen({
   useEffect(() => {
     if (!requestedPostponeId || loading) return;
     if (
-      !items.some((item) => item.id === requestedPostponeId && item.snoozable)
+      !items.some(
+        (item) =>
+          item.id === requestedPostponeId &&
+          item.entityType === requestedPostponeEntityType &&
+          item.snoozable,
+      )
     ) {
       setError(
         copy(
@@ -1400,7 +1530,10 @@ function AgendaScreen({
         let syncError = "";
         try {
           await flushNotificationActions(ownerId);
-          await synchronizeReminders(ownerId);
+          await Promise.all([
+            synchronizeReminders(ownerId),
+            synchronizeTasks(ownerId),
+          ]);
         } catch {
           syncError = await getSynchronizationFailureMessage(locale);
         }
@@ -1427,7 +1560,19 @@ function AgendaScreen({
     setActionKey(pendingKey);
     setError("");
     try {
-      await submitNotificationAction(item.id, action, ownerId, postponement);
+      if (item.entityType === "task" && action === "complete") {
+        await runTaskMutation(() =>
+          taskService.complete(ownerId, item.reminderId),
+        );
+      }
+      await submitNotificationAction(
+        item.id,
+        action,
+        ownerId,
+        postponement,
+        undefined,
+        item.entityType,
+      );
       if (action !== "snooze" || postponement?.mergeIntoNext) {
         setItems((current) =>
           current.filter((candidate) => candidate.id !== item.id),
@@ -1478,8 +1623,22 @@ function AgendaScreen({
             : selectedCategory,
     }).map((item) => item.id),
   );
+  const filteredTaskIds = new Set(
+    filterTasks(agendaTasks, {
+      categoryId:
+        selectedCategory === "all"
+          ? undefined
+          : selectedCategory === "uncategorized"
+            ? null
+            : selectedCategory,
+    }).map((item) => item.id),
+  );
   const groups = groupAgendaItems(
-    items.filter((item) => filteredIds.has(item.reminderId)),
+    items.filter((item) =>
+      item.entityType === "task"
+        ? filteredTaskIds.has(item.reminderId)
+        : filteredIds.has(item.reminderId),
+    ),
     now,
     timezone,
   );
@@ -1591,7 +1750,10 @@ function AgendaScreen({
                       void actOnOccurrence(item, "snooze", postponement)
                     }
                     onComplete={() => void actOnOccurrence(item, "complete")}
-                    postponeRequested={requestedPostponeId === item.id}
+                    postponeRequested={
+                      requestedPostponeId === item.id &&
+                      requestedPostponeEntityType === item.entityType
+                    }
                     onPostponeRequestHandled={onPostponeRequestHandled}
                   />
                 ))}
@@ -1639,6 +1801,11 @@ function AgendaItemCard({
         <View style={styles.flex}>
           <Text style={[styles.cardTitle, { color: colors.text }]}>
             {item.reminderTitle}
+          </Text>
+          <Text style={[styles.sectionLabel, { color: colors.subtle }]}>
+            {item.entityType === "task"
+              ? copy(locale, "Task", "Tarefa")
+              : copy(locale, "Reminder", "Lembrete")}
           </Text>
           <Text style={[styles.body, { color: colors.muted }]}>
             {agendaItemDescription(item, locale)}
@@ -1747,11 +1914,19 @@ function AgendaItemActions({
         ) : null}
         {item.dismissible ? (
           <Button
-            label={createTranslator(locale)("complete")}
+            label={
+              item.entityType === "task"
+                ? copy(locale, "Complete task", "Concluir tarefa")
+                : createTranslator(locale)("complete")
+            }
             accessibilityLabel={copy(
               locale,
-              `Complete ${item.reminderTitle}, ${description}`,
-              `Concluir ${item.reminderTitle}, ${description}`,
+              item.entityType === "task"
+                ? `Complete task ${item.reminderTitle}, ${description}`
+                : `Complete ${item.reminderTitle}, ${description}`,
+              item.entityType === "task"
+                ? `Concluir tarefa ${item.reminderTitle}, ${description}`
+                : `Concluir ${item.reminderTitle}, ${description}`,
             )}
             onPress={onComplete}
             colors={colors}
@@ -2330,6 +2505,767 @@ function SignIn({
   );
 }
 
+function taskPolicyDescription(task: Task, locale: Locale): string {
+  const primary = describeSchedule(
+    task.reminderPolicy.primary,
+    locale,
+    task.timezone,
+  );
+  if (!task.reminderPolicy.overdue) {
+    return copy(
+      locale,
+      `${primary}. Continues until completed or archived.`,
+      `${primary}. Continua até a conclusão ou o arquivamento.`,
+    );
+  }
+  return copy(
+    locale,
+    `${primary}. After the due date: ${describeSchedule(
+      task.reminderPolicy.overdue,
+      locale,
+      task.timezone,
+    )}.`,
+    `${primary}. Após o prazo: ${describeSchedule(
+      task.reminderPolicy.overdue,
+      locale,
+      task.timezone,
+    )}.`,
+  );
+}
+
+function TaskList({
+  ownerId,
+  syncRevision,
+  locale,
+  colors,
+}: {
+  ownerId: string;
+  syncRevision: number;
+  locale: Locale;
+  colors: Colors;
+}) {
+  const { selectedCategory } = useAppContext();
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [query, setQuery] = useState("");
+  const [status, setStatus] = useState<Task["status"] | "all">("all");
+  const [editing, setEditing] = useState<Task | "new" | null>(null);
+  const [syncMessage, setSyncMessage] = useState("");
+  const [syncing, setSyncing] = useState(false);
+  const [conflicts, setConflicts] = useState<readonly TaskSyncConflict[]>([]);
+  const refresh = useCallback(
+    () => void taskRepository.list(ownerId).then(setTasks),
+    [ownerId],
+  );
+
+  const synchronize = useCallback(async () => {
+    try {
+      setConflicts(await synchronizeTasks(ownerId));
+      setSyncMessage("");
+    } catch {
+      setSyncMessage(await getSynchronizationFailureMessage(locale));
+    }
+    refresh();
+  }, [locale, ownerId, refresh]);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh, syncRevision]);
+  useEffect(() => {
+    void synchronize();
+  }, [synchronize]);
+
+  const visible = useMemo(
+    () =>
+      filterTasks(tasks, {
+        query,
+        status,
+        sort: "due",
+        categoryId:
+          selectedCategory === "all"
+            ? undefined
+            : selectedCategory === "uncategorized"
+              ? null
+              : selectedCategory,
+      }),
+    [query, selectedCategory, status, tasks],
+  );
+  const activeConflicts = useMemo(
+    () =>
+      conflicts.filter((conflict) => {
+        const current = tasks.find(({ id }) => id === conflict.id);
+        return current !== undefined && sameTask(current, conflict.local);
+      }),
+    [conflicts, tasks],
+  );
+
+  if (editing) {
+    return (
+      <TaskEditor
+        ownerId={ownerId}
+        task={editing === "new" ? undefined : editing}
+        locale={locale}
+        colors={colors}
+        onCancel={() => setEditing(null)}
+        onSaved={(nextConflicts, message) => {
+          setConflicts(nextConflicts);
+          setSyncMessage(message);
+          setEditing(null);
+          refresh();
+        }}
+      />
+    );
+  }
+
+  async function mutate(operation: () => Promise<unknown>, serialized = false) {
+    if (serialized) await operation();
+    else await runTaskMutation(operation);
+    await synchronize();
+  }
+
+  function remove(task: Task) {
+    confirmDestructiveAction(
+      copy(locale, "Delete task", "Excluir tarefa"),
+      copy(
+        locale,
+        "This permanently deletes the task and stops its notifications.",
+        "Isso exclui permanentemente a tarefa e interrompe suas notificações.",
+      ),
+      copy(locale, "Cancel", "Cancelar"),
+      copy(locale, "Delete task", "Excluir tarefa"),
+      () => void mutate(() => deleteTask(task.id, ownerId), true),
+    );
+  }
+
+  return (
+    <ScrollView contentContainerStyle={styles.page}>
+      <PageHeader
+        eyebrow={copy(locale, "Plan and finish", "Planeje e conclua")}
+        title={copy(locale, "Tasks", "Tarefas")}
+        description={copy(
+          locale,
+          "Track work by due date and keep reminders repeating until the work is done.",
+          "Acompanhe o trabalho pelo prazo e repita os lembretes até a conclusão.",
+        )}
+        colors={colors}
+        action={
+          <Button
+            label={copy(locale, "Add task", "Adicionar tarefa")}
+            onPress={() => setEditing("new")}
+            colors={colors}
+            variant="primary"
+          />
+        }
+      />
+      {syncMessage ? (
+        <Notice tone="warning" colors={colors} text={syncMessage}>
+          <View style={styles.noticeActions}>
+            <Button
+              label={copy(locale, "Retry sync", "Tentar sincronizar")}
+              onPress={() => {
+                setSyncing(true);
+                void synchronize().finally(() => setSyncing(false));
+              }}
+              colors={colors}
+              variant="secondary"
+              compact
+              loading={syncing}
+            />
+          </View>
+        </Notice>
+      ) : null}
+      <CategoryControls panelId="tasks-category-panel" />
+      <View
+        nativeID="tasks-category-panel"
+        role={Platform.OS === "web" ? "tabpanel" : undefined}
+        aria-labelledby={`tasks-category-panel-${selectedCategory}`}
+        style={styles.formStack}
+      >
+        {activeConflicts.length ? (
+          <Notice
+            tone="warning"
+            colors={colors}
+            text={copy(
+              locale,
+              `${activeConflicts.length} task edit(s) need manual resolution.`,
+              `${activeConflicts.length} edição(ões) de tarefa precisam de resolução manual.`,
+            )}
+          />
+        ) : null}
+        {activeConflicts.map((conflict) => (
+          <View
+            key={conflict.id}
+            style={[
+              styles.conflictCard,
+              {
+                backgroundColor: colors.warningSoft,
+                borderColor: colors.warning,
+              },
+            ]}
+          >
+            <View style={styles.flex}>
+              <Text style={[styles.cardTitle, { color: colors.text }]}>
+                {copy(locale, "Resolve task edit", "Resolver edição da tarefa")}
+              </Text>
+              <Text style={[styles.body, { color: colors.muted }]}>
+                {copy(locale, "Local", "Local")}: {conflict.local.title}.{" "}
+                {copy(locale, "Remote", "Remota")}: {conflict.remote.title}.
+              </Text>
+            </View>
+            <View style={styles.actions}>
+              {(["local", "remote"] as const).map((choice) => (
+                <Button
+                  key={choice}
+                  label={
+                    choice === "local"
+                      ? copy(locale, "Keep local", "Manter local")
+                      : copy(locale, "Keep remote", "Manter remota")
+                  }
+                  colors={colors}
+                  variant="secondary"
+                  onPress={() =>
+                    void resolveTaskSynchronizationConflict(
+                      conflict,
+                      conflict[choice],
+                    ).then(() => {
+                      setConflicts((items) =>
+                        items.filter(({ id }) => id !== conflict.id),
+                      );
+                      refresh();
+                    })
+                  }
+                />
+              ))}
+            </View>
+          </View>
+        ))}
+        <View
+          style={[
+            styles.controlPanel,
+            { backgroundColor: colors.surface, borderColor: colors.border },
+          ]}
+        >
+          <Field
+            label={copy(locale, "Search tasks", "Buscar tarefas")}
+            placeholder={copy(
+              locale,
+              "Search by title, notes, or tag",
+              "Busque por título, notas ou etiqueta",
+            )}
+            value={query}
+            onChangeText={setQuery}
+            colors={colors}
+          />
+        </View>
+        <View style={styles.filterGroup}>
+          <View style={styles.sectionHeadingRow}>
+            <Text
+              accessibilityRole="header"
+              aria-level={2}
+              style={[styles.sectionLabel, { color: colors.subtle }]}
+            >
+              {copy(locale, "Your tasks", "Suas tarefas")}
+            </Text>
+            <Text style={[styles.caption, { color: colors.subtle }]}>
+              {visible.length} {copy(locale, "shown", "exibidas")}
+            </Text>
+          </View>
+          <View style={styles.chips}>
+            {(["all", "open", "completed", "archived"] as const).map(
+              (value) => (
+                <Button
+                  key={value}
+                  label={
+                    value === "all"
+                      ? copy(locale, "All", "Todas")
+                      : value === "open"
+                        ? copy(locale, "Open", "Abertas")
+                        : value === "completed"
+                          ? copy(locale, "Completed", "Concluídas")
+                          : copy(locale, "Archived", "Arquivadas")
+                  }
+                  onPress={() => setStatus(value)}
+                  active={status === value}
+                  selected={status === value}
+                  colors={colors}
+                  variant="chip"
+                  compact
+                />
+              ),
+            )}
+          </View>
+        </View>
+        {!visible.length ? (
+          <EmptyState
+            title={
+              tasks.length
+                ? copy(locale, "No matching tasks", "Nenhuma tarefa encontrada")
+                : copy(locale, "No tasks yet", "Nenhuma tarefa ainda")
+            }
+            message={
+              tasks.length
+                ? copy(
+                    locale,
+                    "Try a different search or status filter.",
+                    "Tente outra busca ou filtro de status.",
+                  )
+                : copy(
+                    locale,
+                    "Add work with a due date and reminders that continue until it is complete.",
+                    "Adicione um trabalho com prazo e lembretes que continuam até a conclusão.",
+                  )
+            }
+            colors={colors}
+            action={
+              !tasks.length ? (
+                <Button
+                  label={copy(locale, "Add task", "Adicionar tarefa")}
+                  onPress={() => setEditing("new")}
+                  colors={colors}
+                  variant="primary"
+                />
+              ) : undefined
+            }
+          />
+        ) : null}
+        {visible.map((task) => (
+          <View
+            key={task.id}
+            style={[
+              styles.reminderCard,
+              { backgroundColor: colors.surface, borderColor: colors.border },
+            ]}
+          >
+            <View style={styles.titleRow}>
+              <View style={styles.flex}>
+                <View style={styles.reminderTitleRow}>
+                  <Text style={[styles.cardTitle, { color: colors.text }]}>
+                    {task.title}
+                  </Text>
+                  <StatusBadge
+                    label={
+                      task.status === "open"
+                        ? copy(locale, "Open", "Aberta")
+                        : task.status === "completed"
+                          ? copy(locale, "Completed", "Concluída")
+                          : copy(locale, "Archived", "Arquivada")
+                    }
+                    tone={task.status === "open" ? "success" : "neutral"}
+                    colors={colors}
+                  />
+                </View>
+                <Text style={[styles.body, { color: colors.muted }]}>
+                  {copy(locale, "Due", "Prazo")}:{" "}
+                  {new Date(task.dueAt).toLocaleString(locale, {
+                    timeZone: task.timezone,
+                  })}
+                </Text>
+                <Text style={[styles.caption, { color: colors.subtle }]}>
+                  {taskPolicyDescription(task, locale)}
+                </Text>
+              </View>
+            </View>
+            <View style={styles.actions}>
+              {task.status === "open" ? (
+                <Button
+                  label={copy(locale, "Complete task", "Concluir tarefa")}
+                  onPress={() =>
+                    void mutate(() => taskService.complete(ownerId, task.id))
+                  }
+                  colors={colors}
+                  variant="primary"
+                  compact
+                />
+              ) : (
+                <Button
+                  label={copy(locale, "Restore task", "Restaurar tarefa")}
+                  onPress={() =>
+                    void mutate(() => taskService.restore(ownerId, task.id))
+                  }
+                  colors={colors}
+                  variant="secondary"
+                  compact
+                />
+              )}
+              <Button
+                label={copy(locale, "Edit", "Editar")}
+                onPress={() => setEditing(task)}
+                colors={colors}
+                variant="secondary"
+                compact
+              />
+              {task.status !== "archived" ? (
+                <Button
+                  label={copy(locale, "Archive", "Arquivar")}
+                  onPress={() =>
+                    void mutate(() => taskService.archive(ownerId, task.id))
+                  }
+                  colors={colors}
+                  variant="ghost"
+                  compact
+                />
+              ) : null}
+              <Button
+                label={copy(locale, "Delete task", "Excluir tarefa")}
+                onPress={() => remove(task)}
+                colors={colors}
+                variant="danger"
+                compact
+              />
+            </View>
+          </View>
+        ))}
+      </View>
+    </ScrollView>
+  );
+}
+
+function TaskEditor({
+  ownerId,
+  task,
+  locale,
+  colors,
+  onCancel,
+  onSaved,
+}: {
+  ownerId: string;
+  task?: Task;
+  locale: Locale;
+  colors: Colors;
+  onCancel: () => void;
+  onSaved: (
+    conflicts: readonly TaskSyncConflict[],
+    syncMessage: string,
+  ) => void;
+}) {
+  const { categories, selectedCategory } = useAppContext();
+  const now = useMemo(() => new Date(), []);
+  const defaultDue = useMemo(
+    () => new Date(now.getTime() + 86_400_000).toISOString(),
+    [now],
+  );
+  const defaultFirst = useMemo(
+    () => new Date(now.getTime() + 3_600_000).toISOString(),
+    [now],
+  );
+  const primary = task?.reminderPolicy.primary;
+  const existingCadence = task ? taskCadenceMinutes(task.reminderPolicy) : null;
+  const [title, setTitle] = useState(task?.title ?? "");
+  const [notes, setNotes] = useState(task?.notes ?? "");
+  const [tags, setTags] = useState(task?.tags.join(", ") ?? "");
+  const [dueAt, setDueAt] = useState(task?.dueAt ?? defaultDue);
+  const [firstReminderAt, setFirstReminderAt] = useState(
+    primary?.kind === "once" ? primary.at : (primary?.startAt ?? defaultFirst),
+  );
+  const [policyKind, setPolicyKind] = useState<"once" | "recurring">(
+    primary?.kind === "once" || !primary ? "once" : "recurring",
+  );
+  const [cadenceMinutes, setCadenceMinutes] = useState(existingCadence ?? "30");
+  const [policyDirty, setPolicyDirty] = useState(false);
+  const [categoryId, setCategoryId] = useState(
+    task?.categoryId ??
+      (selectedCategory === "all" || selectedCategory === "uncategorized"
+        ? ""
+        : selectedCategory),
+  );
+  const [error, setError] = useState("");
+  const timezone =
+    task?.timezone ??
+    (Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
+  const liveCategories = categories.filter((item) => !item.deletedAt);
+  const validCategoryId = liveCategories.some(({ id }) => id === categoryId)
+    ? categoryId
+    : "";
+  const cadence = Number(cadenceMinutes);
+  const cadenceValid =
+    Number.isSafeInteger(cadence) && cadence >= 1 && cadence <= 59;
+  const dateOrderValid =
+    Number.isFinite(Date.parse(firstReminderAt)) &&
+    Number.isFinite(Date.parse(dueAt)) &&
+    Date.parse(firstReminderAt) <= Date.parse(dueAt);
+
+  let reminderPolicy: TaskReminderPolicy | null = null;
+  if (cadenceValid && dateOrderValid) {
+    try {
+      reminderPolicy = buildTaskReminderPolicy({
+        kind: policyKind,
+        firstReminderAt,
+        dueAt,
+        cadenceMinutes: cadence,
+        timezone,
+        from: now.toISOString(),
+      });
+    } catch {
+      reminderPolicy = null;
+    }
+  }
+  const effectiveReminderPolicy =
+    task && !policyDirty ? task.reminderPolicy : reminderPolicy;
+
+  async function save() {
+    if (!effectiveReminderPolicy) {
+      setError(
+        !dateOrderValid
+          ? copy(
+              locale,
+              "The first reminder must be on or before the due date.",
+              "O primeiro lembrete deve ocorrer até o prazo.",
+            )
+          : copy(
+              locale,
+              "Enter a cadence from 1 to 59 minutes.",
+              "Insira uma frequência de 1 a 59 minutos.",
+            ),
+      );
+      return;
+    }
+    setError("");
+    try {
+      const changes = {
+        title,
+        notes,
+        tags: tags
+          .split(",")
+          .map((tag) => tag.trim())
+          .filter(Boolean),
+        categoryId: validCategoryId || null,
+        dueAt,
+        reminderPolicy: effectiveReminderPolicy,
+        timezone,
+      };
+      await runTaskMutation(() =>
+        task
+          ? taskService.update(ownerId, task.id, changes)
+          : taskService.create({ ...changes, ownerId }),
+      );
+      let conflicts: readonly TaskSyncConflict[] = [];
+      let syncMessage = "";
+      try {
+        conflicts = await synchronizeTasks(ownerId);
+      } catch {
+        syncMessage = await getSynchronizationFailureMessage(locale);
+      }
+      onSaved(conflicts, syncMessage);
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : copy(locale, "Unable to save task.", "Não foi possível salvar."),
+      );
+    }
+  }
+
+  return (
+    <ScrollView
+      contentContainerStyle={styles.page}
+      keyboardShouldPersistTaps="handled"
+    >
+      <PageHeader
+        eyebrow={copy(locale, "Task setup", "Configuração da tarefa")}
+        title={
+          task
+            ? copy(locale, "Edit task", "Editar tarefa")
+            : copy(locale, "Add task", "Adicionar tarefa")
+        }
+        description={copy(
+          locale,
+          "Set the due date separately from the reminder policy.",
+          "Defina o prazo separadamente da política de lembretes.",
+        )}
+        colors={colors}
+      />
+      {error ? <Notice tone="danger" colors={colors} text={error} /> : null}
+      <View style={styles.screenGrid}>
+        <SectionCard
+          title={copy(locale, "Details", "Detalhes")}
+          description={copy(
+            locale,
+            "Describe the work and when it is due.",
+            "Descreva o trabalho e quando ele deve ser concluído.",
+          )}
+          colors={colors}
+        >
+          <View style={styles.formStack}>
+            <Field
+              label={copy(locale, "Title", "Título")}
+              value={title}
+              onChangeText={setTitle}
+              colors={colors}
+              placeholder={copy(
+                locale,
+                "For example, submit expense report",
+                "Por exemplo, enviar relatório de despesas",
+              )}
+            />
+            <Field
+              label={copy(locale, "Notes", "Notas")}
+              value={notes}
+              onChangeText={setNotes}
+              colors={colors}
+              multiline
+            />
+            <DateTimeField
+              label={copy(locale, "Due date and time", "Data e hora do prazo")}
+              value={dueAt}
+              onChange={setDueAt}
+              colors={colors}
+              locale={locale}
+              hint={timezone}
+            />
+            <OptionPicker
+              label={copy(locale, "Category", "Categoria")}
+              value={validCategoryId}
+              onChange={setCategoryId}
+              colors={colors}
+              options={[
+                {
+                  value: "",
+                  label: copy(locale, "Uncategorized", "Sem categoria"),
+                },
+                ...liveCategories.map((item) => ({
+                  value: item.id,
+                  label: item.name,
+                })),
+              ]}
+              cancelLabel={copy(locale, "Cancel", "Cancelar")}
+              changeLabel={copy(locale, "Change", "Alterar")}
+              selectedLabel={copy(locale, "Selected", "Selecionada")}
+            />
+            <Field
+              label={copy(
+                locale,
+                "Tags (comma separated)",
+                "Etiquetas (separadas por vírgula)",
+              )}
+              value={tags}
+              onChangeText={setTags}
+              colors={colors}
+            />
+          </View>
+        </SectionCard>
+        <SectionCard
+          title={copy(locale, "Reminder policy", "Política de lembretes")}
+          description={copy(
+            locale,
+            "Choose one policy. Notifications stop when the task is completed or archived.",
+            "Escolha uma política. As notificações param quando a tarefa é concluída ou arquivada.",
+          )}
+          colors={colors}
+        >
+          <View style={styles.formStack}>
+            <OptionPicker
+              label={copy(locale, "Policy", "Política")}
+              value={policyKind}
+              onChange={(value) => {
+                setPolicyDirty(true);
+                setPolicyKind(value === "recurring" ? "recurring" : "once");
+              }}
+              colors={colors}
+              options={[
+                {
+                  value: "once",
+                  label: copy(
+                    locale,
+                    "One first reminder, then overdue cadence",
+                    "Um primeiro lembrete e frequência após o prazo",
+                  ),
+                },
+                {
+                  value: "recurring",
+                  label: copy(
+                    locale,
+                    "Recurring until complete",
+                    "Recorrente até a conclusão",
+                  ),
+                },
+              ]}
+              cancelLabel={copy(locale, "Cancel", "Cancelar")}
+              changeLabel={copy(locale, "Change", "Alterar")}
+              selectedLabel={copy(locale, "Selected", "Selecionada")}
+            />
+            <DateTimeField
+              label={copy(locale, "First reminder", "Primeiro lembrete")}
+              value={firstReminderAt}
+              onChange={(value) => {
+                setPolicyDirty(true);
+                setFirstReminderAt(value);
+              }}
+              colors={colors}
+              locale={locale}
+              hint={copy(
+                locale,
+                "Must occur on or before the due date.",
+                "Deve ocorrer até o prazo.",
+              )}
+            />
+            <NumberField
+              label={
+                policyKind === "once"
+                  ? copy(
+                      locale,
+                      "Overdue reminder cadence (minutes)",
+                      "Frequência após o prazo (minutos)",
+                    )
+                  : copy(
+                      locale,
+                      "Recurring cadence (minutes)",
+                      "Frequência recorrente (minutos)",
+                    )
+              }
+              value={cadenceMinutes}
+              onChange={(value) => {
+                setPolicyDirty(true);
+                setCadenceMinutes(value);
+              }}
+              colors={colors}
+              minimum={1}
+              maximum={59}
+              hint={
+                policyKind === "once"
+                  ? copy(
+                      locale,
+                      "Required. Starts after the due date while the task remains open.",
+                      "Obrigatória. Começa após o prazo enquanto a tarefa estiver aberta.",
+                    )
+                  : copy(
+                      locale,
+                      "The primary cadence continues after the due date.",
+                      "A frequência principal continua após o prazo.",
+                    )
+              }
+            />
+            {!dateOrderValid ? (
+              <Notice
+                tone="danger"
+                colors={colors}
+                text={copy(
+                  locale,
+                  "The first reminder must be on or before the due date.",
+                  "O primeiro lembrete deve ocorrer até o prazo.",
+                )}
+              />
+            ) : null}
+          </View>
+        </SectionCard>
+      </View>
+      <View style={[styles.editorActions, { borderColor: colors.border }]}>
+        <Button
+          label={copy(locale, "Cancel", "Cancelar")}
+          onPress={onCancel}
+          colors={colors}
+          variant="secondary"
+        />
+        <Button
+          label={copy(locale, "Save task", "Salvar tarefa")}
+          onPress={() => void save()}
+          colors={colors}
+          variant="primary"
+          disabled={!title.trim() || !effectiveReminderPolicy}
+        />
+      </View>
+    </ScrollView>
+  );
+}
+
 function ReminderList({
   ownerId,
   syncRevision,
@@ -2641,6 +3577,11 @@ function ReminderList({
               reminders.length === 0 ? (
                 <Button
                   label={t("addReminder")}
+                  accessibilityLabel={copy(
+                    locale,
+                    "Add first reminder",
+                    "Adicionar primeiro lembrete",
+                  )}
                   onPress={() => setEditing("new")}
                   colors={colors}
                   variant="primary"

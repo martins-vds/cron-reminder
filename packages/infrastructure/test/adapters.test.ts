@@ -104,8 +104,9 @@ describe("versioned JSON backup", () => {
       new Date("2026-09-23T00:00:00.000Z"),
     );
     expect(JSON.parse(data)).toMatchObject({
-      version: 2,
+      version: 3,
       reminders: [{ title: "Medicine" }],
+      tasks: [],
     });
     expect(data).not.toContain("token");
   });

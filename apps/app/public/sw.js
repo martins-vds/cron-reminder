@@ -36,7 +36,12 @@ self.addEventListener("notificationclick", (event) => {
         const action = {
           type: "notification-action",
           action: event.action || "open",
+          entityType:
+            data.entityType === "task" || data.entityType === "reminder"
+              ? data.entityType
+              : "reminder",
           occurrenceId: data.occurrenceId,
+          taskId: data.taskId,
           ownerId: data.ownerId,
           cacheKey: key,
           actionId: key,

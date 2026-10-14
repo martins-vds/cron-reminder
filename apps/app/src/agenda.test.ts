@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { Reminder } from "@cron-reminder/domain";
+import type { Reminder, Task } from "@cron-reminder/domain";
 import {
   buildAgendaItems,
+  buildTaskAgendaItems,
   groupAgendaItems,
   groupAgendaItemsByReminder,
   type StoredAgendaOccurrence,
@@ -66,6 +67,7 @@ describe("agenda", () => {
       dismissible: true,
       snoozable: true,
     });
+
     expect(items.find(({ status }) => status === "missed")).toBeUndefined();
     expect(
       items.find(({ status }) => status === "postponed")?.effectiveAt,
@@ -442,5 +444,82 @@ describe("agenda", () => {
       "report:earlier",
       "report:later",
     ]);
+  });
+});
+
+describe("task agenda", () => {
+  const task: Task = {
+    id: "expense-report",
+    ownerId: "user-1",
+    title: "Submit expense report",
+    notes: "",
+    tags: ["finance"],
+    categoryId: null,
+    dueAt: "2026-09-25T17:00:00.000Z",
+    reminderPolicy: {
+      primary: {
+        kind: "cron",
+        expression: "0 * * * *",
+        startAt: "2026-09-25T09:00:00.000Z",
+      },
+    },
+    timezone: "UTC",
+    status: "open",
+    revision: 1,
+    createdAt: "2026-09-24T09:00:00.000Z",
+    updatedAt: "2026-09-24T09:00:00.000Z",
+  };
+
+  it("combines actionable task occurrences with task source metadata", () => {
+    const items = buildTaskAgendaItems(
+      [task],
+      [
+        {
+          id: "task-occurrence",
+          task_id: task.id,
+          scheduled_at: "2026-09-25T10:00:00.000Z",
+          source: "primary",
+          status: "triggered",
+          acted_at: null,
+          snoozed_until: null,
+        },
+      ],
+      new Date("2026-09-25T10:01:00.000Z"),
+    );
+
+    expect(items[0]).toMatchObject({
+      id: "task-occurrence",
+      reminderId: task.id,
+      entityType: "task",
+      sourceLabel: "task",
+      dismissible: true,
+      snoozable: true,
+    });
+  });
+
+  it("does not show occurrences for completed or archived tasks", () => {
+    const occurrence = {
+      id: "task-occurrence",
+      task_id: task.id,
+      scheduled_at: "2026-09-25T10:00:00.000Z",
+      source: "primary" as const,
+      status: "triggered" as const,
+      acted_at: null,
+      snoozed_until: null,
+    };
+    expect(
+      buildTaskAgendaItems(
+        [{ ...task, status: "completed" }],
+        [occurrence],
+        new Date("2026-09-25T10:01:00.000Z"),
+      ),
+    ).toEqual([]);
+    expect(
+      buildTaskAgendaItems(
+        [{ ...task, status: "archived" }],
+        [occurrence],
+        new Date("2026-09-25T10:01:00.000Z"),
+      ),
+    ).toEqual([]);
   });
 });

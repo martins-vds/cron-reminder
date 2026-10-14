@@ -115,10 +115,34 @@ describe("notification actions", () => {
       expect.objectContaining({
         type: "notification-action",
         action: "complete",
+        entityType: "reminder",
         occurrenceId: "latest",
         ownerId: "owner",
       }),
     );
     expect(cache.put).toHaveBeenCalled();
+
+    const taskData = {
+      entityType: "task",
+      taskId: "task-1",
+      occurrenceId: "task-occurrence",
+      ownerId: "owner",
+    };
+    listeners.get("notificationclick")!({
+      notification: { close: vi.fn(), data: taskData },
+      action: "complete",
+      waitUntil,
+    });
+    await work;
+    expect(postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        type: "notification-action",
+        action: "complete",
+        entityType: "task",
+        occurrenceId: "task-occurrence",
+        taskId: "task-1",
+        ownerId: "owner",
+      }),
+    );
   });
 });

@@ -2,7 +2,8 @@
 
 Cron Reminder already provides flexible recurring schedules, cross-device
 synchronization, offline support, push notifications, history, backups,
-localization, and manual conflict resolution. The next releases should focus
+localization, manual conflict resolution, and tasks with independent due dates
+and repeat-until-complete reminder policies. The next releases should focus
 on making those capabilities easier to use in everyday workflows before
 expanding into collaboration and platform-specific features.
 
@@ -42,7 +43,7 @@ to save an existing reminder as a personal template.
 | 1 | Today and Upcoming agenda | Makes the application useful as a daily command center | Medium |
 | 2 | Quick add with native date and time controls | Removes schedule-entry friction and avoids manual ISO timestamps | Small–Medium |
 | 3 | Schedule exceptions | Supports skipped dates, weekends, vacations, and holidays | Medium |
-| 4 | Custom snooze and escalation | Adds user-defined snooze durations and repeat-until-acknowledged behavior | Medium |
+| 4 | Advanced escalation policies | Adds severity steps, channel changes, and configurable repeat limits beyond task repeat-until-complete behavior | Medium |
 | 5 | Reminder templates | Speeds up creation of common and repeated reminder patterns | Small |
 | 6 | Device management | Lets users inspect registered devices and remotely disable notifications | Medium |
 | 7 | Calendar integration | Imports and exports ICS data and creates reminders from calendar events | Medium–Large |
@@ -59,7 +60,7 @@ to save an existing reminder as a personal template.
 - Add one-off exclusion dates to recurring schedules.
 - Support holiday calendars and vacation pauses.
 - Allow per-reminder snooze presets.
-- Add escalation policies and optional repeated delivery until acknowledgment.
+- Add multi-step escalation policies and configurable repeat limits.
 - Let users configure quiet hours and notification behavior by device.
 
 ### Account and Device Management

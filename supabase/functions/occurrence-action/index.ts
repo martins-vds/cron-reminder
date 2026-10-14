@@ -2,10 +2,25 @@ import { createClient } from '@supabase/supabase-js';
 import { nextPostponementAt, resolvePostponement, type Reminder } from '../../../packages/domain/src/index.ts';
 import { corsHeaders } from '../_shared/cors.ts';
 
-type Action = { actionId?: string } & (
+type ReminderAction = {
+  type?: 'reminder';
+  entityType?: 'reminder';
+  actionId?: string;
+} & (
   | { occurrenceId: string; action: 'dismiss' | 'complete' }
   | { occurrenceId: string; action: 'snooze'; until: string }
   | { occurrenceId: string; action: 'snooze'; minutes: number });
+
+type TaskAction = {
+  type?: 'task';
+  entityType?: 'task';
+  actionId?: string;
+} & (
+  | { occurrenceId: string; action: 'dismiss' | 'complete' }
+  | { occurrenceId: string; action: 'snooze' | 'postpone'; until: string }
+  | { occurrenceId: string; action: 'snooze' | 'postpone'; minutes: number });
+
+type Action = ReminderAction | TaskAction;
 
 interface ReminderRow extends Pick<Reminder, 'schedule' | 'timezone' | 'status'> {
   schedule_revision: number;
@@ -27,6 +42,7 @@ Deno.serve(async (request) => {
     return response({ error: 'Invalid action payload' }, 400);
   }
   if (!isAction(input)) return response({ error: 'Invalid action payload' }, 400);
+  if (isTaskAction(input)) return handleTaskAction(client, input);
   const requestKey = JSON.stringify([input.occurrenceId, input.action,
     'until' in input ? input.until : 'minutes' in input ? input.minutes : null]);
   if (input.actionId) {
@@ -103,17 +119,109 @@ Deno.serve(async (request) => {
   return response({ updated: true, until: postponement.until, mergedIntoNext: postponement.mergeIntoNext });
 });
 
+async function handleTaskAction(
+  client: ReturnType<typeof createClient>,
+  input: TaskAction,
+): Promise<Response> {
+  const requestedUntil =
+    input.action === 'postpone' || input.action === 'snooze'
+    ? 'until' in input
+      ? new Date(input.until)
+      : new Date(Date.now() + input.minutes * 60_000)
+    : null;
+  if (
+    requestedUntil &&
+    (!Number.isFinite(requestedUntil.getTime()) ||
+      requestedUntil.getTime() <= Date.now())
+  ) {
+    return response({ error: 'Choose a future postponement time' }, 400);
+  }
+  const requestKey = JSON.stringify([
+    input.occurrenceId,
+    input.action,
+    'until' in input ? input.until : 'minutes' in input ? input.minutes : null,
+  ]);
+  if (input.actionId) {
+    const { data: receipt, error } = await client
+      .from('task_occurrence_action_receipts')
+      .select('request_key,result')
+      .eq('action_id', input.actionId)
+      .maybeSingle();
+    if (error) return response({ error: 'Unable to verify task action' }, 500);
+    if (receipt) {
+      if (receipt.request_key !== requestKey)
+        return response(
+          { error: 'Action ID was already used for another request' },
+          409,
+        );
+      return response(receipt.result);
+    }
+  }
+  const rpc = input.action === 'complete'
+    ? 'complete_task_from_occurrence'
+    : input.action === 'dismiss'
+      ? 'dismiss_task_occurrence'
+      : 'postpone_task_occurrence';
+  const parameters = input.action === 'postpone' || input.action === 'snooze'
+    ? {
+      p_occurrence_id: input.occurrenceId,
+      p_until: requestedUntil?.toISOString(),
+      p_action_id: input.actionId ?? null,
+      p_request_key: requestKey,
+    }
+    : {
+      p_occurrence_id: input.occurrenceId,
+      p_action_id: input.actionId ?? null,
+      p_request_key: requestKey,
+    };
+  const { data, error } = await client.rpc(rpc, parameters);
+  if (error) {
+    if (error.code === 'P0001')
+      return response({ error: error.message }, 400);
+    return response({ error: 'Unable to record task action' }, 500);
+  }
+  if (!data) return response({ error: 'Task occurrence not found' }, 404);
+  return response(
+    requestedUntil
+      ? { updated: true, until: requestedUntil.toISOString() }
+      : { updated: true },
+  );
+}
+
 function isAction(value: unknown): value is Action {
   if (typeof value !== 'object' || value === null) return false;
   const item = value as Record<string, unknown>;
+  if (
+    item.type !== undefined &&
+    item.type !== 'reminder' &&
+    item.type !== 'task'
+  ) return false;
+  if (
+    item.entityType !== undefined &&
+    item.entityType !== 'reminder' &&
+    item.entityType !== 'task'
+  ) return false;
+  if (
+    item.type !== undefined &&
+    item.entityType !== undefined &&
+    item.type !== item.entityType
+  ) return false;
   if (item.actionId !== undefined && (typeof item.actionId !== 'string' || item.actionId.length === 0 || item.actionId.length > 200)) return false;
   if (typeof item.occurrenceId !== 'string' || item.occurrenceId.length === 0) return false;
   if (item.action === 'dismiss' || item.action === 'complete') return true;
-  if (item.action !== 'snooze') return false;
+  const task = item.type === 'task' || item.entityType === 'task';
+  if (
+    item.action !== 'snooze' &&
+    !(task && item.action === 'postpone')
+  ) return false;
   if (typeof item.until === 'string' && item.minutes === undefined)
     return Number.isFinite(Date.parse(item.until));
   return item.until === undefined && typeof item.minutes === 'number'
     && Number.isSafeInteger(item.minutes) && item.minutes > 0;
+}
+
+function isTaskAction(input: Action): input is TaskAction {
+  return input.type === 'task' || input.entityType === 'task';
 }
 
 function response(body: unknown, status = 200) {

@@ -3,16 +3,19 @@ import type {
   ReminderRepository,
   SyncConflict,
   SynchronizationPort,
+  TaskSyncConflict,
 } from "@cron-reminder/application";
 import {
   detectConflict,
   sameReminder,
+  sameTask,
   structurallyEqual,
 } from "@cron-reminder/application";
 import type {
   Reminder,
   ReminderCategory,
   Schedule,
+  Task,
 } from "@cron-reminder/domain";
 import {
   nextOccurrences,
@@ -26,6 +29,8 @@ import {
 import type { SupabaseClient } from "@supabase/supabase-js";
 export * from "./categories";
 export * from "./analytics";
+export * from "./tasks";
+import { isTaskData } from "./tasks";
 export type { DatabaseClient } from "./databaseClient";
 
 type SupabaseClientLike = Pick<SupabaseClient, "auth" | "from" | "functions">;
@@ -167,10 +172,11 @@ export class BrowserKeyValueStore implements KeyValueStore {
 }
 
 export interface Backup {
-  version: 1 | 2;
+  version: 1 | 2 | 3;
   exportedAt: string;
   reminders: Reminder[];
   categories?: ReminderCategory[];
+  tasks?: Task[];
 }
 
 export interface ImportResult {
@@ -180,20 +186,27 @@ export interface ImportResult {
   invalid: number;
   conflicts: readonly SyncConflict[];
   categories: ReminderCategory[];
+  tasks: Task[];
+  tasksImported: number;
+  tasksSkipped: number;
+  tasksInvalid: number;
+  taskConflicts: readonly TaskSyncConflict[];
 }
 
 export function exportBackup(
   reminders: readonly Reminder[],
   now: Date,
   categories: readonly ReminderCategory[] = [],
+  tasks: readonly Task[] = [],
 ): string {
   const backup: Backup = {
-    version: 2,
+    version: 3,
     exportedAt: now.toISOString(),
     reminders: reminders.map((reminder) => structuredClone(reminder)),
     categories: categories
       .filter((item) => !item.deletedAt)
       .map((item) => structuredClone(item)),
+    tasks: tasks.map((task) => structuredClone(task)),
   };
   return JSON.stringify(backup, null, 2);
 }
@@ -203,6 +216,7 @@ export function importBackup(
   existing: readonly Reminder[],
   ownerId: string,
   existingCategories: readonly ReminderCategory[] = [],
+  existingTasks: readonly Task[] = [],
 ): ImportResult {
   const parsed: unknown = JSON.parse(input);
   if (!isBackup(parsed))
@@ -210,7 +224,7 @@ export function importBackup(
   const merged = [...existing];
   const categories = [...existingCategories];
   const categoryIds = new Map<string, string>();
-  if (parsed.version === 2) {
+  if (parsed.version >= 2) {
     for (const item of parsed.categories ?? []) {
       const sameName = categories.find(
         (category) =>
@@ -253,7 +267,7 @@ export function importBackup(
       continue;
     }
     if (
-      parsed.version === 2 &&
+      parsed.version >= 2 &&
       value.categoryId &&
       !categoryIds.has(value.categoryId)
     ) {
@@ -264,7 +278,7 @@ export function importBackup(
       ...value,
       ownerId,
       categoryId:
-        parsed.version === 2 && value.categoryId
+        parsed.version >= 2 && value.categoryId
           ? (categoryIds.get(value.categoryId) ?? null)
           : null,
     };
@@ -282,16 +296,60 @@ export function importBackup(
       conflicts.push({ id: incoming.id, local, remote: incoming });
     }
   }
-  return { merged, imported, skipped, invalid, conflicts, categories };
+  const tasks = [...existingTasks];
+  const taskConflicts: TaskSyncConflict[] = [];
+  let tasksImported = 0;
+  let tasksSkipped = 0;
+  let tasksInvalid = 0;
+  for (const value of parsed.version === 3 ? (parsed.tasks ?? []) : []) {
+    if (
+      !isTaskData(value) ||
+      (value.categoryId && !categoryIds.has(value.categoryId))
+    ) {
+      tasksInvalid++;
+      continue;
+    }
+    const incoming: Task = {
+      ...value,
+      ownerId,
+      categoryId: value.categoryId
+        ? (categoryIds.get(value.categoryId) ?? null)
+        : null,
+    };
+    const index = tasks.findIndex(({ id }) => id === incoming.id);
+    if (index < 0) {
+      tasks.push(incoming);
+      tasksImported++;
+      continue;
+    }
+    const local = tasks[index];
+    if (!local) continue;
+    if (sameTask(local, incoming)) tasksSkipped++;
+    else taskConflicts.push({ id: incoming.id, local, remote: incoming });
+  }
+  return {
+    merged,
+    imported,
+    skipped,
+    invalid,
+    conflicts,
+    categories,
+    tasks,
+    tasksImported,
+    tasksSkipped,
+    tasksInvalid,
+    taskConflicts,
+  };
 }
 
 function isBackup(value: unknown): value is Backup {
   if (!isRecord(value)) return false;
   return (
     (value.version === 1 ||
-      (value.version === 2 &&
+      ((value.version === 2 || value.version === 3) &&
         Array.isArray(value.categories) &&
-        value.categories.every(isCategory))) &&
+        value.categories.every(isCategory) &&
+        (value.version !== 3 || Array.isArray(value.tasks)))) &&
     typeof value.exportedAt === "string" &&
     isValidScheduleTimestamp(value.exportedAt) &&
     Array.isArray(value.reminders)

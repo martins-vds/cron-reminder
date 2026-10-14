@@ -13,18 +13,23 @@ import {
   synchronizeCategories,
   clearDeletedCategoryAssignments,
   SupabaseAnalyticsRepository,
+  JsonTaskRepository,
+  OfflineTaskSynchronizationAdapter,
+  SupabaseTaskRepository,
   type DatabaseClient,
 } from "@cron-reminder/infrastructure";
 import type {
   AuthenticationPort,
   SyncConflict,
   CategoryConflict,
+  TaskSyncConflict,
 } from "@cron-reminder/application";
 import { CategoryService } from "@cron-reminder/application";
 import type {
   NotificationAction,
   Postponement,
   Reminder,
+  Task,
   AnalyticsSnapshot,
 } from "@cron-reminder/domain";
 import { AppState, Platform } from "react-native";
@@ -35,6 +40,11 @@ export const localRepository = new JsonReminderRepository({
   remove: (key) => AsyncStorage.removeItem(key),
 });
 export const categoryRepository = new JsonCategoryRepository({
+  get: (key) => AsyncStorage.getItem(key),
+  set: (key, value) => AsyncStorage.setItem(key, value),
+  remove: (key) => AsyncStorage.removeItem(key),
+});
+export const taskRepository = new JsonTaskRepository({
   get: (key) => AsyncStorage.getItem(key),
   set: (key, value) => AsyncStorage.setItem(key, value),
   remove: (key) => AsyncStorage.removeItem(key),
@@ -109,6 +119,19 @@ export async function removeCategory(
       ownerId,
       categoryRepository,
       localRepository,
+    );
+    const assignedTasks = (await taskRepository.list(ownerId)).filter(
+      (task) => task.categoryId === id,
+    );
+    await Promise.all(
+      assignedTasks.map((task) =>
+        taskRepository.save({
+          ...task,
+          categoryId: null,
+          revision: task.revision + 1,
+          updatedAt: new Date().toISOString(),
+        }),
+      ),
     );
     dataChanged();
   });
@@ -214,6 +237,7 @@ let pushTokenQueue = Promise.resolve();
 interface PendingNotificationAction {
   actionId: string;
   occurrenceId: string;
+  entityType: "reminder" | "task";
   action: NotificationAction;
   ownerId: string;
   queuedAt?: string;
@@ -299,6 +323,15 @@ export const authentication: AuthenticationPort | null = supabase
             for (const reminder of reminders) {
               await localRepository.delete(ownerId, reminder.id);
             }
+            const tasks = await taskRepository.list(ownerId);
+            for (const task of tasks) {
+              await taskRepository.delete(ownerId, task.id);
+            }
+            await Promise.all([
+              AsyncStorage.removeItem("cron-reminder:tasks"),
+              AsyncStorage.removeItem("cron-reminder:tasks:synced-revisions"),
+              AsyncStorage.removeItem("cron-reminder:tasks:deleted"),
+            ]);
             await withTombstones(async () => {
               const remaining = (await readDeleted()).filter(
                 (item) => item.ownerId !== ownerId,
@@ -341,6 +374,16 @@ export const synchronization = supabase
       new SupabaseReminderRepository(
         supabase as unknown as ConstructorParameters<
           typeof SupabaseReminderRepository
+        >[0],
+      ),
+    )
+  : null;
+export const taskSynchronization = supabase
+  ? new OfflineTaskSynchronizationAdapter(
+      taskRepository,
+      new SupabaseTaskRepository(
+        supabase as unknown as ConstructorParameters<
+          typeof SupabaseTaskRepository
         >[0],
       ),
     )
@@ -541,6 +584,14 @@ export async function deleteReminder(
   });
 }
 
+export async function deleteTask(id: string, ownerId: string): Promise<void> {
+  await withSynchronization(async () => {
+    await taskRepository.delete(ownerId, id);
+    dataChanged();
+    void synchronizeTasks(ownerId).catch(() => {});
+  });
+}
+
 export async function flushDeletedReminders(ownerId: string): Promise<void> {
   if (!supabase) return;
   await withTombstones(async () => {
@@ -576,6 +627,7 @@ export async function submitNotificationAction(
   ownerId: string,
   postponement?: Postponement,
   actionId?: string,
+  entityType: "reminder" | "task" = "reminder",
 ): Promise<void> {
   if (action === "snooze" && !postponement)
     throw new Error("Choose a postponement time.");
@@ -590,6 +642,7 @@ export async function submitNotificationAction(
       pending.push({
         actionId: logicalId,
         occurrenceId,
+        entityType,
         action,
         ownerId,
         queuedAt: new Date().toISOString(),
@@ -633,12 +686,18 @@ export async function flushNotificationActions(ownerId: string): Promise<void> {
               actionId: item.actionId,
               occurrenceId: item.occurrenceId,
               action: item.action,
+              ...(item.entityType === "task"
+                ? { entityType: item.entityType }
+                : {}),
               ...(item.until ? { until: item.until } : { minutes: 10 }),
             }
           : {
               occurrenceId: item.occurrenceId,
               action: item.action,
               actionId: item.actionId,
+              ...(item.entityType === "task"
+                ? { entityType: item.entityType }
+                : {}),
             };
       const { error } = await supabase.functions.invoke("occurrence-action", {
         body,
@@ -695,10 +754,37 @@ export async function synchronizeReminders(
         ),
       );
     }
+
     const conflicts = await synchronization.synchronize(ownerId);
     dataChanged();
     return conflicts;
   });
+}
+
+export async function synchronizeTasks(
+  ownerId: string,
+): Promise<readonly TaskSyncConflict[]> {
+  if (!taskSynchronization) return [];
+  return withSynchronization(async () => {
+    const conflicts = await taskSynchronization.synchronize(ownerId);
+    dataChanged();
+    return conflicts;
+  });
+}
+
+export function runTaskMutation<T>(operation: () => Promise<T>): Promise<T> {
+  return withSynchronization(operation);
+}
+
+export async function resolveTaskSynchronizationConflict(
+  conflict: TaskSyncConflict,
+  resolution: Task,
+): Promise<void> {
+  if (!taskSynchronization) return;
+  await withSynchronization(() =>
+    taskSynchronization.resolve(conflict, resolution),
+  );
+  dataChanged();
 }
 
 export function runReminderMutation<T>(
@@ -739,8 +825,9 @@ async function readNotificationActions(): Promise<PendingNotificationAction[]> {
   const valid = parsed.filter(
     (
       item,
-    ): item is Omit<PendingNotificationAction, "actionId"> & {
+    ): item is Omit<PendingNotificationAction, "actionId" | "entityType"> & {
       actionId?: string;
+      entityType?: "reminder" | "task";
     } =>
       typeof item === "object" &&
       item !== null &&
@@ -748,6 +835,9 @@ async function readNotificationActions(): Promise<PendingNotificationAction[]> {
         (typeof (item as Record<string, unknown>).actionId === "string" &&
           String((item as Record<string, unknown>).actionId).length > 0)) &&
       typeof (item as Record<string, unknown>).occurrenceId === "string" &&
+      ((item as Record<string, unknown>).entityType === undefined ||
+        (item as Record<string, unknown>).entityType === "reminder" ||
+        (item as Record<string, unknown>).entityType === "task") &&
       ((item as Record<string, unknown>).action === "dismiss" ||
         (item as Record<string, unknown>).action === "complete" ||
         (item as Record<string, unknown>).action === "snooze") &&
@@ -756,8 +846,9 @@ async function readNotificationActions(): Promise<PendingNotificationAction[]> {
   const actions = valid.map((item) => ({
     ...item,
     actionId: item.actionId ?? Crypto.randomUUID(),
+    entityType: item.entityType ?? "reminder",
   }));
-  if (valid.some((item) => !item.actionId))
+  if (valid.some((item) => !item.actionId || !item.entityType))
     await writeNotificationActions(actions);
   return actions;
 }

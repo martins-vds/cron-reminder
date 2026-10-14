@@ -13,6 +13,7 @@ import {
   type AnalyticsSnapshot,
 } from "@cron-reminder/domain";
 export * from "./categories";
+export * from "./tasks";
 
 export interface ReminderRepository {
   list(ownerId: string): Promise<Reminder[]>;

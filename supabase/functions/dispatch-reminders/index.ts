@@ -18,6 +18,26 @@ interface ReminderRow {
   next_due_at: string | null;
 }
 
+interface TaskReminderPolicy {
+  primary: Schedule;
+  overdue?: Exclude<Schedule, { kind: 'once' }>;
+}
+
+interface TaskRow {
+  id: string;
+  owner_id: string;
+  title: string;
+  notes: string;
+  due_at: string;
+  reminder_policy: TaskReminderPolicy;
+  timezone: string;
+  revision: number;
+  schedule_revision: number;
+  occurrence_count: number;
+  created_at: string;
+  next_due_at: string | null;
+}
+
 interface DeviceDeliveryResult {
   delivered: number;
   retryableFailures: number;
@@ -51,6 +71,8 @@ const DISPATCH_STATE_ID = true;
 const MAX_SCHEDULED_OCCURRENCES_PER_RUN = 500;
 const MAX_PENDING_DELIVERIES_PER_RUN = 25;
 const MAX_POSTPONED_DELIVERIES_PER_RUN = 25;
+const MAX_TASK_OCCURRENCES_PER_RUN = 50;
+const MAX_TASK_RETRIES_PER_RUN = 25;
 const DELIVERY_LEASE_MS = 5 * 60_000;
 const PUSH_TIMEOUT_MS = 5_000;
 const RUN_DEADLINE_MS = 60_000;
@@ -71,6 +93,8 @@ const ALLOWED_PUSH_HOSTS = [
 ];
 const REMINDER_SELECT =
   'id,owner_id,title,notes,schedule,timezone,sound,revision,schedule_revision,occurrence_count,created_at,next_due_at';
+const TASK_SELECT =
+  'id,owner_id,title,notes,due_at,reminder_policy,timezone,revision,schedule_revision,occurrence_count,created_at,next_due_at';
 
 Deno.serve(async (request) => {
   const cronSecret = Deno.env.get('CRON_SECRET');
@@ -82,6 +106,14 @@ Deno.serve(async (request) => {
     required('SUPABASE_SERVICE_ROLE_KEY'),
   );
   const runDeadline = Date.now() + RUN_DEADLINE_MS;
+  const taskWork = dispatchTaskWork(
+    client,
+    new Date(),
+    runDeadline,
+  ).catch((error) => {
+    console.error('Unable to process task reminders', error);
+    return 0;
+  });
   try {
     await processExpoReceipts(
       client,
@@ -451,10 +483,11 @@ Deno.serve(async (request) => {
   });
   if (updateStateError)
     return json({ error: 'Unable to update dispatch state' }, 500);
+  const taskDelivered = await taskWork;
   const { error: cleanupError } = await client.rpc('delete_expired_history');
   if (cleanupError)
     return json({ error: 'Unable to delete expired history' }, 500);
-  return json({ delivered });
+  return json({ delivered, taskDelivered });
 });
 
 function reminderStateKey(reminder: ReminderRow): string {
@@ -1021,6 +1054,418 @@ class RetryableDeliveryError extends Error {
 
 class LeaseLostError extends Error {}
 
+async function dispatchTaskWork(
+  client: ServiceClient,
+  now: Date,
+  deadline: number,
+): Promise<number> {
+  try {
+    await processTaskExpoReceipts(
+      client,
+      Math.min(deadline, Date.now() + 10_000),
+    );
+  } catch (error) {
+    console.error('Unable to process task Expo push receipts', error);
+  }
+  const { data, error } = await client
+    .from('tasks')
+    .select(TASK_SELECT)
+    .eq('status', 'open')
+    .not('next_due_at', 'is', null)
+    .lte('next_due_at', now.toISOString())
+    .order('next_due_at')
+    .order('owner_id')
+    .order('id')
+    .limit(MAX_TASK_OCCURRENCES_PER_RUN);
+  if (error) throw error;
+  let delivered = 0;
+  for (const task of (data ?? []) as TaskRow[]) {
+    if (Date.now() >= deadline || !task.next_due_at) break;
+    delivered += await processScheduledTaskOccurrence(
+      client,
+      task,
+      new Date(task.next_due_at),
+    );
+    const { data: current, error: currentError } = await client
+      .from('tasks')
+      .select('occurrence_count')
+      .eq('id', task.id)
+      .eq('owner_id', task.owner_id)
+      .eq('status', 'open')
+      .eq('revision', task.revision)
+      .eq('schedule_revision', task.schedule_revision)
+      .maybeSingle();
+    if (currentError) throw currentError;
+    if (!current) continue;
+    const { error: cursorError } = await client.rpc(
+      'update_task_next_due',
+      {
+        p_updates: [{
+          id: task.id,
+          owner_id: task.owner_id,
+          revision: task.revision,
+          schedule_revision: task.schedule_revision,
+          occurrence_count: current.occurrence_count,
+          next_due_at: nextTaskDueAtCursor(task, new Date(task.next_due_at)),
+        }],
+      },
+    );
+    if (cursorError) throw cursorError;
+  }
+  if (Date.now() >= deadline) return delivered;
+  const { data: retries, error: retryError } = await client.rpc(
+    'list_deliverable_task_occurrences',
+    {
+      p_now: new Date().toISOString(),
+      p_stale_before: new Date(
+        Date.now() - DELIVERY_LEASE_MS,
+      ).toISOString(),
+      p_limit: MAX_TASK_RETRIES_PER_RUN,
+    },
+  );
+  if (retryError) throw retryError;
+  for (const retry of (retries ?? []) as Array<{
+    occurrence_id: string;
+    task: unknown;
+  }>) {
+    if (Date.now() >= deadline) break;
+    const task = embeddedTask(retry.task);
+    if (!task) continue;
+    const leaseId = crypto.randomUUID();
+    const claimed = await claimTaskOccurrence(
+      client,
+      retry.occurrence_id,
+      task,
+      leaseId,
+    );
+    if (claimed) {
+      delivered += await deliverTaskOccurrence(
+        client,
+        task,
+        retry.occurrence_id,
+        leaseId,
+      );
+    }
+  }
+  return delivered;
+}
+
+async function processScheduledTaskOccurrence(
+  client: ServiceClient,
+  task: TaskRow,
+  due: Date,
+): Promise<number> {
+  const occurrenceId = `${task.id}:${due.toISOString()}`;
+  const leaseId = crypto.randomUUID();
+  const now = new Date();
+  const { data, error } = await client.rpc(
+    'prepare_task_occurrence_delivery',
+    {
+      p_occurrence_id: occurrenceId,
+      p_task_id: task.id,
+      p_owner_id: task.owner_id,
+      p_schedule_revision: task.schedule_revision,
+      p_scheduled_at: due.toISOString(),
+      p_source: taskOccurrenceSource(task, due),
+      p_lease_id: leaseId,
+      p_now: now.toISOString(),
+      p_stale_before: new Date(
+        now.getTime() - DELIVERY_LEASE_MS,
+      ).toISOString(),
+    },
+  );
+  if (error) throw error;
+  return data
+    ? deliverTaskOccurrence(client, task, occurrenceId, leaseId)
+    : 0;
+}
+
+async function claimTaskOccurrence(
+  client: ServiceClient,
+  occurrenceId: string,
+  task: TaskRow,
+  leaseId: string,
+): Promise<boolean> {
+  const now = new Date();
+  const { data, error } = await client.rpc(
+    'claim_task_occurrence_delivery',
+    {
+      p_occurrence_id: occurrenceId,
+      p_owner_id: task.owner_id,
+      p_task_id: task.id,
+      p_schedule_revision: task.schedule_revision,
+      p_lease_id: leaseId,
+      p_now: now.toISOString(),
+      p_stale_before: new Date(
+        now.getTime() - DELIVERY_LEASE_MS,
+      ).toISOString(),
+    },
+  );
+  if (error) throw error;
+  return Boolean(data);
+}
+
+function embeddedTask(value: unknown): TaskRow | null {
+  const task = Array.isArray(value) ? value[0] : value;
+  return task && typeof task === 'object' ? task as TaskRow : null;
+}
+
+async function deliverTaskOccurrence(
+  client: ServiceClient,
+  task: TaskRow,
+  occurrenceId: string,
+  leaseId: string,
+): Promise<number> {
+  try {
+    const result = await deliverTaskToDevices(
+      client,
+      task,
+      occurrenceId,
+      leaseId,
+    );
+    if (result.retryableFailures > 0)
+      throw new RetryableDeliveryError(result.delivered);
+    if (result.awaitingReceipts || result.moreDevices) {
+      const { error } = await client.rpc(
+        'defer_task_occurrence_delivery',
+        {
+          p_occurrence_id: occurrenceId,
+          p_owner_id: task.owner_id,
+          p_lease_id: leaseId,
+          p_now: new Date().toISOString(),
+          p_delay_minutes: result.moreDevices ? 1 : 15,
+        },
+      );
+      if (error) throw error;
+      return result.delivered;
+    }
+    const { error } = await client.rpc(
+      'complete_task_occurrence_delivery',
+      {
+        p_occurrence_id: occurrenceId,
+        p_owner_id: task.owner_id,
+        p_lease_id: leaseId,
+        p_delivered_at: new Date().toISOString(),
+      },
+    );
+    if (error) throw error;
+    return result.delivered;
+  } catch (error) {
+    if (error instanceof LeaseLostError) return 0;
+    const { data, error: failureError } = await client.rpc(
+      'fail_task_occurrence_delivery',
+      {
+        p_occurrence_id: occurrenceId,
+        p_owner_id: task.owner_id,
+        p_lease_id: leaseId,
+        p_now: new Date().toISOString(),
+      },
+    );
+    if (failureError) throw failureError;
+    if (!data) return 0;
+    return error instanceof RetryableDeliveryError ? error.delivered : 0;
+  }
+}
+
+async function deliverTaskToDevices(
+  client: ServiceClient,
+  task: TaskRow,
+  occurrenceId: string,
+  leaseId: string,
+): Promise<DeviceDeliveryResult> {
+  const [{ data: devices, error }, deliveredQuery, ticketQuery] =
+    await Promise.all([
+      client.from('devices').select('id,platform,token')
+        .eq('owner_id', task.owner_id).eq('enabled', true),
+      client.from('task_occurrence_device_deliveries').select('device_id')
+        .eq('occurrence_id', occurrenceId).eq('owner_id', task.owner_id),
+      client.from('task_expo_push_tickets').select('device_id')
+        .eq('occurrence_id', occurrenceId).eq('owner_id', task.owner_id),
+    ]);
+  if (error) throw error;
+  if (deliveredQuery.error) throw deliveredQuery.error;
+  if (ticketQuery.error) throw ticketQuery.error;
+  const deliveredDevices = new Set(
+    (deliveredQuery.data ?? []).map(({ device_id }) => String(device_id)),
+  );
+  const awaitingDevices = new Set(
+    (ticketQuery.data ?? []).map(({ device_id }) => String(device_id)),
+  );
+  const pending = (devices ?? []).filter(
+    ({ id }) => !deliveredDevices.has(id) && !awaitingDevices.has(id),
+  );
+  const attempts = pending.slice(0, MAX_DEVICES_PER_DELIVERY_ATTEMPT);
+  let delivered = 0;
+  let retryableFailures = 0;
+  let awaitingReceipts = awaitingDevices.size > 0;
+  for (
+    let offset = 0;
+    offset < attempts.length;
+    offset += DEVICE_SEND_CONCURRENCY
+  ) {
+    const outcomes = await Promise.allSettled(
+      attempts.slice(offset, offset + DEVICE_SEND_CONCURRENCY)
+        .map((device) =>
+          deliverTaskToDevice(client, task, occurrenceId, leaseId, device)
+        ),
+    );
+    for (const outcome of outcomes) {
+      if (outcome.status === 'rejected') {
+        if (outcome.reason instanceof LeaseLostError) throw outcome.reason;
+        retryableFailures++;
+      } else {
+        delivered += outcome.value.delivered;
+        retryableFailures += outcome.value.retryableFailures;
+        awaitingReceipts ||= outcome.value.awaitingReceipts;
+      }
+    }
+  }
+  return {
+    delivered,
+    retryableFailures,
+    awaitingReceipts,
+    moreDevices: pending.length > MAX_DEVICES_PER_DELIVERY_ATTEMPT,
+  };
+}
+
+async function deliverTaskToDevice(
+  client: ServiceClient,
+  task: TaskRow,
+  occurrenceId: string,
+  leaseId: string,
+  device: { id: string; platform: string; token: string },
+): Promise<DeviceAttemptResult> {
+  const { data: renewed, error: renewError } = await client.rpc(
+    'renew_task_occurrence_delivery_lease',
+    {
+      p_occurrence_id: occurrenceId,
+      p_owner_id: task.owner_id,
+      p_lease_id: leaseId,
+      p_now: new Date().toISOString(),
+    },
+  );
+  if (renewError) throw renewError;
+  if (!renewed) throw new LeaseLostError();
+  const sound = { mode: 'default' as const };
+  const payload = {
+    title: truncateUtf8(task.title, 200),
+    body: truncateUtf8(task.notes, 2_000),
+    data: {
+      entityType: 'task',
+      taskId: task.id,
+      occurrenceId,
+      ownerId: task.owner_id,
+      dueAt: task.due_at,
+      soundMode: sound.mode,
+    },
+  };
+  try {
+    if (device.platform === 'web') {
+      await sendWebPush(device.token, payload);
+      const { data, error } = await client.rpc(
+        'record_task_occurrence_device_delivery',
+        {
+          p_occurrence_id: occurrenceId,
+          p_owner_id: task.owner_id,
+          p_device_id: device.id,
+          p_lease_id: leaseId,
+        },
+      );
+      if (error) throw error;
+      if (!data) throw new LeaseLostError();
+      return {
+        delivered: 1,
+        retryableFailures: 0,
+        awaitingReceipts: false,
+        moreDevices: false,
+      };
+    }
+    const ticketId = await sendExpoPush(
+      device.token,
+      device.platform,
+      payload,
+      sound,
+    );
+    const { data, error } = await client.rpc(
+      'record_task_expo_push_ticket',
+      {
+        p_ticket_id: ticketId,
+        p_occurrence_id: occurrenceId,
+        p_owner_id: task.owner_id,
+        p_device_id: device.id,
+        p_lease_id: leaseId,
+      },
+    );
+    if (error) throw error;
+    if (!data) throw new LeaseLostError();
+    return {
+      delivered: 0,
+      retryableFailures: 0,
+      awaitingReceipts: true,
+      moreDevices: false,
+    };
+  } catch (error) {
+    if (error instanceof LeaseLostError) throw error;
+    if (isPermanentDeliveryFailure(error)) {
+      await disableDevice(client, device, task.owner_id);
+      return {
+        delivered: 0,
+        retryableFailures: 0,
+        awaitingReceipts: false,
+        moreDevices: false,
+      };
+    }
+    return {
+      delivered: 0,
+      retryableFailures: 1,
+      awaitingReceipts: false,
+      moreDevices: false,
+    };
+  }
+}
+
+function nextTaskDueAtCursor(task: TaskRow, boundary: Date): string | null {
+  let schedule = task.reminder_policy.primary;
+  let cursorBoundary = boundary;
+  if (schedule.kind === 'once') {
+    const overdueSchedule = task.reminder_policy.overdue;
+    if (!overdueSchedule) return null;
+    schedule = overdueSchedule;
+    const dueBoundary = new Date(task.due_at);
+    if (dueBoundary > cursorBoundary) cursorBoundary = dueBoundary;
+  }
+  if (schedule.kind === 'daily-times') {
+    return nextDailyTimeCursor(
+      schedule,
+      task.timezone,
+      cursorBoundary,
+      false,
+    );
+  }
+  try {
+    const interval = CronExpressionParser.parse(schedule.expression, {
+      currentDate: cursorBoundary,
+      startDate: inclusiveStartDate(schedule.startAt),
+      endDate: schedule.endAt,
+      tz: task.timezone,
+    });
+    return interval.next().toDate().toISOString();
+  } catch {
+    return null;
+  }
+}
+
+function taskOccurrenceSource(
+  task: TaskRow,
+  due: Date,
+): 'primary' | 'overdue' {
+  const primary = task.reminder_policy.primary;
+  return primary.kind !== 'once' ||
+      new Date(primary.at).getTime() === due.getTime()
+    ? 'primary'
+    : 'overdue';
+}
+
 function nextDueAtCursor(
   reminder: ReminderRow,
   boundary: Date,
@@ -1419,6 +1864,104 @@ async function failExpoPushTicket(
   });
   if (error) throw error;
   if (!data) throw new Error('Expo push ticket failure is still in use');
+}
+
+async function processTaskExpoReceipts(
+  client: ServiceClient,
+  deadline: number,
+): Promise<void> {
+  const now = new Date();
+  const readyBefore = new Date(now.getTime() - 15 * 60_000).toISOString();
+  const [{ data: fresh, error: freshError }, {
+    data: retries,
+    error: retriesError,
+  }] = await Promise.all([
+    client.from('task_expo_push_tickets')
+      .select('ticket_id,created_at,last_checked_at')
+      .is('last_checked_at', null)
+      .lte('created_at', readyBefore)
+      .order('created_at')
+      .limit(EXPO_RECEIPT_BATCH_SIZE),
+    client.from('task_expo_push_tickets')
+      .select('ticket_id,created_at,last_checked_at')
+      .lte('last_checked_at', readyBefore)
+      .order('last_checked_at')
+      .order('created_at')
+      .limit(EXPO_RECEIPT_BATCH_SIZE),
+  ]);
+  if (freshError) throw freshError;
+  if (retriesError) throw retriesError;
+  for (const tickets of [fresh ?? [], retries ?? []]) {
+    for (
+      let offset = 0;
+      offset < tickets.length && Date.now() < deadline;
+      offset += EXPO_RECEIPT_REQUEST_SIZE
+    ) {
+      const batch = tickets.slice(
+        offset,
+        offset + EXPO_RECEIPT_REQUEST_SIZE,
+      ) as Array<{ ticket_id: string; created_at: string }>;
+      const response = await fetch(
+        'https://exp.host/--/api/v2/push/getReceipts',
+        {
+          method: 'POST',
+          signal: AbortSignal.timeout(PUSH_TIMEOUT_MS),
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ids: batch.map(({ ticket_id }) => ticket_id),
+          }),
+        },
+      );
+      if (!response.ok) throw new Error('Expo receipt request failed');
+      const payload: unknown = await response.json();
+      const receipts =
+        typeof payload === 'object' &&
+          payload !== null &&
+          typeof (payload as { data?: unknown }).data === 'object' &&
+          (payload as { data?: unknown }).data !== null
+          ? (payload as { data: Record<string, unknown> }).data
+          : {};
+      const unresolved: string[] = [];
+      for (const ticket of batch) {
+        const receipt = receipts[ticket.ticket_id];
+        const status = typeof receipt === 'object' && receipt !== null
+          ? (receipt as { status?: unknown }).status
+          : undefined;
+        if (status === 'ok') {
+          const { error } = await client.rpc(
+            'complete_task_expo_push_ticket',
+            { p_ticket_id: ticket.ticket_id },
+          );
+          if (error) throw error;
+          continue;
+        }
+        if (
+          status === 'error' ||
+          now.getTime() - Date.parse(ticket.created_at) > 24 * 60 * 60_000
+        ) {
+          const providerError = status === 'error'
+            ? (receipt as { details?: { error?: unknown } }).details?.error
+            : undefined;
+          const { error } = await client.rpc(
+            'fail_task_expo_push_ticket',
+            {
+              p_ticket_id: ticket.ticket_id,
+              p_disable_device: providerError === 'DeviceNotRegistered',
+            },
+          );
+          if (error) throw error;
+          continue;
+        }
+        unresolved.push(ticket.ticket_id);
+      }
+      if (unresolved.length) {
+        const { error } = await client.from('task_expo_push_tickets')
+          .update({ last_checked_at: now.toISOString() })
+          .in('ticket_id', unresolved);
+        if (error) throw error;
+      }
+    }
+  }
 }
 
 async function sendWebPush(

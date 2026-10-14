@@ -120,6 +120,7 @@ export class DeviceNotificationAdapter implements NotificationPort {
       } = {
         body: reminder.notes,
         data: {
+          entityType: "reminder",
           occurrenceId: occurrence.id,
           reminderId: reminder.id,
           ownerId: reminder.ownerId,

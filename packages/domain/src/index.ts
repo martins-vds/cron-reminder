@@ -1,6 +1,7 @@
 import { CronExpressionParser } from "cron-parser";
 export * from "./categories.ts";
 export * from "./analytics.ts";
+export * from "./tasks.ts";
 
 export type ReminderStatus = "active" | "disabled" | "archived" | "completed";
 export type OccurrenceStatus =
