@@ -1024,6 +1024,7 @@ test.describe("responsive UI layout", () => {
           .getByText(reminders[0]!.title, { exact: true })
           .filter({ visible: true }),
       ).toHaveCount(0);
+      await page.getByRole("button", { name: "More", exact: true }).click();
       await page.getByRole("button", { name: "History", exact: true }).click();
       await expect(
         page.getByText(reminders[0]!.id, { exact: true }),
@@ -2253,24 +2254,29 @@ test.describe("responsive UI layout", () => {
     await mockSupabase(page, actions);
     await authenticate(page);
     await page.goto("/");
-    await page.evaluate(
-      ({ ownerId }) => {
-        navigator.serviceWorker.dispatchEvent(
-          new MessageEvent("message", {
-            data: {
-              type: "notification-action",
-              action: "snooze",
-              occurrenceId: "occurrence-1",
-              ownerId,
-            },
-          }),
-        );
-      },
-      { ownerId },
-    );
     await expect(
-      page.getByText("When should we remind you?", { exact: true }),
+      page.getByRole("heading", { name: "Today and upcoming" }),
     ).toBeVisible();
+    await expect(async () => {
+      await page.evaluate(
+        ({ ownerId }) => {
+          navigator.serviceWorker.dispatchEvent(
+            new MessageEvent("message", {
+              data: {
+                type: "notification-action",
+                action: "snooze",
+                occurrenceId: "occurrence-1",
+                ownerId,
+              },
+            }),
+          );
+        },
+        { ownerId },
+      );
+      await expect(
+        page.getByText("When should we remind you?", { exact: true }),
+      ).toBeVisible({ timeout: 500 });
+    }).toPass({ timeout: 5_000 });
     expect(actions).toHaveLength(0);
     await page.getByRole("button", { name: "5 min", exact: true }).click();
     await expect.poll(() => actions.length).toBe(1);
